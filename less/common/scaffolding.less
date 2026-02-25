@@ -1,3 +1,26 @@
 body {
-    overflow-x: hidden;
+  overflow-x: hidden;
+  color: @text-color;
+}
+
+.container {
+  max-width: 1220px;
+}
+
+.Dropdown-menu,
+.Notification,
+.FormControl {
+  border: 1px solid fade(@text-color, 12%);
+  border-radius: @border-radius;
+}
+
+.FormControl {
+  background: @body-bg;
+  color: @text-color;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.FormControl:focus {
+  border-color: fade(@primary-color, 60%);
+  box-shadow: 0 0 0 3px fade(@primary-color, 18%);
 }

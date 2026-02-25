@@ -2,7 +2,8 @@
 .AppearancePage fieldset {
   background: @body-bg;
   padding: 25px;
-  border-radius: 14px;
+  border-radius: @border-radius;
+  border: 1px solid fade(@text-color, 12%);
 
   .Button {
     --control-bg: @control-bg;

@@ -1,4 +1,18 @@
 .DiscussionList {
+  .Slidable-underneath.Dropdown-toggle.Button {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .Slidable-underneath.Dropdown-toggle.Button:hover,
+  .Slidable-underneath.Dropdown-toggle.Button:focus,
+  .Slidable-underneath.Dropdown-toggle.Button[aria-expanded="true"] {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
   @media @phone {
     margin: 0;
   }
@@ -12,7 +26,7 @@
     margin: 0 0 4px;
     padding: 0;
     border-radius: @border-radius;
-
+    border: 1px solid @control-border-color;
     &-controls .Dropdown-toggle {
       border-radius: @border-radius;
     }
@@ -132,6 +146,8 @@
 
       .Avatar {
         .asirem-icon-block(50px, @body-bg);
+        border: 1px solid @control-border-color;
+        border-radius: 100%;
       }
     }
 

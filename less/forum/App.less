@@ -1,5 +1,5 @@
 .App {
-  padding-bottom: 0;
+  padding-bottom: 18px;
 
   &-footer {
     &:empty {
@@ -16,10 +16,24 @@
     &-content {
       flex-grow: 1;
       border-top: 0;
+      padding-top: 14px;
+      background:
+        radial-gradient(at 0% 0%, fade(@control-bg, 33%) 0, transparent 52%),
+        radial-gradient(at 2% 2%, fade(@control-danger-bg, 28%) 0, transparent 48%),
+        radial-gradient(at 15% 10%, fade(@primary-color, 12%) 0, transparent 58%);
+      background-repeat: no-repeat;
+      background-attachment: fixed;
+      background-position: center;
+      background-size: cover;
     }
   }
 
   .container {
-    padding: 0;
+    padding: 0 16px;
+  }
+
+  .sideNavContainer {
+    margin-top: 14px;
+    gap: 14px;
   }
 }

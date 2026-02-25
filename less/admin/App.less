@@ -44,12 +44,13 @@
       }
 
       > a {
-        border-radius: 25px;
+        border-radius: @border-radius;
         padding: 8px !important;
         display: flex !important;
         align-items: center;
         transition: background-color 0.4s, color 0.4s;
         color: @admin-nav-color;
+        border: 1px solid fade(@text-color, 10%);
 
         > .icon {
           .asirem-icon-block(32px);

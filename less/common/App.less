@@ -1,3 +1,40 @@
 .App {
   overflow-x: visible;
+  color: @text-color;
+
+  &-header {
+    border-bottom: 1px solid fade(@text-color, 10%);
+    backdrop-filter: blur(12px);
+  }
+}
+
+// Keep the top-right header icon controls minimal (no chip background).
+.Header-secondary {
+  li:not(.item-search) {
+    .Button,
+    .Dropdown-toggle {
+      background: transparent !important;
+      border-color: transparent !important;
+      box-shadow: none !important;
+    }
+
+    .Button:hover,
+    .Button:focus,
+    .Dropdown-toggle:hover,
+    .Dropdown-toggle:focus {
+      background: transparent !important;
+      border-color: transparent !important;
+    }
+
+    // Restore original selected/open state affordance.
+    &.active .Button,
+    &.active .Dropdown-toggle,
+    .Dropdown.open > .Dropdown-toggle,
+    .Button[aria-expanded="true"],
+    .Dropdown-toggle[aria-expanded="true"] {
+      background: @control-bg !important;
+      border-color: fade(@text-color, 12%) !important;
+      box-shadow: none !important;
+    }
+  }
 }

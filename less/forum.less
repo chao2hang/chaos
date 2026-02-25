@@ -1,48 +1,53 @@
 @import "common/common.less";
 
+// Skeleton "nosh" palette mapping for both light/dark.
+// Only primary keeps user customization via @config-primary-color.
 .define-colors(false) {
   @primary-color:                  @config-primary-color;
-  @secondary-color:                @config-secondary-color;
 
-  @body-bg:                        #fff;
-  @text-color:                     #111;
-  @link-color:                     saturate(@primary-color, 10%);
+  @secondary-color:                #e7c6c2;
+  @body-bg:                        #f7f7f7;
+  @text-color:                     #181818;
+  @link-color:                     @primary-color;
   @heading-color:                  @text-color;
-  @muted-color:                    hsl(@secondary-hue, min(20%, @secondary-sat), 50%);
-  @muted-more-color:               #aaa;
-  @shadow-color:                   rgba(0, 0, 0, 0.35);
+  @muted-color:                    #7f7f7f;
+  @muted-more-color:               #949494;
+  @shadow-color:                   rgba(0, 0, 0, 0.25);
 
-  @control-bg:                     hsl(@secondary-hue, min(50%, @secondary-sat), 93%);
-  @control-color:                  @muted-color;
-  @control-danger-bg:              #fdd;
-  @control-danger-color:           #d66;
+  @control-bg:                     #f7f7f7;
+  @control-border-color:           #c5c5c5;
+  @control-color:                  #676767;
+  @control-danger-bg:              #f0c2bb;
+  @control-danger-color:           #7c3023;
 
-  @overlay-bg:                     fade(@secondary-color, 90%);
+  @overlay-bg:                     fade(#181818, 85%);
 
-  @code-bg:                        darken(@body-bg, 3%);
-  @code-color:                     lighten(@text-color, 30%);
+  @code-bg:                        #ededed;
+  @code-color:                     #3a3a3a;
 }
+
 .define-colors(true) {
   @primary-color:                  @config-primary-color;
-  @secondary-color:                @config-secondary-color;
 
-  @body-bg:                        hsl(@secondary-hue, min(20%, @secondary-sat), 13%);
-  @text-color:                     #ddd;
-  @link-color:                     saturate(@primary-color, 10%);
+  @secondary-color:                #8d8d8d;
+  @body-bg:                        #181818;
+  @text-color:                     #f7f7f7;
+  @link-color:                     @primary-color;
   @heading-color:                  @text-color;
-  @muted-color:                    hsl(@secondary-hue, min(15%, @secondary-sat), 50%);
-  @muted-more-color:               hsl(@secondary-hue, min(10%, @secondary-sat), 40%);
-  @shadow-color:                   rgba(0, 0, 0, 0.5);
+  @muted-color:                    #d0d0d0;
+  @muted-more-color:               #a8a8a8;
+  @shadow-color:                   rgba(0, 0, 0, 0.55);
 
-  @control-bg:                     hsl(@secondary-hue, min(20%, @secondary-sat), 10%);
-  @control-color:                  @muted-color;
-  @control-danger-bg:              #411;
-  @control-danger-color:           #a88;
+  @control-bg:                     #030303;
+  @control-border-color:           #333333;
+  @control-color:                  #d2d2d2;
+  @control-danger-bg:              #4a2520;
+  @control-danger-color:           #f0c2bb;
 
-  @overlay-bg:                     fade(darken(@body-bg, 5%), 90%);
+  @overlay-bg:                     fade(#111111, 90%);
 
-  @code-bg:                        darken(@body-bg, 3%);
-  @code-color:                     #fff;
+  @code-bg:                        #222222;
+  @code-color:                     #f1f1f1;
 }
 
 @import "forum/App.less";

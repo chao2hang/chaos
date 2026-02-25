@@ -1,4 +1,4 @@
-import { extend, override } from 'flarum/common/extend';
+﻿import { extend, override } from 'flarum/common/extend';
 import DiscussionListItem from 'flarum/forum/components/DiscussionListItem';
 import TagsPage from 'flarum/tags/components/TagsPage';
 import AsiremTagsPage from './components/TagsPage';
@@ -6,7 +6,7 @@ import { truncate } from 'flarum/utils/string';
 
 import Footer from 'flarum/extensions/afrux-theme-base/forum/components/Footer';
 
-app.initializers.add('afrux-asirem', () => {
+app.initializers.add('nopj-chaos', () => {
   extend(DiscussionListItem.prototype, 'view', function (vnode) {
     const discussionListItemContent = vnode.children.find(
       (e) => e && e.tag === 'div' && e.attrs && e.attrs.className.includes('DiscussionListItem-content')
@@ -54,3 +54,4 @@ app.initializers.add('afrux-asirem', () => {
 
   override(TagsPage.prototype, 'view', AsiremTagsPage.prototype.view);
 });
+

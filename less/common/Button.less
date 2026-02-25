@@ -1,9 +1,31 @@
 .Button {
   border: 1px solid transparent;
-  transition: background-color 0.4s;
+  border-radius: @border-radius;
+  transition: background-color .2s ease, border-color .2s ease, color .2s ease, transform .2s ease;
+  background-color: var(--control-bg, @control-bg);
+  color: var(--control-color, @control-color);
+}
+
+.Button:hover {
+  color: @text-color;
+}
+
+.Button:active {
+  transform: translateY(1px);
+}
+
+.Button--primary {
+  border-color: transparent;
+  background-color: @primary-color;
+  color: contrast(@primary-color, #111, #fff, 58%);
+}
+
+.Button--primary:hover {
+  background-color: darken(@primary-color, 4%);
+  color: contrast(@primary-color, #111, #fff, 58%);
 }
 
 .Button--dashed {
-  border: 1px dashed;
+  border: 1px dashed fade(@text-color, 28%);
   --control-bg: transparent;
 }

@@ -8,6 +8,38 @@
 
 @media @desktop-up {
   .sideNav {
+    // Make side nav items flat: no background, no selected background, no borders.
+    > ul > li > .Button,
+    > ul > li > a,
+    .App-primaryControl > .Button,
+    .Dropdown--select > .Dropdown-toggle,
+    .Dropdown--select .Dropdown-menu > li > a,
+    .Dropdown--select .Dropdown-menu > li > .Button,
+    .Dropdown--select .Dropdown-menu > li > button {
+      background: transparent !important;
+      border-color: transparent !important;
+      box-shadow: none !important;
+    }
+
+    > ul > li.active > .Button,
+    > ul > li.active > a,
+    .Dropdown--select .Dropdown-menu > li.active > a,
+    .Dropdown--select .Dropdown-menu > li.active > .Button,
+    .Dropdown--select .Dropdown-menu > li.active > button,
+    .Dropdown--select .Dropdown-menu > li > a[active="true"],
+    .Dropdown--select .Dropdown-menu > li > .Button[aria-pressed="true"] {
+      background: transparent !important;
+      border-color: transparent !important;
+      box-shadow: none !important;
+    }
+
+    // Keep "new discussion" as a visible primary CTA.
+    > ul > li.item-newDiscussion > .Button.Button--primary {
+      background: @primary-color !important;
+      border-color: transparent !important;
+      color: contrast(@primary-color, #111, #fff, 58%) !important;
+    }
+
     .Dropdown--select .Dropdown-menu {
       > li {
         margin: 2px 0;
@@ -18,7 +50,8 @@
           display: grid;
           grid-template-columns: var(--icon-size) 1fr;
           align-items: center;
-          border-radius: 25px;
+          border-radius: @border-radius;
+          border: 1px solid transparent;
           transition: background-color 0.4s, color 0.4s;
           font-size: 14px;
           grid-gap: 10px;
@@ -39,21 +72,21 @@
 
         &.active {
           > a {
-            background-color: @primary-bg;
+            background-color: transparent;
 
             .Button-icon {
-              background-color: @body-bg;
+              background-color: transparent;
             }
           }
         }
 
         &:hover {
           > a {
-            background-color: @control-bg;
+            background-color: transparent;
             color: @text-color;
 
             .Button-icon {
-              background-color: @body-bg;
+              background-color: transparent;
             }
           }
         }
@@ -64,6 +97,23 @@
         .icon {
           --size: 24px;
         }
+      }
+
+      > li.item-moreTags > a .Button-label {
+        overflow: visible;
+        text-overflow: clip;
+        white-space: nowrap;
+      }
+
+      // Keep tag link buttons plain: no border and no selected background.
+      .TagLinkButton.hasIcon {
+        border-color: transparent !important;
+        background-color: transparent !important;
+      }
+
+      li.active > .TagLinkButton.hasIcon,
+      .TagLinkButton.hasIcon[aria-pressed="true"] {
+        background-color: transparent !important;
       }
       > .Dropdown-separator {
         margin: 12px 0;

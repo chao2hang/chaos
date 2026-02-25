@@ -1,7 +1,7 @@
 <?php
 
 /*
- * This file is part of afrux/asirem.
+ * This file is part of nopj/chaos.
  *
  * Copyright (c) 2021 Sami Ilyes Mazouz.
  *
@@ -9,13 +9,13 @@
  * file that was distributed with this source code.
  */
 
-namespace Afrux\Asirem;
+namespace Nopj\Chaos;
 
 use Flarum\Extend;
 use Flarum\Frontend\Document;
 
 return [
-    new \Afrux\ThemeBase\Extend\Init('afrux-asirem'),
+    new \Afrux\ThemeBase\Extend\Init('nopj-chaos'),
     new \Afrux\ThemeBase\Extend\Footer,
     new \Afrux\ThemeBase\Extend\UploadableBanner,
     new \Afrux\ThemeBase\Extend\ExposeLaravelVersionToDashboard,
@@ -35,11 +35,12 @@ return [
         ->js(__DIR__.'/js/dist/admin.js')
         ->css(__DIR__.'/less/admin.less')
         ->content(function (Document $document) {
-            $document->layoutView = "afrux-asirem::frontend.admin";
+            $document->layoutView = "nopj-chaos::frontend.admin";
         }),
 
     (new Extend\View)
-        ->namespace("afrux-asirem", __DIR__."/views"),
+        ->namespace("nopj-chaos", __DIR__."/views"),
 
     new Extend\Locales(__DIR__.'/locale'),
 ];
+

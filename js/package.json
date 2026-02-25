@@ -1,5 +1,5 @@
-{
-    "name": "@afrux/asirem",
+﻿{
+    "name": "@nopj/chaos",
     "version": "0.0.0",
     "private": true,
     "prettier": "@flarum/prettier-config",
@@ -28,3 +28,4 @@
         "post-build-typings": "find dist-typings -type f -name '*.d.ts' -print0 | xargs -0 sed -i 's,../src/@types,@types,g'"
     }
 }
+

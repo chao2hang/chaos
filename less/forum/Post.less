@@ -1,7 +1,8 @@
 .Post {
   margin: 0 0 15px 0;
   background: @control-bg;
-  border-radius: 8px;
+  border-radius: @border-radius;
+  border: 1px solid fade(@text-color, 10%);
 }
 
 .PostStream-item {
@@ -12,6 +13,9 @@
 
 .ReplyPlaceholder {
   margin-top: 30px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .EventPost {

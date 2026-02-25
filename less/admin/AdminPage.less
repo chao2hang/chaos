@@ -13,12 +13,14 @@
   }
 
   &-container {
-    padding: 0 0 15px 0px !important;
-    border-radius: 0 14px 14px 0;
+    padding: 16px !important;
+    border-radius: @border-radius;
+    border: 1px solid fade(@text-color, 12%);
+    background: @body-bg;
 
     @media @desktop-up {
       .App-content & {
-        margin: 0 30px;
+        margin: 0 24px;
         width: unset;
         max-width: unset;
       }
@@ -30,11 +32,10 @@
     font-size: 24px;
     width: var(--size);
     height: var(--size);
-    border-radius: 14px;
+    border-radius: @border-radius;
     margin-right: 20px;
-    border-radius: 100%;
     box-shadow: @asirem-box-shadow;
-    background-color: @body-bg;
+    background-color: @control-bg;
 
     > .icon {
       margin: 0;
@@ -91,6 +92,8 @@
 
   &-headerItems, &-sections {
     background-color: @body-bg;
+    border: 1px solid fade(@text-color, 12%);
+    border-radius: @border-radius;
 
     .Button {
       --control-bg: @control-bg;
@@ -103,9 +106,11 @@
 
   &-sections-nav {
     background-color: @control-bg-light;
+    border: 1px solid fade(@text-color, 10%);
+    border-radius: @border-radius;
 
     .Button {
-      border-radius: 0;
+      border-radius: @border-radius;
       --control-bg: @control-bg-light;
 
       &--active {

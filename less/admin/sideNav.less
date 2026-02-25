@@ -1,5 +1,8 @@
 .sideNavOffset {
   background-color: @control-bg;
+  border: 1px solid fade(@text-color, 10%);
+  border-radius: @border-radius;
+  padding: 12px;
 
   .Button {
     --control-bg: @body-bg;
@@ -17,6 +20,7 @@
 .Button {
   background-color: var(--control-bg);
   color: var(--control-color);
+  border-radius: @border-radius;
 
   &--primary {
     --control-color: @control-bg;
@@ -41,6 +45,7 @@
   .sideNav {
     margin-right: 0;
     height: 100vh;
+    padding-top: 8px;
   }
 
   .sideNavOffset {

@@ -1,9 +1,9 @@
-import { extend, override } from 'flarum/extend';
+﻿import { extend, override } from 'flarum/extend';
 import PermissionsPage from 'flarum/admin/components/PermissionsPage';
 import PermissionGrid from 'flarum/admin/components/PermissionGrid';
 
 app.initializers.add(
-  'afrux-asirem',
+  'nopj-chaos',
   (app) => {
     extend(PermissionsPage.prototype, 'content', function (vnode) {
       if (vnode && vnode[0] && vnode[0].children && vnode[0].children[1]) {
@@ -21,3 +21,4 @@ app.initializers.add(
   },
   -999999
 );
+
