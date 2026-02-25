@@ -40,6 +40,13 @@
       color: contrast(@primary-color, #111, #fff, 58%) !important;
     }
 
+    // Restore subscription button background (it should not be transparent).
+    > ul > li > .SubscriptionButton.Button {
+      background: @control-bg !important;
+      border-color: transparent !important;
+      color: @text-color !important;
+    }
+
     .Dropdown--select .Dropdown-menu {
       > li {
         margin: 2px 0;
