@@ -1,38 +1,46 @@
-<p align=center>
-<img src="https://lh3.googleusercontent.com/-CDid7LgrH-M/YNn460wKUMI/AAAAAAAAFdY/ttAl_XT055QzWO9bEWKPbzWBPzhPUg1UwCLcBGAsYHQ/s16000/asirem.png" alt="asirem_logo">
-<h1 align=center>Asirem</h1>
-<p align=center>
-<img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square"> <a href="https://packagist.org/packages/afrux/asirem"><img alt="Latest Stable Version" src="https://img.shields.io/packagist/v/afrux/asirem.svg?style=flat-square"></a> <a href="https://packagist.org/packages/afrux/asirem"><img alt="Total Downloads" src="https://img.shields.io/packagist/dt/afrux/asirem.svg?style=flat-square"></a> <a href="https://www.buymeacoffee.com/sycho"><img alt="donate" src="https://img.shields.io/badge/donate-buy%20me%20a%20coffee-%23ffde39?style=flat-square"></a>
-</p><p align=center>
-The weird <a href="http://flarum.org">Flarum</a> theme made with potatoes as fuel, by <a href="https://github.com/afrux">Afrux</a>.
-</p><p align=center>
-<img width="50%" src="https://lh3.googleusercontent.com/-N4b-Oqq18To/YNno5ZmnmGI/AAAAAAAAFdA/49F0UzmZFecHv7baBQTtM6a_JO5n7s_dwCLcBGAsYHQ/s16000/Dark_Dashboard_Front.png" alt="asirem_theme_dashboard_screenshot_1"><img width="50%" src="https://lh3.googleusercontent.com/-edU2_P66Vlo/YNnpaU1yjVI/AAAAAAAAFdI/LzAB9qdLbGMGWFzyyovTow770r8b8Fw7wCLcBGAsYHQ/s16000/Light_Dashboard_Front.png" alt="asirem_theme_dashboard_screenshot_1">
-<img src="https://lh3.googleusercontent.com/-qhKeJv4373Y/YNnqrVK6MlI/AAAAAAAAFdQ/pcRH7ZobQdMJYiIQ2HTyjJnZpXqUHMg6QCLcBGAsYHQ/s16000/Screenshot%2Bfrom%2B2021-06-27%2B22-57-32.png" alt="asirem_theme_forum_screenshot_1">
-</p>
+# Chaos 主题（Flarum）
 
-### Installation
+Chaos 是一个用于 Flarum 的主题扩展，提供简洁的论坛界面样式与可定制的主题体验。
 
-Install with composer:
+## 基本信息
 
-```sh
-composer require afrux/asirem
+- 包名：`nopj/chaos`
+- 类型：`flarum-extension`
+- 分类：`theme`
+- 许可证：`MIT`
+- 兼容版本：`flarum/core ^1.8.0`
+
+## 安装
+
+在 Flarum 根目录执行：
+
+```bash
+composer require nopj/chaos
 ```
 
-The following are nice to install with the theme as well:
+安装完成后启用扩展：
 
-```sh
-composer require sycho/flarum-advanced-extension-categories
-```
-
-### Updating
-
-```sh
-composer update afrux/asirem --with-dependencies
+```bash
+php flarum extension:enable nopj-chaos
 php flarum cache:clear
 ```
 
-### Links
+## 更新
 
-- [Packagist](https://packagist.org/packages/afrux/asirem)
-- [GitHub](https://github.com/afrux/asirem)
-- [Discuss](https://discuss.flarum.org/d/27939-asirem-theme)
+```bash
+composer update nopj/chaos --with-dependencies
+php flarum cache:clear
+php flarum assets:publish
+```
+
+## 可选依赖
+
+本主题可与以下扩展配合使用（可选）：
+
+- `flarum/tags`
+- `flarum/approval`
+- `sycho/flarum-advanced-extension-categories`
+
+## 支持与反馈
+
+- 官方站点：<https://nopj.cn>
