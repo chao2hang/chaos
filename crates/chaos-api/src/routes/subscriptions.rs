@@ -242,6 +242,55 @@ async fn fetch_and_replace_nodes(
     Ok((sub, nodes))
 }
 
+fn subscription_body_too_large() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "subscription_fetch_failed",
+        "subscription body exceeds 5 MiB limit",
+    )
+}
+
+/// Append a chunk while enforcing `max` without allocating past the limit.
+fn append_body_chunk(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> Result<(), ApiError> {
+    let next = buf.len().saturating_add(chunk.len());
+    if next > max {
+        return Err(subscription_body_too_large());
+    }
+    // Reserve only up to the hard cap so we never grow beyond `max`.
+    buf.reserve(chunk.len());
+    buf.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn read_body_capped(
+    mut response: reqwest::Response,
+    max: usize,
+) -> Result<Vec<u8>, ApiError> {
+    // Fast path: reject advertised oversize before reading.
+    if let Some(len) = response.content_length() {
+        if len as usize > max {
+            return Err(subscription_body_too_large());
+        }
+    }
+
+    let mut body = Vec::new();
+    loop {
+        let chunk = response.chunk().await.map_err(|e| {
+            tracing::warn!(error = %e, "subscription body read failed");
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "subscription_fetch_failed",
+                format!("failed to read subscription body: {e}"),
+            )
+        })?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        append_body_chunk(&mut body, &chunk, max)?;
+    }
+    Ok(body)
+}
+
 async fn fetch_subscription_body(url: &str) -> Result<Vec<u8>, ApiError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
@@ -274,35 +323,7 @@ async fn fetch_subscription_body(url: &str) -> Result<Vec<u8>, ApiError> {
         ));
     }
 
-    // Prefer content-length check, then stream with hard cap.
-    if let Some(len) = response.content_length() {
-        if len as usize > MAX_BODY_BYTES {
-            return Err(ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "subscription_fetch_failed",
-                "subscription body exceeds 5 MiB limit",
-            ));
-        }
-    }
-
-    let bytes = response.bytes().await.map_err(|e| {
-        tracing::warn!(error = %e, "subscription body read failed");
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "subscription_fetch_failed",
-            format!("failed to read subscription body: {e}"),
-        )
-    })?;
-
-    if bytes.len() > MAX_BODY_BYTES {
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "subscription_fetch_failed",
-            "subscription body exceeds 5 MiB limit",
-        ));
-    }
-
-    Ok(bytes.to_vec())
+    read_body_capped(response, MAX_BODY_BYTES).await
 }
 
 #[cfg(test)]
@@ -330,6 +351,32 @@ mod tests {
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn append_body_chunk_accepts_within_limit() {
+        let mut buf = Vec::new();
+        append_body_chunk(&mut buf, b"hello", 10).unwrap();
+        append_body_chunk(&mut buf, b"!", 10).unwrap();
+        assert_eq!(buf, b"hello!");
+    }
+
+    #[test]
+    fn append_body_chunk_rejects_oversize_without_growing_past_cap() {
+        let mut buf = vec![0u8; 8];
+        let err = append_body_chunk(&mut buf, &[1u8; 4], 10).unwrap_err();
+        assert_eq!(err.code, "subscription_fetch_failed");
+        // Buffer must not have been extended past the pre-check size.
+        assert_eq!(buf.len(), 8);
+    }
+
+    #[test]
+    fn append_body_chunk_rejects_exact_overflow_from_empty() {
+        let mut buf = Vec::new();
+        let chunk = vec![0u8; MAX_BODY_BYTES + 1];
+        let err = append_body_chunk(&mut buf, &chunk, MAX_BODY_BYTES).unwrap_err();
+        assert_eq!(err.code, "subscription_fetch_failed");
+        assert!(buf.is_empty());
     }
 
     #[tokio::test]
