@@ -1,0 +1,17 @@
+[package]
+name = "chaos-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chaos-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+chaos-store = { path = "../chaos-store" }
+chaos-core = { path = "../chaos-core" }
+chaos-dae = { path = "../chaos-dae" }
+tracing-subscriber = { workspace = true }
