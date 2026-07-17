@@ -10,7 +10,7 @@ pub struct NodeForConfig {
 
 /// Render a minimal bootable-ish dae config with the given nodes.
 ///
-/// Node keys are `node.<sanitized_name>` so the group filter can select them.
+/// Node keys are `node.<sanitized_name>`. Group `proxy` omits `filter` (MVP: all nodes).
 /// Field names follow current dae config style (best-effort for the pinned dae version).
 pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
     let mut out = String::with_capacity(512 + nodes.len() * 64);
@@ -45,7 +45,6 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
          \n\
          group {\n\
          \x20\x20proxy {\n\
-         \x20\x20\x20\x20filter: substring:node.\n\
          \x20\x20\x20\x20policy: min_moving_avg\n\
          \x20\x20}\n\
          }\n\
@@ -115,6 +114,8 @@ mod tests {
         assert!(s.contains("node.n1"));
         assert!(s.contains("trojan://"));
         assert!(s.contains("routing {"));
+        assert!(!s.contains("substring:"));
+        assert!(!s.contains("filter:"));
     }
 
     #[test]
@@ -127,5 +128,6 @@ mod tests {
         assert!(s.contains("node.HK_01_vip"));
         assert!(!s.contains("HK-01"));
         assert!(!s.contains("vip!"));
+        assert!(!s.contains("substring:"));
     }
 }
