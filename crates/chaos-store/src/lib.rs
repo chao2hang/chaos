@@ -1,8 +1,10 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
 mod models;
+pub mod users;
 
 pub use models::{LatencyResult, Node, Subscription, User, now_rfc3339, parse_rfc3339};
+pub use users::{count_users, create_user, find_user_by_username};
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
