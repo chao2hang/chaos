@@ -16,17 +16,18 @@ chrono = { workspace = true }
 hex = "0.4"
 jsonwebtoken = { workspace = true }
 rand = "0.8"
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
-    tracing = { workspace = true }
-    tracing-subscriber = { workspace = true }
-    uuid = { workspace = true }
-    chaos-store = { path = "../chaos-store" }
-    chaos-core = { path = "../chaos-core" }
-    chaos-dae = { path = "../chaos-dae" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chaos-store = { path = "../chaos-store" }
+chaos-core = { path = "../chaos-core" }
+chaos-dae = { path = "../chaos-dae" }
 
 [dev-dependencies]
 http-body-util = "0.1"

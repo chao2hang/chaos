@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 use auth::{auth_router, load_or_create_jwt_secret};
 use health::health_router;
 use routes::nodes::nodes_router;
+use routes::subscriptions::subscriptions_router;
 use state::AppState;
 
 #[tokio::main]
@@ -36,7 +37,12 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api/v1/auth", auth_router())
-        .nest("/api/v1", health_router().merge(nodes_router()))
+        .nest(
+            "/api/v1",
+            health_router()
+                .merge(nodes_router())
+                .merge(subscriptions_router()),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
