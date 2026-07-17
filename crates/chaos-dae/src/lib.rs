@@ -131,31 +131,77 @@ impl DaeManager {
     }
 
     async fn spawn_run(&self) -> Result<()> {
+        let config = self.config_path();
+        if !config.is_file() {
+            bail!("config file missing: {}", config.display());
+        }
+
+        let log_path = self.work_dir.join("dae.log");
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("create log {}", log_path.display()))?;
+        let log_err = log_file
+            .try_clone()
+            .with_context(|| format!("clone log handle {}", log_path.display()))?;
+
         let mut child = Command::new(&self.bin)
             .arg("run")
             .arg("-c")
-            .arg(&self.work_dir)
+            .arg(&config)
+            // dae manages its own pidfile under /var/run by default; we track work_dir/dae.pid.
+            .arg("--disable-pidfile")
             .current_dir(&self.work_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_err))
             .spawn()
             .with_context(|| {
                 format!(
                     "spawn `{} run -c {}`",
                     self.bin.display(),
-                    self.work_dir.display()
+                    config.display()
                 )
             })?;
 
         let pid = child.id();
-        // Detach: do not wait; dropping Child without wait leaves the process running
-        // (or exiting on its own for short-lived fixtures).
-        std::mem::forget(child);
-
         tokio::fs::write(self.pid_path(), pid.to_string())
             .await
             .with_context(|| format!("write pid file {}", self.pid_path().display()))?;
+
+        // Grace period: real dae may exit immediately on bad config/permissions.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Reap if already exited (avoids zombie making kill -0 look "alive").
+        let early_exit = match child.try_wait() {
+            Ok(Some(status)) => Some(status),
+            Ok(None) => None,
+            Err(_) => None,
+        };
+
+        if early_exit.is_some() || !process_alive(pid) {
+            let log_tail = tokio::fs::read_to_string(&log_path)
+                .await
+                .unwrap_or_default();
+            let _ = tokio::fs::remove_file(self.pid_path()).await;
+            let excerpt: String = log_tail
+                .chars()
+                .rev()
+                .take(2000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            bail!(
+                "dae exited immediately after start; log excerpt:\n{}",
+                if excerpt.trim().is_empty() {
+                    "(empty log)".to_string()
+                } else {
+                    excerpt
+                }
+            );
+        }
+
+        // Detach: leave process running without reaping here.
+        std::mem::forget(child);
         Ok(())
     }
 

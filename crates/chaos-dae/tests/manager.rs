@@ -1,9 +1,13 @@
 //! Integration tests for DaeManager using the fake-dae fixture.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chaos_dae::DaeManager;
+
+// Serialize tests that spawn processes / touch shared env assumptions.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn fixture_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-dae.sh")
@@ -19,51 +23,46 @@ fn temp_work_dir() -> PathBuf {
     dir
 }
 
-#[tokio::test]
-async fn write_config_and_reload_invokes_fake_dae() {
-    let bin = fixture_bin();
-    assert!(bin.is_file(), "missing fixture {}", bin.display());
-
-    // Ensure executable for spawn.
+fn chmod_755(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&bin, perms).unwrap();
+        std::fs::set_permissions(path, perms).unwrap();
     }
+}
 
+#[tokio::test]
+async fn write_config_and_reload_with_long_lived_fake() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let work_dir = temp_work_dir();
     let log_path = work_dir.join("fake-dae.log");
-    let _ = std::fs::remove_file(&log_path);
 
-    let mgr = DaeManager::new(bin, work_dir.clone());
+    // Embed absolute log path so concurrent tests cannot clobber via env.
+    let wrapper = work_dir.join("fake-dae-sleep.sh");
+    let script = format!(
+        "#!/usr/bin/env bash\necho \"fake-dae $*\" >> \"{}\"\nsleep 3\nexit 0\n",
+        log_path.display()
+    );
+    std::fs::write(&wrapper, script).unwrap();
+    chmod_755(&wrapper);
 
+    let mgr = DaeManager::new(wrapper, work_dir.clone());
     let config_path = mgr
         .write_config("global {\n  log_level: info\n}\n")
         .await
         .expect("write_config");
     assert_eq!(config_path, work_dir.join("config.dae"));
-    let written = tokio::fs::read_to_string(&config_path).await.unwrap();
-    assert!(written.contains("log_level"));
-
-    // Point fake-dae log at work_dir so tests don't clobber /tmp/fake-dae.log.
-    std::env::set_var("FAKE_DAE_LOG", &log_path);
 
     mgr.reload().await.expect("reload/spawn");
+    assert!(mgr.pid_path().is_file());
+    assert!(mgr.is_running(), "long-lived fake should be alive");
 
-    // Pid file is written even if the fixture exits immediately.
-    assert!(
-        mgr.pid_path().is_file(),
-        "expected pid file at {}",
-        mgr.pid_path().display()
-    );
-
-    // Wait briefly for the short-lived process to append the log.
     let mut log = String::new();
-    for _ in 0..20 {
+    for _ in 0..40 {
         if let Ok(s) = std::fs::read_to_string(&log_path) {
-            if !s.is_empty() {
+            if s.contains("run -c") {
                 log = s;
                 break;
             }
@@ -76,21 +75,46 @@ async fn write_config_and_reload_invokes_fake_dae() {
         "expected fake-dae invocation in log, got: {log:?}"
     );
     assert!(
-        log.contains(work_dir.to_string_lossy().as_ref())
-            || log.contains("run -c"),
-        "log should mention work dir or run args: {log:?}"
+        log.contains("config.dae"),
+        "expected -c to point at config.dae, got: {log:?}"
     );
 
-    // stop is best-effort (fixture may already have exited).
     mgr.stop().await.expect("stop");
+    // Give kill a moment
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(!mgr.is_running());
 
     let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+#[tokio::test]
+async fn immediate_exit_fake_reports_error() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let bin = fixture_bin();
+    assert!(bin.is_file(), "missing fixture {}", bin.display());
+    chmod_755(&bin);
+
+    let work_dir = temp_work_dir();
+    let log_path = work_dir.join("fake-dae.log");
+    // Point fixture log via env for the shared fake-dae.sh
+    std::env::set_var("FAKE_DAE_LOG", &log_path);
+
+    let mgr = DaeManager::new(bin, work_dir.clone());
+    mgr.write_config("global {}\n").await.unwrap();
+    let err = mgr.reload().await.expect_err("immediate exit should err");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exited immediately"),
+        "unexpected error: {msg}"
+    );
+
     std::env::remove_var("FAKE_DAE_LOG");
+    let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 #[tokio::test]
 async fn stop_without_pid_is_ok() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let work_dir = temp_work_dir();
     let mgr = DaeManager::new(fixture_bin(), work_dir.clone());
     assert!(!mgr.is_running());

@@ -1,5 +1,7 @@
 //! Minimal dae config rendering from imported nodes (MVP fixed template).
 
+use std::collections::HashSet;
+
 /// Node fields needed to render a dae `node { ... }` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeForConfig {
@@ -10,10 +12,11 @@ pub struct NodeForConfig {
 
 /// Render a minimal bootable-ish dae config with the given nodes.
 ///
-/// Node keys are `node.<sanitized_name>`. Group `proxy` omits `filter` (MVP: all nodes).
-/// Field names follow current dae config style (best-effort for the pinned dae version).
+/// Node keys are `node.<sanitized_name>` with uniqueness suffixes from id when needed.
+/// Group `proxy` omits `filter` (MVP: all nodes).
 pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
-    let mut out = String::with_capacity(512 + nodes.len() * 64);
+    let mut out = String::with_capacity(768 + nodes.len() * 64);
+    let mut used_keys: HashSet<String> = HashSet::new();
 
     out.push_str(
         "global {\n\
@@ -24,6 +27,18 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
          \x20\x20auto_config_kernel_parameter: true\n\
          }\n\
          \n\
+         dns {\n\
+         \x20\x20upstream {\n\
+         \x20\x20\x20\x20alidns: 'udp://dns.alidns.com:53'\n\
+         \x20\x20\x20\x20googledns: 'tcp+udp://dns.google:53'\n\
+         \x20\x20}\n\
+         \x20\x20routing {\n\
+         \x20\x20\x20\x20request {\n\
+         \x20\x20\x20\x20\x20\x20fallback: alidns\n\
+         \x20\x20\x20\x20}\n\
+         \x20\x20}\n\
+         }\n\
+         \n\
          subscription {\n\
          }\n\
          \n\
@@ -31,9 +46,9 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
     );
 
     for n in nodes {
-        let key = format!("node.{}", sanitize_node_name(&n.name, &n.id));
+        let key = unique_node_key(&n.name, &n.id, &mut used_keys);
         let link = escape_single_quotes(&n.link);
-        out.push_str("  ");
+        out.push_str("  node.");
         out.push_str(&key);
         out.push_str(": '");
         out.push_str(&link);
@@ -58,6 +73,34 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
     out
 }
 
+fn unique_node_key(name: &str, id: &str, used: &mut HashSet<String>) -> String {
+    let base = sanitize_node_name(name, id);
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let suffix = short_id_suffix(id);
+    let mut candidate = format!("{base}_{suffix}");
+    let mut n = 2u32;
+    while !used.insert(candidate.clone()) {
+        candidate = format!("{base}_{suffix}_{n}");
+        n += 1;
+    }
+    candidate
+}
+
+fn short_id_suffix(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    if cleaned.is_empty() {
+        "x".into()
+    } else {
+        cleaned
+    }
+}
+
 /// Keep only `[A-Za-z0-9_]`; empty results fall back to sanitized `id` or `node`.
 fn sanitize_node_name(name: &str, id: &str) -> String {
     let from_name = sanitize_ident(name);
@@ -79,7 +122,6 @@ fn sanitize_ident(s: &str) -> String {
             out.push(c);
             last_us = false;
         } else if c == '_' || !last_us {
-            // map disallowed chars to '_', collapse runs
             if !last_us {
                 out.push('_');
                 last_us = true;
@@ -96,7 +138,6 @@ fn sanitize_ident(s: &str) -> String {
 }
 
 fn escape_single_quotes(s: &str) -> String {
-    // Keep single-quoted dae strings parseable.
     s.replace('\'', "%27")
 }
 
@@ -114,6 +155,7 @@ mod tests {
         assert!(s.contains("node.n1"));
         assert!(s.contains("trojan://"));
         assert!(s.contains("routing {"));
+        assert!(s.contains("dns {"));
         assert!(!s.contains("substring:"));
         assert!(!s.contains("filter:"));
     }
@@ -128,6 +170,25 @@ mod tests {
         assert!(s.contains("node.HK_01_vip"));
         assert!(!s.contains("HK-01"));
         assert!(!s.contains("vip!"));
-        assert!(!s.contains("substring:"));
+    }
+
+    #[test]
+    fn unique_keys_when_names_collide() {
+        let s = render_minimal_dae_config(&[
+            NodeForConfig {
+                id: "aaaa1111".into(),
+                name: "same".into(),
+                link: "trojan://a@1.1.1.1:443".into(),
+            },
+            NodeForConfig {
+                id: "bbbb2222".into(),
+                name: "same".into(),
+                link: "trojan://b@2.2.2.2:443".into(),
+            },
+        ]);
+        assert!(s.contains("node.same:"));
+        assert!(s.contains("node.same_bbbb2222") || s.contains("node.same_bbbb"));
+        let count_same = s.matches("node.same").count();
+        assert!(count_same >= 2);
     }
 }
