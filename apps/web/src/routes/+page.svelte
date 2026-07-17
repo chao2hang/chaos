@@ -17,8 +17,7 @@
 				await goto('/login');
 				return;
 			}
-			// App shell routes land in a later task; keep users on login until then.
-			await goto('/login');
+			await goto('/dashboard');
 		} catch (e) {
 			const err = e instanceof ApiClientError ? e.message : 'API unreachable';
 			message = `Cannot reach API: ${err}. Start chaos-api on :2030 (pnpm dev:api).`;

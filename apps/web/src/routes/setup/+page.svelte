@@ -38,13 +38,12 @@
 			error = 'Passwords do not match.';
 			return;
 		}
-		busy = true;
-		try {
-			const res = await setupAdmin(username.trim(), password);
-			setToken(res.token);
-			// Token stored; login page confirms session until dashboard exists.
-			await goto('/login');
-		} catch (err) {
+busy = true;
+			try {
+				const res = await setupAdmin(username.trim(), password);
+				setToken(res.token);
+				await goto('/dashboard');
+			} catch (err) {
 			if (err instanceof ApiClientError && err.code === 'already_initialized') {
 				await goto('/login');
 				return;

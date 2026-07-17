@@ -107,3 +107,115 @@ export function login(username: string, password: string) {
 export function health() {
 	return api<HealthResponse>('/api/v1/health');
 }
+
+export type NodeDto = {
+	id: string;
+	name: string;
+	tag: string | null;
+	link: string;
+	protocol: string | null;
+	address: string | null;
+	subscription_id: string | null;
+	created_at: string;
+};
+
+export type ImportItemResult =
+	| { ok: true; node: NodeDto }
+	| { ok: false; link: string; error: { code: string; message: string } };
+
+export type SubscriptionDto = {
+	id: string;
+	tag: string | null;
+	url: string;
+	updated_at: string;
+	status: string;
+	node_count: number;
+};
+
+export type LatencyDto = {
+	id: string;
+	latency_ms: number | null;
+	alive: boolean;
+	tested_at: string;
+	message: string | null;
+};
+
+export type RuntimeStatus = {
+	running: boolean;
+	dae_binary: string | null;
+	dae_binary_ok: boolean;
+	work_dir: string;
+	config_exists: boolean;
+};
+
+export type ApplyResponse = {
+	ok: boolean;
+	running: boolean;
+	config_path: string;
+	nodes: number;
+};
+
+export function listNodes() {
+	return api<{ nodes: NodeDto[] }>('/api/v1/nodes');
+}
+
+export function importNodes(links: { link: string; tag?: string }[]) {
+	return api<{ results: ImportItemResult[] }>('/api/v1/nodes', {
+		method: 'POST',
+		body: JSON.stringify({ links })
+	});
+}
+
+export function deleteNode(id: string) {
+	return api<{ deleted: boolean }>(`/api/v1/nodes/${encodeURIComponent(id)}`, {
+		method: 'DELETE'
+	});
+}
+
+export function listSubscriptions() {
+	return api<{ subscriptions: SubscriptionDto[] }>('/api/v1/subscriptions');
+}
+
+export function importSubscription(url: string, tag?: string) {
+	return api<{ subscription: SubscriptionDto; nodes: NodeDto[] }>('/api/v1/subscriptions', {
+		method: 'POST',
+		body: JSON.stringify({ url, tag })
+	});
+}
+
+export function refreshSubscription(id: string) {
+	return api<{ subscription: SubscriptionDto; nodes: NodeDto[] }>(
+		`/api/v1/subscriptions/${encodeURIComponent(id)}/refresh`,
+		{ method: 'POST' }
+	);
+}
+
+export function deleteSubscription(id: string) {
+	return api<{ deleted: boolean }>(
+		`/api/v1/subscriptions/${encodeURIComponent(id)}`,
+		{ method: 'DELETE' }
+	);
+}
+
+export function listLatency() {
+	return api<{ results: LatencyDto[] }>('/api/v1/latency');
+}
+
+export function testLatency(ids?: string[] | null) {
+	return api<{ results: LatencyDto[] }>('/api/v1/latency/test', {
+		method: 'POST',
+		body: JSON.stringify({ ids: ids === undefined ? null : ids })
+	});
+}
+
+export function getRuntime() {
+	return api<RuntimeStatus>('/api/v1/runtime');
+}
+
+export function applyRuntime() {
+	return api<ApplyResponse>('/api/v1/runtime/apply', { method: 'POST' });
+}
+
+export function stopRuntime() {
+	return api<RuntimeStatus>('/api/v1/runtime/stop', { method: 'POST' });
+}

@@ -6,7 +6,6 @@
 	let username = $state('admin');
 	let password = $state('');
 	let error = $state('');
-	let success = $state('');
 	let busy = $state(false);
 	let ready = $state(false);
 	let apiOk = $state(false);
@@ -33,13 +32,11 @@
 	async function onSubmit(e: Event) {
 		e.preventDefault();
 		error = '';
-		success = '';
 		busy = true;
 		try {
 			const res = await login(username.trim(), password);
 			setToken(res.token);
-			// Dashboard arrives in Task 12; confirm token was stored.
-			success = 'Signed in. Token stored in localStorage.';
+			await goto('/dashboard');
 		} catch (err) {
 			error = err instanceof ApiClientError ? err.message : 'Login failed';
 		} finally {
@@ -76,9 +73,6 @@
 			</label>
 			{#if error && apiOk}
 				<p class="error" role="alert">{error}</p>
-			{/if}
-			{#if success}
-				<p class="success" role="status">{success}</p>
 			{/if}
 			<button type="submit" disabled={busy || !apiOk}>{busy ? 'Signing in…' : 'Sign in'}</button>
 		</form>
@@ -134,11 +128,6 @@
 	}
 	.error {
 		color: #b42318;
-		margin: 0;
-		font-size: 0.9rem;
-	}
-	.success {
-		color: #027a48;
 		margin: 0;
 		font-size: 0.9rem;
 	}
