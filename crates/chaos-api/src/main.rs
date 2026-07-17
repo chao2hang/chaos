@@ -2,6 +2,7 @@
 
 mod auth;
 mod error;
+mod health;
 mod state;
 
 use std::net::SocketAddr;
@@ -11,6 +12,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use auth::{auth_router, load_or_create_jwt_secret};
+use health::health_router;
 use state::AppState;
 
 #[tokio::main]
@@ -32,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api/v1/auth", auth_router())
+        .nest("/api/v1", health_router())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
