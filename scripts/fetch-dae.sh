@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Fetch the pinned dae release binary into third_party/dae/current/dae
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION_FILE="$ROOT/third_party/dae/VERSION"
+DEST_DIR="$ROOT/third_party/dae/current"
+DEST_BIN="$DEST_DIR/dae"
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "error: missing $VERSION_FILE" >&2
+  exit 1
+fi
+
+VER="$(tr -d '[:space:]' < "$VERSION_FILE")"
+if [[ -z "$VER" ]]; then
+  echo "error: empty version in $VERSION_FILE" >&2
+  exit 1
+fi
+
+# Map uname -m to dae release asset arch tokens.
+host_arch="$(uname -m)"
+case "$host_arch" in
+  x86_64|amd64) arch="x86_64" ;;
+  aarch64|arm64) arch="arm64" ;;
+  armv7l|armv7) arch="armv7" ;;
+  armv6l|armv6) arch="armv6" ;;
+  i386|i686|x86) arch="x86_32" ;;
+  riscv64) arch="riscv64" ;;
+  loongarch64) arch="loongarch64" ;;
+  s390x) arch="s390x" ;;
+  ppc64|powerpc64) arch="powerpc64" ;;
+  ppc64le|powerpc64le) arch="powerpc64le" ;;
+  *)
+    echo "error: unsupported architecture: $host_arch" >&2
+    exit 1
+    ;;
+esac
+
+asset="dae-linux-${arch}.zip"
+base_url="https://github.com/daeuniverse/dae/releases/download/${VER}"
+url="${base_url}/${asset}"
+dgst_url="${url}.dgst"
+
+tmpdir="$(mktemp -d)"
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT
+
+zip_path="${tmpdir}/${asset}"
+dgst_path="${tmpdir}/${asset}.dgst"
+extract_dir="${tmpdir}/extract"
+
+echo "Fetching dae ${VER} (${arch})..."
+curl -fsSL -o "$zip_path" "$url"
+curl -fsSL -o "$dgst_path" "$dgst_url"
+
+# dgst format: "<hex>  <filename>  <algo>"
+expected_sha="$(awk '$3 == "sha256" { print $1; exit }' "$dgst_path")"
+if [[ -z "$expected_sha" ]]; then
+  echo "error: no sha256 entry in $dgst_url" >&2
+  exit 1
+fi
+
+actual_sha="$(sha256sum "$zip_path" | awk '{ print $1 }')"
+if [[ "$actual_sha" != "$expected_sha" ]]; then
+  echo "error: sha256 mismatch for ${asset}" >&2
+  echo "  expected: $expected_sha" >&2
+  echo "  actual:   $actual_sha" >&2
+  exit 1
+fi
+echo "sha256 ok: $actual_sha"
+
+mkdir -p "$extract_dir"
+unzip -q -o "$zip_path" -d "$extract_dir"
+
+# Binary is named dae-linux-<arch> inside the zip.
+src_bin="${extract_dir}/dae-linux-${arch}"
+if [[ ! -f "$src_bin" ]]; then
+  # Fallback: first executable-looking file named dae*
+  src_bin="$(find "$extract_dir" -maxdepth 1 -type f -name 'dae*' ! -name '*.service' ! -name '*.dae' | head -n 1 || true)"
+fi
+if [[ -z "${src_bin:-}" || ! -f "$src_bin" ]]; then
+  echo "error: dae binary not found in ${asset}" >&2
+  ls -la "$extract_dir" >&2 || true
+  exit 1
+fi
+
+mkdir -p "$DEST_DIR"
+install -m 755 "$src_bin" "$DEST_BIN"
+
+echo "Installed: $DEST_BIN"
+"$DEST_BIN" --version 2>/dev/null || "$DEST_BIN" --help 2>&1 | head -n 5 || true
