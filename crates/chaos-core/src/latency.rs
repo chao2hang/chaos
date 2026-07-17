@@ -19,22 +19,30 @@ pub struct LatencySample {
 
 /// TCP connect to `host:port` (or bare host — invalid without port).
 /// Returns elapsed milliseconds on success, or an error message.
+///
+/// DNS resolve and TCP connect share one wall-clock budget so a stuck
+/// resolver cannot exceed `connect_timeout` per node.
 pub async fn probe_tcp(addr: &str, connect_timeout: Duration) -> Result<u32, String> {
     let addr = addr.trim();
     if addr.is_empty() {
         return Err("empty address".to_string());
     }
 
-    let socket_addr = resolve_addr(addr).await?;
-
     let start = Instant::now();
-    match timeout(connect_timeout, TcpStream::connect(socket_addr)).await {
+    match timeout(connect_timeout, async {
+        let socket_addr = resolve_addr(addr).await?;
+        TcpStream::connect(socket_addr)
+            .await
+            .map_err(|e| format!("connect failed: {e}"))
+    })
+    .await
+    {
         Ok(Ok(_stream)) => {
             let ms = start.elapsed().as_millis();
             let ms = u32::try_from(ms).unwrap_or(u32::MAX);
             Ok(ms)
         }
-        Ok(Err(e)) => Err(format!("connect failed: {e}")),
+        Ok(Err(e)) => Err(e),
         Err(_) => Err(format!("timeout after {}ms", connect_timeout.as_millis())),
     }
 }
