@@ -1,0 +1,28 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules
+apps/web/build
+apps/web/.svelte-kit
+apps/web/dist
+.pnpm-store
+
+# Data & secrets
+/data
+.env
+.env.*
+!.env.example
+
+# Vendored large binaries (fetched by script)
+/third_party/dae/**/dae
+/third_party/dae/**/*.zip
+
+# Logs & OS
+logs
+*.log
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
