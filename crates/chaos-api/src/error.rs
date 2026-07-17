@@ -33,6 +33,10 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, code, message)
     }
 
+    pub fn not_found(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, code, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
     }

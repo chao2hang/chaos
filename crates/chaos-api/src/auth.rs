@@ -30,9 +30,8 @@ pub struct Claims {
 }
 
 /// Authenticated user extracted from `Authorization: Bearer <jwt>`.
-/// Ready for protected routes (Task 5+).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // reserved for per-user scoping later
 pub struct AuthUser {
     pub user_id: String,
     pub username: String,
@@ -205,7 +204,6 @@ async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, A
     }))
 }
 
-#[allow(dead_code)]
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
