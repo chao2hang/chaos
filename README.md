@@ -83,8 +83,14 @@ They can run side by side. chaos does **not** use dae-wing GraphQL.
 ## Apply / dae notes
 
 - **Latency tests** are TCP connect probes; dae does not need to be running.
-- **Apply** writes a minimal dae config and runs `dae run -c <work_dir>` (MVP restart strategy). Real transparent proxy needs **capabilities/root** and a suitable kernel; without privileges apply may fail with a clear error.
-- For UI-only testing of apply spawn without eBPF, point `CHAOS_DAE_BIN` at `crates/chaos-dae/tests/fixtures/fake-dae.sh`.
+- **Apply** writes `data/dae/config.dae` (mode **0600** — dae rejects world-readable configs) and runs  
+  `dae run -c <config.dae> --disable-pidfile [--disable-sudo]` (MVP restart strategy).
+- Real transparent proxy needs **root / CAP_NET_ADMIN / eBPF** and a suitable kernel. Without privileges Apply returns `dae_permission_denied` or `dae_start_failed` with a log excerpt (not a generic 500).
+- By default **sudo is disabled** so the API never hangs on a password prompt. Options:
+  - run `chaos-api` as root, or
+  - set `CHAOS_DAE_ALLOW_SUDO=1` with **passwordless** sudo for the dae binary, or
+  - use `CHAOS_DAE_BIN=crates/chaos-dae/tests/fixtures/fake-dae.sh` for UI-only apply tests.
+- Inspect last run: `data/dae/dae.log`.
 
 ## i18n
 

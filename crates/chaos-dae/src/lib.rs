@@ -68,6 +68,9 @@ impl DaeManager {
     }
 
     /// Write `content` to `{work_dir}/config.dae`, creating `work_dir` if needed.
+    ///
+    /// Mode is forced to `0600`: dae rejects configs that are group/world
+    /// readable or writable (e.g. default umask `0644`).
     pub async fn write_config(&self, content: &str) -> Result<PathBuf> {
         tokio::fs::create_dir_all(&self.work_dir)
             .await
@@ -76,6 +79,13 @@ impl DaeManager {
         tokio::fs::write(&path, content)
             .await
             .with_context(|| format!("write config {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms)
+                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+        }
         Ok(path)
     }
 
@@ -136,6 +146,13 @@ impl DaeManager {
             bail!("config file missing: {}", config.display());
         }
 
+        // Re-assert mode in case an older write left 0644 on disk.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600));
+        }
+
         let log_path = self.work_dir.join("dae.log");
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("create log {}", log_path.display()))?;
@@ -143,12 +160,22 @@ impl DaeManager {
             .try_clone()
             .with_context(|| format!("clone log handle {}", log_path.display()))?;
 
-        let mut child = Command::new(&self.bin)
-            .arg("run")
+        // dae manages its own pidfile under /var/run by default; we track work_dir/dae.pid.
+        // Default: --disable-sudo so the API never hangs on a password prompt.
+        // Set CHAOS_DAE_ALLOW_SUDO=1 if passwordless sudo is configured for dae.
+        let allow_sudo = std::env::var("CHAOS_DAE_ALLOW_SUDO")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("run")
             .arg("-c")
             .arg(&config)
-            // dae manages its own pidfile under /var/run by default; we track work_dir/dae.pid.
-            .arg("--disable-pidfile")
+            .arg("--disable-pidfile");
+        if !allow_sudo {
+            cmd.arg("--disable-sudo");
+        }
+        let mut child = cmd
             .current_dir(&self.work_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
@@ -168,7 +195,8 @@ impl DaeManager {
             .with_context(|| format!("write pid file {}", self.pid_path().display()))?;
 
         // Grace period: real dae may exit immediately on bad config/permissions.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Slightly longer so permission/config fatals flush to dae.log.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Reap if already exited (avoids zombie making kill -0 look "alive").
         let early_exit = match child.try_wait() {

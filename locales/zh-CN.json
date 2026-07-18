@@ -185,6 +185,7 @@
   "error.subscription_fetch_failed": "拉取订阅失败",
   "error.dae_binary_missing": "未找到 dae 二进制；请设置 CHAOS_DAE_BIN 或运行 scripts/fetch-dae.sh",
   "error.dae_permission_denied": "运行 dae 权限不足（可能需要 capabilities/root）",
+  "error.dae_start_failed": "dae 启动失败 — 请检查配置与权限",
   "error.internal_error": "服务器内部错误",
   "error.request_failed": "请求失败",
   "error.invalid_response": "API 响应无效",

@@ -104,24 +104,7 @@ async fn apply_runtime(
         .write_config(&content)
         .await
         .map_err(|e| ApiError::internal_logged(locale, format!("write config: {e}")))?;
-    mgr.reload().await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("missing") || msg.contains("not a file") {
-            ApiError::coded(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "dae_binary_missing",
-                locale,
-            )
-        } else if msg.contains("Permission") || msg.contains("permission") {
-            ApiError::coded(
-                axum::http::StatusCode::FORBIDDEN,
-                "dae_permission_denied",
-                locale,
-            )
-        } else {
-            ApiError::internal_logged(locale, format!("dae reload: {msg}"))
-        }
-    })?;
+    mgr.reload().await.map_err(|e| map_dae_reload_error(locale, &e.to_string()))?;
     Ok(Json(ApplyResponse {
         ok: true,
         running: mgr.is_running(),
@@ -149,6 +132,49 @@ async fn stop_runtime(
         work_dir: work_dir.display().to_string(),
         config_exists: work_dir.join("config.dae").is_file(),
     }))
+}
+
+fn map_dae_reload_error(locale: Locale, msg: &str) -> ApiError {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("missing") || lower.contains("not a file") {
+        return ApiError::coded(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "dae_binary_missing",
+            locale,
+        );
+    }
+    if lower.contains("permission")
+        || lower.contains("operation not permitted")
+        || lower.contains("capabilities")
+        || lower.contains("cap_net")
+        || lower.contains("requires the file is not writable")
+        || lower.contains("too open")
+    {
+        // Prefer concrete dae diagnostics over a generic localized line when present.
+        let detail = truncate_detail(msg, 800);
+        return ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "dae_permission_denied",
+            detail,
+        );
+    }
+    // Surface start/log excerpt so the UI can show why dae died.
+    let detail = truncate_detail(msg, 1200);
+    ApiError::new(
+        axum::http::StatusCode::BAD_GATEWAY,
+        "dae_start_failed",
+        detail,
+    )
+}
+
+fn truncate_detail(msg: &str, max: usize) -> String {
+    let cleaned = msg.trim();
+    if cleaned.chars().count() <= max {
+        return cleaned.to_string();
+    }
+    let mut out: String = cleaned.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 async fn load_config_plane(state: &AppState) -> Result<ConfigPlane, ApiError> {

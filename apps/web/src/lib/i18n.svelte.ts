@@ -112,6 +112,14 @@ export function t(key: string, params?: Record<string, string | number>): string
 /** Prefer localized catalog for API error codes; else server message. */
 export function apiErrorText(err: { code?: string; message?: string } | null | undefined): string {
 	if (!err) return t('error.unknown');
+	// Operational failures (dae start / log excerpts) keep the server detail.
+	if (
+		err.message &&
+		err.code &&
+		(err.code.startsWith('dae_') || err.message.includes('\n') || err.message.length > 96)
+	) {
+		return err.message;
+	}
 	if (err.code) {
 		const key = `error.${err.code}`;
 		const localized = lookup(i18n.locale, key);

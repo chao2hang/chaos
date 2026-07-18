@@ -185,6 +185,7 @@
   "error.subscription_fetch_failed": "Failed to fetch subscription",
   "error.dae_binary_missing": "dae binary not found; set CHAOS_DAE_BIN or run scripts/fetch-dae.sh",
   "error.dae_permission_denied": "Permission denied running dae (capabilities/root may be required)",
+  "error.dae_start_failed": "dae failed to start — check config and privileges",
   "error.internal_error": "Internal server error",
   "error.request_failed": "Request failed",
   "error.invalid_response": "Invalid response from API",
