@@ -23,8 +23,7 @@
 			}
 			ready = true;
 		} catch (e) {
-			error =
-				e instanceof ApiClientError ? apiErrorText(e) : t('auth.login.apiDown');
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('auth.login.apiDown');
 			ready = true;
 		}
 	});
@@ -49,7 +48,7 @@
 	<div class="auth-card panel">
 		<div class="auth-top">
 			<span class="eyebrow">chaos · control plane</span>
-			<LocaleSwitcher />
+			<div class="lang-wrap"><LocaleSwitcher /></div>
 		</div>
 		<h1 class="page-title">{t('auth.login.title')}</h1>
 		<p class="page-sub">{t('auth.login.subtitle')}</p>
@@ -103,17 +102,21 @@
 	.auth-top {
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
+		align-items: flex-start;
 		gap: 1rem;
-		margin-bottom: 0.25rem;
+		margin-bottom: 0.35rem;
+	}
+	.lang-wrap {
+		width: 8.5rem;
+		flex-shrink: 0;
 	}
 	.footer {
 		margin: 1.25rem 0 0;
 		font-size: 0.9rem;
 	}
-	form button {
+	form :global(button) {
 		margin-top: 0.35rem;
 		width: 100%;
-		padding: 0.65rem 0.9rem;
+		padding: 0.7rem 0.9rem;
 	}
 </style>

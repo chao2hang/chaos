@@ -18,8 +18,8 @@
 
 <style>
 	.lang {
-		display: inline-flex;
-		align-items: center;
+		display: block;
+		width: 100%;
 	}
 	.sr {
 		position: absolute;
@@ -33,12 +33,13 @@
 		border: 0;
 	}
 	select {
+		width: 100%;
 		font: inherit;
 		font-size: 0.8rem;
 		font-family: var(--font-mono);
-		padding: 0.3rem 0.5rem;
+		padding: 0.45rem 0.55rem;
 		border: 1px solid var(--line);
-		border-radius: var(--r-sm);
+		border-radius: var(--r-md);
 		background: var(--bg-input);
 		color: var(--ink-muted);
 		cursor: pointer;

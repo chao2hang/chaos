@@ -112,15 +112,42 @@
 	<p class="ok" role="status">{message}</p>
 {/if}
 
+<section class="kpi-row">
+	<div class="card kpi-card">
+		<div class="kpi-label">{t('dashboard.field.running')}</div>
+		<div class="kpi" class:lat-good={runtime?.running} class:lat-bad={runtime && !runtime.running}>
+			{runtime ? (runtime.running ? 'ON' : 'OFF') : '—'}
+		</div>
+	</div>
+	<div class="card kpi-card">
+		<div class="kpi-label">{t('dashboard.latencySummary')}</div>
+		<div class="kpi">
+			{latencySummary.alive}<span class="kpi-suffix">/{latencySummary.total}</span>
+		</div>
+	</div>
+	<div class="card kpi-card">
+		<div class="kpi-label">API</div>
+		<div class="kpi" class:lat-good={healthInfo?.ok} class:lat-bad={healthInfo && !healthInfo.ok}>
+			{healthInfo ? (healthInfo.ok ? 'OK' : 'DOWN') : '—'}
+		</div>
+	</div>
+	<div class="card kpi-card">
+		<div class="kpi-label">dae bin</div>
+		<div
+			class="kpi small"
+			class:lat-good={healthInfo?.dae_binary_ok}
+			class:lat-bad={healthInfo && !healthInfo.dae_binary_ok}
+		>
+			{healthInfo ? (healthInfo.dae_binary_ok ? 'OK' : 'MISS') : '—'}
+		</div>
+	</div>
+</section>
+
 <section class="cards">
 	<div class="card">
 		<h2>{t('dashboard.apiHealth')}</h2>
 		{#if healthInfo}
 			<ul>
-				<li>
-					{t('dashboard.field.ok')}:
-					<strong class={healthInfo.ok ? 'lat-good' : 'lat-bad'}>{String(healthInfo.ok)}</strong>
-				</li>
 				<li>
 					{t('dashboard.field.apiVersion')}:
 					<span class="mono">{healthInfo.api_version}</span>
@@ -133,12 +160,6 @@
 						<span class="muted">{t('common.none')}</span>
 					{/if}
 				</li>
-				<li>
-					{t('dashboard.field.daeBinaryOk')}:
-					<strong class={healthInfo.dae_binary_ok ? 'lat-good' : 'lat-bad'}
-						>{String(healthInfo.dae_binary_ok)}</strong
-					>
-				</li>
 			</ul>
 		{:else}
 			<p class="muted">{t('dashboard.loading')}</p>
@@ -150,20 +171,10 @@
 		{#if runtime}
 			<ul>
 				<li>
-					{t('dashboard.field.running')}:
-					<strong class={runtime.running ? 'lat-good' : 'lat-bad'}
-						>{String(runtime.running)}</strong
-					>
-				</li>
-				<li>
 					{t('dashboard.field.configExists')}:
 					<span class="mono">{String(runtime.config_exists)}</span>
 				</li>
 				<li>{t('dashboard.field.workDir')}: <code>{runtime.work_dir}</code></li>
-				<li>
-					{t('dashboard.field.daeBinaryOk')}:
-					<span class="mono">{String(runtime.dae_binary_ok)}</span>
-				</li>
 			</ul>
 		{:else}
 			<p class="muted">{t('dashboard.loading')}</p>
@@ -214,6 +225,26 @@
 </div>
 
 <style>
+	.kpi-row {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: var(--space-sm);
+		margin: var(--space-md) 0;
+	}
+	.kpi-card {
+		padding: var(--space-md);
+	}
+	.kpi-card:hover {
+		transform: none;
+	}
+	.kpi-suffix {
+		font-size: 1rem;
+		color: var(--ink-dim);
+		font-weight: 500;
+	}
+	.kpi.small {
+		font-size: 1.35rem;
+	}
 	.mono {
 		font-family: var(--font-mono);
 		font-size: 0.9em;
@@ -221,7 +252,7 @@
 	}
 	.summary-line {
 		margin: 0;
-		font-size: 0.85rem;
+		font-size: 0.82rem;
 		line-height: 1.5;
 		color: var(--ink);
 	}
@@ -234,7 +265,7 @@
 		display: flex;
 		justify-content: space-between;
 		gap: 0.5rem;
-		font-size: 0.85rem;
+		font-size: 0.82rem;
 		padding: 0.3rem 0;
 		border-bottom: 1px solid var(--line);
 	}
@@ -243,6 +274,12 @@
 	}
 	.id {
 		color: var(--ink-dim);
-		font-size: 0.8rem;
+		font-size: 0.78rem;
+	}
+
+	@media (max-width: 900px) {
+		.kpi-row {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 </style>
