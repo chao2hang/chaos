@@ -227,6 +227,16 @@ export function stopRuntime() {
 	return api<RuntimeStatus>('/api/v1/runtime/stop', { method: 'POST' });
 }
 
+export type GroupMemberDto = {
+	node_id: string;
+	weight: number;
+	sort_order: number;
+	name: string | null;
+	tag: string | null;
+	protocol: string | null;
+	address: string | null;
+};
+
 export type GroupDto = {
 	id: string;
 	name: string;
@@ -234,6 +244,7 @@ export type GroupDto = {
 	filter_tag: string | null;
 	sort_order: number;
 	created_at: string;
+	members: GroupMemberDto[];
 };
 
 export type RoutingRuleDto = {
@@ -294,6 +305,37 @@ export function deleteGroup(id: string) {
 	return api<{ deleted: boolean }>(`/api/v1/groups/${encodeURIComponent(id)}`, {
 		method: 'DELETE'
 	});
+}
+
+export function replaceGroupMembers(
+	id: string,
+	members: { node_id: string; weight?: number }[]
+) {
+	return api<GroupDto>(`/api/v1/groups/${encodeURIComponent(id)}/members`, {
+		method: 'PUT',
+		body: JSON.stringify({ members })
+	});
+}
+
+export function addGroupMember(id: string, node_id: string, weight = 1) {
+	return api<GroupDto>(`/api/v1/groups/${encodeURIComponent(id)}/members`, {
+		method: 'POST',
+		body: JSON.stringify({ node_id, weight })
+	});
+}
+
+export function removeGroupMember(id: string, node_id: string) {
+	return api<{ deleted: boolean }>(
+		`/api/v1/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(node_id)}`,
+		{ method: 'DELETE' }
+	);
+}
+
+export function setGroupMemberWeight(id: string, node_id: string, weight: number) {
+	return api<{ node_id: string; weight: number }>(
+		`/api/v1/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(node_id)}`,
+		{ method: 'PATCH', body: JSON.stringify({ weight }) }
+	);
 }
 
 export function getRouting() {

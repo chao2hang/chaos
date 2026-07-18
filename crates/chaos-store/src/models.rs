@@ -53,6 +53,14 @@ pub struct Group {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GroupMember {
+    pub group_id: String,
+    pub node_id: String,
+    pub weight: i64,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RoutingRule {
     pub id: String,
     pub expression: String,

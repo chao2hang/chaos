@@ -8,14 +8,16 @@ pub mod subscriptions;
 pub mod users;
 
 pub use config_plane::{
-    delete_group, ensure_config_defaults, get_meta, insert_group, list_dns_rules, list_dns_upstreams,
-    list_groups, list_routing_rules, replace_dns, replace_routing_rules, set_meta, update_group,
-    META_DNS_FALLBACK, META_ROUTING_FALLBACK,
+    add_group_member, delete_group, ensure_config_defaults, get_meta, insert_group,
+    list_all_group_members, list_dns_rules, list_dns_upstreams, list_group_members, list_groups,
+    list_routing_rules, remove_group_member, replace_dns, replace_group_members,
+    replace_routing_rules, set_member_weight, set_meta, update_group, META_DNS_FALLBACK,
+    META_ROUTING_FALLBACK,
 };
 pub use latency::{list_latency_results, list_latency_results_for_ids, upsert_latency_result};
 pub use models::{
-    DnsRule, DnsUpstream, Group, LatencyResult, Node, RoutingRule, Subscription, User, now_rfc3339,
-    parse_rfc3339,
+    DnsRule, DnsUpstream, Group, GroupMember, LatencyResult, Node, RoutingRule, Subscription, User,
+    now_rfc3339, parse_rfc3339,
 };
 pub use nodes::{delete_node, get_node, insert_node, insert_node_with_id, list_nodes};
 pub use subscriptions::{

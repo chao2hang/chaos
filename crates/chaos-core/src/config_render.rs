@@ -11,11 +11,21 @@ pub struct NodeForConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMemberForConfig {
+    /// Original node id from store; mapped to rendered dae key at render time.
+    pub node_id: String,
+    pub weight: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupForConfig {
     pub name: String,
     pub policy: String,
-    /// When set, emits `filter: subtag(tag)` style filter.
+    /// When set, emits `filter: subtag(tag)` style filter (legacy).
     pub filter_tag: Option<String>,
+    /// Explicit members: when non-empty, emit `filter: name(a, b)` and
+    /// `policy: fixed(a, b)` with optional weights via fixed(...) when policy is fixed/random.
+    pub members: Vec<GroupMemberForConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +65,7 @@ impl Default for ConfigPlane {
                 name: "proxy".into(),
                 policy: "min_moving_avg".into(),
                 filter_tag: None,
+                members: vec![],
             }],
             routing_rules: vec![RoutingRuleForConfig {
                 expression: "pname(NetworkManager, systemd-resolved)".into(),
@@ -147,6 +158,16 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
         out.push_str("'\n");
     }
 
+    // Map node id -> rendered key for group membership filters.
+    let mut id_to_key: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    {
+        let mut used_keys2: HashSet<String> = HashSet::new();
+        for n in nodes {
+            let key = unique_node_key(&n.name, &n.id, &mut used_keys2);
+            id_to_key.insert(n.id.clone(), key);
+        }
+    }
+
     out.push_str("}\n\ngroup {\n");
     let groups = if plane.groups.is_empty() {
         ConfigPlane::default().groups
@@ -161,14 +182,61 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
         out.push_str("  ");
         out.push_str(&gname);
         out.push_str(" {\n");
-        if let Some(tag) = g.filter_tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-            out.push_str("    filter: subtag(");
-            out.push_str(tag);
+
+        // Prefer explicit members; fall back to subtag filter.
+        let member_keys: Vec<(String, u32)> = g
+            .members
+            .iter()
+            .filter_map(|m| {
+                id_to_key
+                    .get(&m.node_id)
+                    .cloned()
+                    .map(|k| (k, m.weight.max(1)))
+            })
+            .collect();
+
+        if !member_keys.is_empty() {
+            out.push_str("    filter: name(");
+            for (i, (k, _)) in member_keys.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(k);
+            }
             out.push_str(")\n");
+            let policy = g.policy.trim();
+            // Weighted fixed/random: repeat node keys by weight → fixed(a, a, b).
+            if policy == "fixed" || policy == "random" {
+                out.push_str("    policy: ");
+                out.push_str(policy);
+                out.push('(');
+                let mut first = true;
+                for (k, w) in &member_keys {
+                    for _ in 0..*w {
+                        if !first {
+                            out.push_str(", ");
+                        }
+                        first = false;
+                        out.push_str(k);
+                    }
+                }
+                out.push_str(")\n");
+            } else {
+                out.push_str("    policy: ");
+                out.push_str(policy);
+                out.push('\n');
+            }
+        } else {
+            if let Some(tag) = g.filter_tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                out.push_str("    filter: subtag(");
+                out.push_str(tag);
+                out.push_str(")\n");
+            }
+            out.push_str("    policy: ");
+            out.push_str(g.policy.trim());
+            out.push('\n');
         }
-        out.push_str("    policy: ");
-        out.push_str(g.policy.trim());
-        out.push_str("\n  }\n");
+        out.push_str("  }\n");
     }
     out.push_str("}\n\nrouting {\n");
     for r in plane.routing_rules.iter().filter(|r| r.enabled) {
@@ -314,11 +382,20 @@ mod tests {
 
     #[test]
     fn custom_plane_emits_group_filter_and_rules() {
+        let nodes = [NodeForConfig {
+            id: "n1".into(),
+            name: "hk".into(),
+            link: "trojan://x@1.1.1.1:443".into(),
+        }];
         let plane = ConfigPlane {
             groups: vec![GroupForConfig {
                 name: "home".into(),
                 policy: "fixed".into(),
-                filter_tag: Some("hk".into()),
+                filter_tag: None,
+                members: vec![GroupMemberForConfig {
+                    node_id: "n1".into(),
+                    weight: 2,
+                }],
             }],
             routing_rules: vec![RoutingRuleForConfig {
                 expression: "domain(example.com)".into(),
@@ -337,10 +414,10 @@ mod tests {
             }],
             dns_fallback: "cloudflare".into(),
         };
-        let s = render_dae_config(&[], &plane);
+        let s = render_dae_config(&nodes, &plane);
         assert!(s.contains("home {"));
-        assert!(s.contains("filter: subtag(hk)"));
-        assert!(s.contains("policy: fixed"));
+        assert!(s.contains("filter: name(hk)"));
+        assert!(s.contains("policy: fixed(hk, hk)"));
         assert!(s.contains("domain(example.com) -> home"));
         assert!(s.contains("fallback: direct"));
         assert!(s.contains("cloudflare: 'udp://1.1.1.1:53'"));

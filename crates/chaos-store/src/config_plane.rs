@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::models::{DnsRule, DnsUpstream, Group, RoutingRule, now_rfc3339};
+use crate::models::{DnsRule, DnsUpstream, Group, GroupMember, RoutingRule, now_rfc3339};
 
 pub const META_ROUTING_FALLBACK: &str = "routing.fallback";
 pub const META_DNS_FALLBACK: &str = "dns.fallback";
@@ -105,6 +105,131 @@ pub async fn delete_group(pool: &SqlitePool, id: &str) -> Result<bool> {
         .execute(pool)
         .await
         .context("delete_group")?;
+    Ok(res.rows_affected() > 0)
+}
+
+// --- group members (proxy nodes + weight) ---
+
+pub async fn list_group_members(pool: &SqlitePool, group_id: &str) -> Result<Vec<GroupMember>> {
+    sqlx::query_as::<_, GroupMember>(
+        "SELECT group_id, node_id, weight, sort_order
+         FROM group_members WHERE group_id = ?
+         ORDER BY sort_order ASC, node_id ASC",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .context("list_group_members")
+}
+
+pub async fn list_all_group_members(pool: &SqlitePool) -> Result<Vec<GroupMember>> {
+    sqlx::query_as::<_, GroupMember>(
+        "SELECT group_id, node_id, weight, sort_order
+         FROM group_members
+         ORDER BY group_id ASC, sort_order ASC, node_id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("list_all_group_members")
+}
+
+/// Replace membership of a group. `members` is (node_id, weight, sort_order).
+pub async fn replace_group_members(
+    pool: &SqlitePool,
+    group_id: &str,
+    members: &[(String, i64, i64)],
+) -> Result<Vec<GroupMember>> {
+    let mut tx = pool.begin().await.context("begin replace members")?;
+    sqlx::query("DELETE FROM group_members WHERE group_id = ?")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await
+        .context("clear group_members")?;
+    let mut out = Vec::with_capacity(members.len());
+    for (node_id, weight, sort_order) in members {
+        let w = (*weight).max(1);
+        sqlx::query(
+            "INSERT INTO group_members (group_id, node_id, weight, sort_order)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(group_id)
+        .bind(node_id)
+        .bind(w)
+        .bind(sort_order)
+        .execute(&mut *tx)
+        .await
+        .context("insert group_member")?;
+        out.push(GroupMember {
+            group_id: group_id.to_string(),
+            node_id: node_id.clone(),
+            weight: w,
+            sort_order: *sort_order,
+        });
+    }
+    tx.commit().await.context("commit replace members")?;
+    Ok(out)
+}
+
+pub async fn add_group_member(
+    pool: &SqlitePool,
+    group_id: &str,
+    node_id: &str,
+    weight: i64,
+) -> Result<GroupMember> {
+    let w = weight.max(1);
+    let (max_order,): (Option<i64>,) = sqlx::query_as(
+        "SELECT MAX(sort_order) FROM group_members WHERE group_id = ?",
+    )
+    .bind(group_id)
+    .fetch_one(pool)
+    .await
+    .context("max sort_order")?;
+    let sort_order = max_order.unwrap_or(-1) + 1;
+    sqlx::query(
+        "INSERT INTO group_members (group_id, node_id, weight, sort_order)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(group_id, node_id) DO UPDATE SET weight = excluded.weight",
+    )
+    .bind(group_id)
+    .bind(node_id)
+    .bind(w)
+    .bind(sort_order)
+    .execute(pool)
+    .await
+    .context("add_group_member")?;
+    Ok(GroupMember {
+        group_id: group_id.to_string(),
+        node_id: node_id.to_string(),
+        weight: w,
+        sort_order,
+    })
+}
+
+pub async fn remove_group_member(pool: &SqlitePool, group_id: &str, node_id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM group_members WHERE group_id = ? AND node_id = ?")
+        .bind(group_id)
+        .bind(node_id)
+        .execute(pool)
+        .await
+        .context("remove_group_member")?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn set_member_weight(
+    pool: &SqlitePool,
+    group_id: &str,
+    node_id: &str,
+    weight: i64,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE group_members SET weight = ? WHERE group_id = ? AND node_id = ?",
+    )
+    .bind(weight.max(1))
+    .bind(group_id)
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .context("set_member_weight")?;
     Ok(res.rows_affected() > 0)
 }
 

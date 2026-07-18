@@ -140,8 +140,8 @@ mod tests {
 
     #[tokio::test]
     async fn probe_tcp_timeout_unreachable() {
-        // RFC 5737 TEST-NET-1: typically unroutable / filtered; use short timeout.
-        let err = probe_tcp("192.0.2.1:1", Duration::from_millis(200))
+        // NXDOMAIN / unresolvable host — must fail (TEST-NET can be hijacked by local proxies).
+        let err = probe_tcp("this-host-should-not-exist.invalid:1", Duration::from_millis(400))
             .await
             .unwrap_err();
         assert!(!err.is_empty());

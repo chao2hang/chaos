@@ -28,6 +28,7 @@
 
 	const links = $derived([
 		{ href: '/dashboard', label: t('nav.dashboard'), match: '/dashboard' },
+		{ href: '/orchestrate', label: t('nav.orchestrate'), match: '/orchestrate' },
 		{ href: '/nodes', label: t('nav.nodes'), match: '/nodes' },
 		{ href: '/subscriptions', label: t('nav.subscriptions'), match: '/subscriptions' },
 		{ href: '/groups', label: t('nav.groups'), match: '/groups' },

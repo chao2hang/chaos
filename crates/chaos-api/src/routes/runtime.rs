@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chaos_core::config_render::{
     render_dae_config, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig, GroupForConfig,
-    NodeForConfig, RoutingRuleForConfig,
+    GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
 };
 use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager};
 use chaos_i18n::Locale;
@@ -179,6 +179,19 @@ fn truncate_detail(msg: &str, max: usize) -> String {
 
 async fn load_config_plane(state: &AppState) -> Result<ConfigPlane, ApiError> {
     let groups = chaos_store::list_groups(&state.pool).await?;
+    let all_members = chaos_store::list_all_group_members(&state.pool).await?;
+    let mut members_by_group: std::collections::HashMap<String, Vec<GroupMemberForConfig>> =
+        std::collections::HashMap::new();
+    for m in all_members {
+        members_by_group
+            .entry(m.group_id)
+            .or_default()
+            .push(GroupMemberForConfig {
+                node_id: m.node_id,
+                weight: u32::try_from(m.weight.max(1)).unwrap_or(1),
+            });
+    }
+
     let routing_rules = chaos_store::list_routing_rules(&state.pool).await?;
     let routing_fallback = chaos_store::get_meta(&state.pool, chaos_store::META_ROUTING_FALLBACK)
         .await?
@@ -193,6 +206,7 @@ async fn load_config_plane(state: &AppState) -> Result<ConfigPlane, ApiError> {
         groups: groups
             .into_iter()
             .map(|g| GroupForConfig {
+                members: members_by_group.remove(&g.id).unwrap_or_default(),
                 name: g.name,
                 policy: g.policy,
                 filter_tag: g.filter_tag,
