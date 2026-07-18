@@ -97,6 +97,7 @@ fn random_hex_secret(num_bytes: usize) -> String {
     hex::encode(buf)
 }
 
+#[cfg(test)]
 pub fn hash_password(password: &str) -> Result<String, ApiError> {
     hash_password_locale(password, Locale::En)
 }
@@ -110,6 +111,7 @@ fn hash_password_locale(password: &str, locale: Locale) -> Result<String, ApiErr
         .map_err(|e| ApiError::internal_logged(locale, format!("password hash failed: {e}")))
 }
 
+#[cfg(test)]
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, ApiError> {
     verify_password_locale(password, password_hash, Locale::En)
 }
@@ -126,6 +128,7 @@ fn verify_password_locale(
         .is_ok())
 }
 
+#[cfg(test)]
 pub fn issue_token(user_id: &str, username: &str, secret: &str) -> Result<String, ApiError> {
     issue_token_locale(user_id, username, secret, Locale::En)
 }
@@ -150,6 +153,7 @@ fn issue_token_locale(
     .map_err(|e| ApiError::internal_logged(locale, format!("jwt encode failed: {e}")))
 }
 
+#[cfg(test)]
 pub fn decode_token(token: &str, secret: &str) -> Result<Claims, ApiError> {
     decode_token_locale(token, secret, Locale::En)
 }

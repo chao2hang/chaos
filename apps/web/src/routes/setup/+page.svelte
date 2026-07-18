@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { authStatus, setupAdmin, setToken, ApiClientError } from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 
 	let username = $state('admin');

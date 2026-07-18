@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { SUPPORTED_LOCALES, i18n, setLocale, t, type LocaleId } from '$lib/i18n';
+	import { SUPPORTED_LOCALES, i18n, setLocale, t, type LocaleId } from '$lib/i18n.svelte';
 
 	function onChange(e: Event) {
 		const v = (e.currentTarget as HTMLSelectElement).value;

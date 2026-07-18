@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { authStatus, ApiClientError } from '$lib/api';
-	import { t } from '$lib/i18n';
+	import { t } from '$lib/i18n.svelte';
 
 	let message = $state('');
 

@@ -1,6 +1,6 @@
 /** Minimal browser API client for chaos-api (Bearer from localStorage.token). */
 
-import { getLocale } from '$lib/i18n';
+import { getLocale } from '$lib/i18n.svelte';
 
 export type ApiErrorBody = {
 	error: {

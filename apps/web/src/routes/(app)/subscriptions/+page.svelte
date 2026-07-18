@@ -8,7 +8,7 @@
 		ApiClientError,
 		type SubscriptionDto
 	} from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 
 	let subs = $state<SubscriptionDto[]>([]);
 	let url = $state('');

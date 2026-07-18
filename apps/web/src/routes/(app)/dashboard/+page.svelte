@@ -13,7 +13,7 @@
 		type LatencyDto
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);

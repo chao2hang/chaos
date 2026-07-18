@@ -8,7 +8,7 @@
 		ApiClientError,
 		type GroupDto
 	} from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 
 	let groups = $state<GroupDto[]>([]);
 	let error = $state('');

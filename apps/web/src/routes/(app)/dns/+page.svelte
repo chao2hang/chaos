@@ -7,7 +7,7 @@
 		type DnsRuleDto,
 		type DnsUpstreamDto
 	} from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 
 	let upstreams = $state<DnsUpstreamDto[]>([]);
 	let rules = $state<DnsRuleDto[]>([]);

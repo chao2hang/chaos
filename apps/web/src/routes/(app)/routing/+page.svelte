@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getRouting, putRouting, ApiClientError, type RoutingRuleDto } from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n';
+	import { apiErrorText, t } from '$lib/i18n.svelte';
 
 	let rules = $state<RoutingRuleDto[]>([]);
 	let fallback = $state('proxy');

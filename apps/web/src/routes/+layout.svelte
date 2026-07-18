@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import favicon from '$lib/assets/favicon.svg';
-	import { initLocale } from '$lib/i18n';
+	import { initLocale } from '$lib/i18n.svelte';
 	import '../app.css';
 
 	let { children } = $props();

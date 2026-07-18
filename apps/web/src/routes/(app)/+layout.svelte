@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { setToken } from '$lib/api';
-	import { t } from '$lib/i18n';
+	import { t } from '$lib/i18n.svelte';
 	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 
 	let { children } = $props();
