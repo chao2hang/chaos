@@ -146,6 +146,15 @@ impl DaeManager {
             bail!("config file missing: {}", config.display());
         }
 
+        // Absolute paths: we `current_dir` into work_dir, so a relative bin like
+        // `third_party/dae/current/dae` would otherwise fail with ENOENT.
+        let bin = std::fs::canonicalize(&self.bin)
+            .with_context(|| format!("canonicalize dae bin {}", self.bin.display()))?;
+        let config = std::fs::canonicalize(&config)
+            .with_context(|| format!("canonicalize config {}", config.display()))?;
+        let work_dir = std::fs::canonicalize(&self.work_dir)
+            .with_context(|| format!("canonicalize work_dir {}", self.work_dir.display()))?;
+
         // Re-assert mode in case an older write left 0644 on disk.
         #[cfg(unix)]
         {
@@ -153,7 +162,7 @@ impl DaeManager {
             let _ = std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600));
         }
 
-        let log_path = self.work_dir.join("dae.log");
+        let log_path = work_dir.join("dae.log");
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("create log {}", log_path.display()))?;
         let log_err = log_file
@@ -167,7 +176,7 @@ impl DaeManager {
             .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = Command::new(&bin);
         cmd.arg("run")
             .arg("-c")
             .arg(&config)
@@ -176,7 +185,7 @@ impl DaeManager {
             cmd.arg("--disable-sudo");
         }
         let mut child = cmd
-            .current_dir(&self.work_dir)
+            .current_dir(&work_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
@@ -184,7 +193,7 @@ impl DaeManager {
             .with_context(|| {
                 format!(
                     "spawn `{} run -c {}`",
-                    self.bin.display(),
+                    bin.display(),
                     config.display()
                 )
             })?;
