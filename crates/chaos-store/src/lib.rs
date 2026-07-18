@@ -24,7 +24,7 @@ pub use subscriptions::{
     delete_subscription, get_subscription, insert_subscription, list_subscriptions,
     replace_subscription_nodes, update_subscription_meta, NewSubscriptionNode,
 };
-pub use users::{count_users, create_user, find_user_by_username};
+pub use users::{count_users, create_admin_user, create_user, find_user_by_username};
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};

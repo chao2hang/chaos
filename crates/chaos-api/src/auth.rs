@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use chaos_store::{count_users, create_user, find_user_by_username};
+use chaos_store::{count_users, create_admin_user, find_user_by_username};
 
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
@@ -28,15 +28,30 @@ const MIN_PASSWORD_LEN: usize = 8;
 pub struct Claims {
     pub sub: String,
     pub username: String,
+    /// `admin` for the install/setup account; other roles reserved for later.
+    #[serde(default = "default_role")]
+    pub role: String,
     pub exp: i64,
+}
+
+fn default_role() -> String {
+    "user".into()
 }
 
 /// Authenticated user extracted from `Authorization: Bearer <jwt>`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // reserved for per-user scoping later
+#[allow(dead_code)] // role reserved for admin-gated routes later
 pub struct AuthUser {
     pub user_id: String,
     pub username: String,
+    pub role: String,
+}
+
+impl AuthUser {
+    #[allow(dead_code)] // used when admin-gated routes land
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,12 +145,13 @@ fn verify_password_locale(
 
 #[cfg(test)]
 pub fn issue_token(user_id: &str, username: &str, secret: &str) -> Result<String, ApiError> {
-    issue_token_locale(user_id, username, secret, Locale::En)
+    issue_token_with_role(user_id, username, "admin", secret, Locale::En)
 }
 
-fn issue_token_locale(
+fn issue_token_with_role(
     user_id: &str,
     username: &str,
+    role: &str,
     secret: &str,
     locale: Locale,
 ) -> Result<String, ApiError> {
@@ -143,6 +159,7 @@ fn issue_token_locale(
     let claims = Claims {
         sub: user_id.to_string(),
         username: username.to_string(),
+        role: role.to_string(),
         exp,
     };
     encode(
@@ -179,6 +196,8 @@ fn validate_credentials(body: &Credentials, locale: Locale) -> Result<(), ApiErr
     Ok(())
 }
 
+/// Install bootstrap: only when **zero** users exist.
+/// The created account is always **admin** (system rule).
 async fn setup(
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
@@ -192,8 +211,16 @@ async fn setup(
     }
 
     let hash = hash_password_locale(&body.password, locale)?;
-    let user = create_user(&state.pool, body.username.trim(), &hash).await?;
-    let token = issue_token_locale(&user.id, &user.username, &state.jwt_secret, locale)?;
+    // First account on a fresh install is the system administrator.
+    let user = create_admin_user(&state.pool, body.username.trim(), &hash).await?;
+    debug_assert!(user.is_admin());
+    let token = issue_token_with_role(
+        &user.id,
+        &user.username,
+        &user.role,
+        &state.jwt_secret,
+        locale,
+    )?;
     Ok(Json(TokenResponse { token }))
 }
 
@@ -212,7 +239,13 @@ async fn login(
         return Err(ApiError::unauthorized("invalid_credentials", locale));
     }
 
-    let token = issue_token_locale(&user.id, &user.username, &state.jwt_secret, locale)?;
+    let token = issue_token_with_role(
+        &user.id,
+        &user.username,
+        &user.role,
+        &state.jwt_secret,
+        locale,
+    )?;
     Ok(Json(TokenResponse { token }))
 }
 
@@ -252,6 +285,7 @@ impl FromRequestParts<AppState> for AuthUser {
         Ok(AuthUser {
             user_id: claims.sub,
             username: claims.username,
+            role: claims.role,
         })
     }
 }

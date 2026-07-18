@@ -50,9 +50,17 @@ pnpm install
 
 Open **http://127.0.0.1:5173**
 
-1. **Setup** admin user (first run) or **Login**
-2. **Nodes** / **Subscriptions** — import
-3. **Dashboard** — Test all latency, Apply config, Stop dae
+1. **Setup** — first run only: create the **first account** (this user is always **admin**)
+2. **Login** with that account (or later accounts, if any)
+3. **Nodes** / **Subscriptions** / **Flow** — import & orchestrate
+4. **Dashboard** — Test latency, Apply config, Stop dae
+
+### Auth system rule
+
+- On a **fresh install** (`users` empty), only `/api/v1/auth/setup` may create the first user.
+- That first user is stored with **`role = admin`** and is the system administrator.
+- After setup, `/setup` is closed (`already_initialized`); further accounts (future multi-user) default to `role = user`.
+- JWT includes `role` for admin-gated APIs later.
 
 ### Split terminals
 

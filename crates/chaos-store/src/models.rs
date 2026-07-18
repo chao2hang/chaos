@@ -10,6 +10,8 @@ pub struct User {
     pub username: String,
     pub password_hash: String,
     pub created_at: String,
+    /// `admin` | `user` — first setup account is always `admin`.
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -87,13 +89,33 @@ pub struct DnsRule {
 }
 
 impl User {
+    pub const ROLE_ADMIN: &'static str = "admin";
+    pub const ROLE_USER: &'static str = "user";
+
     pub fn new(username: impl Into<String>, password_hash: impl Into<String>) -> Self {
+        Self::new_with_role(username, password_hash, Self::ROLE_USER)
+    }
+
+    pub fn new_admin(username: impl Into<String>, password_hash: impl Into<String>) -> Self {
+        Self::new_with_role(username, password_hash, Self::ROLE_ADMIN)
+    }
+
+    pub fn new_with_role(
+        username: impl Into<String>,
+        password_hash: impl Into<String>,
+        role: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             username: username.into(),
             password_hash: password_hash.into(),
             created_at: Utc::now().to_rfc3339(),
+            role: role.into(),
         }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.role == Self::ROLE_ADMIN
     }
 }
 

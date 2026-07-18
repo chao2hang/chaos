@@ -1,4 +1,8 @@
 //! User repository helpers.
+//!
+//! **System rule:** when the database has no users, the account created via
+//! install/setup is the **admin** (role = `admin`). Later accounts (if any)
+//! default to `user`.
 
 use sqlx::SqlitePool;
 
@@ -16,17 +20,36 @@ pub async fn create_user(
     username: &str,
     password_hash: &str,
 ) -> Result<User, sqlx::Error> {
-    let user = User::new(username, password_hash);
+    create_user_with_role(pool, username, password_hash, User::ROLE_USER).await
+}
+
+/// Create the first install user (always admin).
+pub async fn create_admin_user(
+    pool: &SqlitePool,
+    username: &str,
+    password_hash: &str,
+) -> Result<User, sqlx::Error> {
+    create_user_with_role(pool, username, password_hash, User::ROLE_ADMIN).await
+}
+
+async fn create_user_with_role(
+    pool: &SqlitePool,
+    username: &str,
+    password_hash: &str,
+    role: &str,
+) -> Result<User, sqlx::Error> {
+    let user = User::new_with_role(username, password_hash, role);
     sqlx::query(
         r#"
-        INSERT INTO users (id, username, password_hash, created_at)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT INTO users (id, username, password_hash, created_at, role)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(&user.id)
     .bind(&user.username)
     .bind(&user.password_hash)
     .bind(&user.created_at)
+    .bind(&user.role)
     .execute(pool)
     .await?;
     Ok(user)
@@ -38,7 +61,7 @@ pub async fn find_user_by_username(
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(
         r#"
-        SELECT id, username, password_hash, created_at
+        SELECT id, username, password_hash, created_at, role
         FROM users
         WHERE username = ?1
         "#,
@@ -60,14 +83,28 @@ mod tests {
 
         assert_eq!(count_users(&pool).await.unwrap(), 0);
 
-        let created = create_user(&pool, "admin", "hash").await.unwrap();
+        let created = create_admin_user(&pool, "admin", "hash").await.unwrap();
         assert_eq!(created.username, "admin");
+        assert_eq!(created.role, User::ROLE_ADMIN);
+        assert!(created.is_admin());
         assert_eq!(count_users(&pool).await.unwrap(), 1);
 
         let found = find_user_by_username(&pool, "admin").await.unwrap().unwrap();
         assert_eq!(found.id, created.id);
         assert_eq!(found.password_hash, "hash");
+        assert_eq!(found.role, "admin");
 
         assert!(find_user_by_username(&pool, "missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn first_setup_user_is_admin() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        migrate(&pool).await.unwrap();
+        let u = create_admin_user(&pool, "owner", "h").await.unwrap();
+        assert_eq!(u.role, "admin");
+        let second = create_user(&pool, "staff", "h2").await.unwrap();
+        assert_eq!(second.role, "user");
+        assert!(!second.is_admin());
     }
 }
