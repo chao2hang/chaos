@@ -20,9 +20,6 @@
 	.lang {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.85rem;
-		color: #555;
 	}
 	.sr {
 		position: absolute;
@@ -37,11 +34,26 @@
 	}
 	select {
 		font: inherit;
-		font-size: 0.85rem;
-		padding: 0.3rem 0.4rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		color: #1a1a1a;
+		font-size: 0.8rem;
+		font-family: var(--font-mono);
+		padding: 0.3rem 0.5rem;
+		border: 1px solid var(--line);
+		border-radius: var(--r-sm);
+		background: var(--bg-input);
+		color: var(--ink-muted);
+		cursor: pointer;
+	}
+	select:hover {
+		border-color: var(--line-strong);
+		color: var(--ink);
+	}
+	select:focus {
+		outline: none;
+		border-color: var(--signal);
+		box-shadow: var(--shadow-focus);
+	}
+	option {
+		background: var(--bg-panel);
+		color: var(--ink);
 	}
 </style>

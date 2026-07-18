@@ -90,8 +90,9 @@
 	const totalNodes = $derived(subs.reduce((n, s) => n + s.node_count, 0));
 </script>
 
-<h1>{t('subscriptions.title')}</h1>
-<p class="muted">{t('subscriptions.subtitle')}</p>
+<span class="eyebrow">inventory · feeds</span>
+<h1 class="page-title">{t('subscriptions.title')}</h1>
+<p class="page-sub">{t('subscriptions.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -122,7 +123,7 @@
 	</button>
 </section>
 
-<p class="counts">
+<p class="counts mono">
 	{t('subscriptions.counts', { subs: subs.length, nodes: totalNodes })}
 </p>
 
@@ -153,7 +154,7 @@
 								>{s.status}</span
 							>
 						</td>
-						<td><strong>{s.node_count}</strong></td>
+						<td><strong class="mono">{s.node_count}</strong></td>
 						<td class="ts">{s.updated_at}</td>
 						<td class="row-actions">
 							<button
@@ -175,118 +176,27 @@
 </section>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
-	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.import {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		margin: 1.25rem 0;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-		padding: 1rem;
-	}
-	label {
-		font-size: 0.9rem;
-		font-weight: 600;
-	}
-	input {
-		font: inherit;
-		padding: 0.5rem 0.6rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	button {
-		font: inherit;
-		padding: 0.45rem 0.75rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-		align-self: flex-start;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.danger {
-		color: #b42318;
-		border-color: #f3b0a8;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
-	}
 	.counts {
-		font-size: 0.9rem;
-		color: #555;
+		font-size: 0.85rem;
+		color: var(--ink-dim);
 		margin: 0 0 0.75rem;
 	}
-	.table-wrap {
-		overflow-x: auto;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.55rem 0.75rem;
-		border-bottom: 1px solid #eee;
-		vertical-align: top;
-	}
-	th {
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: #555;
-		background: #fafafa;
-	}
 	.url {
-		max-width: 14rem;
+		max-width: 16rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-family: ui-monospace, monospace;
+		font-family: var(--font-mono);
 		font-size: 0.8rem;
+		color: var(--ink-muted);
 	}
 	.ts {
-		font-size: 0.8rem;
-		color: #555;
+		font-size: 0.78rem;
+		font-family: var(--font-mono);
+		color: var(--ink-dim);
 		white-space: nowrap;
 	}
-	.row-actions {
-		white-space: nowrap;
-		display: flex;
-		gap: 0.35rem;
-	}
-	.status-ok {
-		color: #027a48;
-		font-weight: 600;
-	}
-	.status-err {
-		color: #b42318;
-		font-weight: 600;
+	.mono {
+		font-family: var(--font-mono);
 	}
 </style>

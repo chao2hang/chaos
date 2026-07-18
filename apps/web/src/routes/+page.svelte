@@ -27,16 +27,30 @@
 	});
 </script>
 
-<main class="shell">
-	<p>{message || t('home.loading')}</p>
+<main class="boot">
+	<div class="panel boot-card">
+		<span class="eyebrow">chaos</span>
+		<p class="mono-msg">{message || t('home.loading')}</p>
+	</div>
 </main>
 
 <style>
-	.shell {
-		font-family: system-ui, sans-serif;
-		max-width: 32rem;
-		margin: 4rem auto;
-		padding: 0 1rem;
-		color: #1a1a1a;
+	.boot {
+		min-height: 100vh;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem 1rem;
+	}
+	.boot-card {
+		max-width: 28rem;
+		width: 100%;
+	}
+	.mono-msg {
+		margin: 0;
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+		color: var(--ink-muted);
+		line-height: 1.55;
 	}
 </style>

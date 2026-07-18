@@ -60,9 +60,7 @@
 			const res = await importNodes(lines.map((link) => ({ link })));
 			const ok = res.results.filter((r) => r.ok).length;
 			const fail = res.results.length - ok;
-			const failSuffix = fail
-				? t('nodes.importedFailSuffix', { fail })
-				: '';
+			const failSuffix = fail ? t('nodes.importedFailSuffix', { fail }) : '';
 			message = t('nodes.imported', { ok, failSuffix });
 			if (fail) {
 				const errs = res.results
@@ -107,8 +105,9 @@
 	}
 </script>
 
-<h1>{t('nodes.title')}</h1>
-<p class="muted">{t('nodes.subtitle')}</p>
+<span class="eyebrow">inventory · endpoints</span>
+<h1 class="page-title">{t('nodes.title')}</h1>
+<p class="page-sub">{t('nodes.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -156,7 +155,7 @@
 							<div class="name">{n.name}</div>
 							{#if n.tag}<span class="tag">{n.tag}</span>{/if}
 						</td>
-						<td>{n.protocol ?? t('common.emDash')}</td>
+						<td class="mono-cell">{n.protocol ?? t('common.emDash')}</td>
 						<td class="addr">{n.address ?? t('common.emDash')}</td>
 						<td class={latencyClass(tone)}>
 							{lat ? formatLatencyMs(lat.latency_ms, lat.alive) : t('common.emDash')}
@@ -184,125 +183,28 @@
 </section>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
-	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.import {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		margin: 1.25rem 0;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-		padding: 1rem;
-	}
-	label {
-		font-size: 0.9rem;
-		font-weight: 600;
-	}
-	textarea {
-		font: inherit;
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		padding: 0.5rem 0.6rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		resize: vertical;
-	}
-	button {
-		font: inherit;
-		padding: 0.45rem 0.75rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-		align-self: flex-start;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.danger {
-		color: #b42318;
-		border-color: #f3b0a8;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
-	}
-	.table-wrap {
-		overflow-x: auto;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.55rem 0.75rem;
-		border-bottom: 1px solid #eee;
-		vertical-align: top;
-	}
-	th {
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: #555;
-		background: #fafafa;
-	}
 	.name {
 		font-weight: 600;
 	}
 	.tag {
-		font-size: 0.75rem;
-		color: #667085;
+		display: inline-block;
+		margin-top: 0.15rem;
+		font-size: 0.72rem;
+		font-family: var(--font-mono);
+		color: var(--signal);
+		background: var(--signal-soft);
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
 	}
-	.addr {
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-	}
-	.row-actions {
-		white-space: nowrap;
-		display: flex;
-		gap: 0.35rem;
+	.addr,
+	.mono-cell {
+		font-family: var(--font-mono);
+		font-size: 0.82rem;
+		color: var(--ink-muted);
 	}
 	.msg {
 		margin-left: 0.25rem;
 		cursor: help;
-	}
-	:global(.lat-good) {
-		color: #027a48;
-		font-weight: 600;
-	}
-	:global(.lat-warn) {
-		color: #b54708;
-		font-weight: 600;
-	}
-	:global(.lat-bad) {
-		color: #b42318;
-		font-weight: 600;
-	}
-	:global(.lat-unknown) {
-		color: #667085;
+		color: var(--bad);
 	}
 </style>

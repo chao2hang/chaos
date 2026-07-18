@@ -60,9 +60,10 @@
 	}
 </script>
 
-<h1>{t('routing.title')}</h1>
-<p class="muted">{t('routing.subtitle')}</p>
-<p class="hint">{t('routing.hint')}</p>
+<span class="eyebrow">policy · match rules</span>
+<h1 class="page-title">{t('routing.title')}</h1>
+<p class="page-sub">{t('routing.subtitle')}</p>
+<p class="page-hint">{t('routing.hint')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -117,95 +118,15 @@
 </div>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
-	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.hint {
-		color: #667085;
-		font-size: 0.85rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.import {
-		margin: 1rem 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-		max-width: 24rem;
-	}
-	label {
-		font-size: 0.9rem;
-		font-weight: 600;
-	}
-	input {
-		font: inherit;
-		padding: 0.45rem 0.55rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
 	input.wide {
 		width: 100%;
 		min-width: 14rem;
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
 	}
-	.table-wrap {
-		overflow-x: auto;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.5rem 0.65rem;
-		border-bottom: 1px solid #eee;
-		vertical-align: middle;
-	}
-	th {
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		color: #555;
-		background: #fafafa;
-	}
-	.actions {
-		display: flex;
-		gap: 0.5rem;
-		margin-top: 1rem;
-	}
-	button {
-		font: inherit;
-		padding: 0.5rem 0.8rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.danger {
-		color: #b42318;
-		border-color: #f3b0a8;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
+	input[type='checkbox'] {
+		width: 1rem;
+		height: 1rem;
+		accent-color: var(--signal);
 	}
 </style>

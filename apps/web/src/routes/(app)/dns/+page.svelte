@@ -85,9 +85,10 @@
 	}
 </script>
 
-<h1>{t('dns.title')}</h1>
-<p class="muted">{t('dns.subtitle')}</p>
-<p class="hint">{t('dns.hint')}</p>
+<span class="eyebrow">resolve · upstreams</span>
+<h1 class="page-title">{t('dns.title')}</h1>
+<p class="page-sub">{t('dns.subtitle')}</p>
+<p class="page-hint">{t('dns.hint')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -101,7 +102,7 @@
 	<input id="dns-fallback" bind:value={fallback} disabled={busy} />
 </section>
 
-<h2>{t('dns.upstreams')}</h2>
+<h2 class="section-label">{t('dns.upstreams')}</h2>
 <section class="table-wrap">
 	<table>
 		<thead>
@@ -128,7 +129,7 @@
 </section>
 <button type="button" class="mb" disabled={busy} onclick={addUpstream}>{t('dns.addUpstream')}</button>
 
-<h2>{t('dns.rules')}</h2>
+<h2 class="section-label">{t('dns.rules')}</h2>
 <section class="table-wrap">
 	<table>
 		<thead>
@@ -164,102 +165,27 @@
 </div>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
-	}
-	h2 {
-		margin: 1.25rem 0 0.5rem;
-		font-size: 1.05rem;
-	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.hint {
-		color: #667085;
-		font-size: 0.85rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.import {
-		margin: 1rem 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-		max-width: 24rem;
-	}
-	label {
-		font-size: 0.9rem;
+	.section-label {
+		margin: 1.5rem 0 0.65rem;
+		font-size: 0.75rem;
 		font-weight: 600;
-	}
-	input {
-		font: inherit;
-		padding: 0.45rem 0.55rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--ink-dim);
+		font-family: var(--font-mono);
 	}
 	input.wide {
 		width: 100%;
 		min-width: 14rem;
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
 	}
-	.table-wrap {
-		overflow-x: auto;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.5rem 0.65rem;
-		border-bottom: 1px solid #eee;
-		vertical-align: middle;
-	}
-	th {
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		color: #555;
-		background: #fafafa;
+	input[type='checkbox'] {
+		width: 1rem;
+		height: 1rem;
+		accent-color: var(--signal);
 	}
 	.mb {
-		margin: 0.6rem 0 0.25rem;
-	}
-	.actions {
-		display: flex;
-		gap: 0.5rem;
-		margin-top: 1rem;
-	}
-	button {
-		font: inherit;
-		padding: 0.5rem 0.8rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.danger {
-		color: #b42318;
-		border-color: #f3b0a8;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
+		margin: 0.65rem 0 0.25rem;
 	}
 </style>

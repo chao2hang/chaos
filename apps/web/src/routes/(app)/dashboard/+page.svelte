@@ -101,8 +101,9 @@
 	});
 </script>
 
-<h1>{t('dashboard.title')}</h1>
-<p class="muted">{t('dashboard.subtitle')}</p>
+<span class="eyebrow">runtime · overview</span>
+<h1 class="page-title">{t('dashboard.title')}</h1>
+<p class="page-sub">{t('dashboard.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -116,8 +117,14 @@
 		<h2>{t('dashboard.apiHealth')}</h2>
 		{#if healthInfo}
 			<ul>
-				<li>{t('dashboard.field.ok')}: <strong>{String(healthInfo.ok)}</strong></li>
-				<li>{t('dashboard.field.apiVersion')}: {healthInfo.api_version}</li>
+				<li>
+					{t('dashboard.field.ok')}:
+					<strong class={healthInfo.ok ? 'lat-good' : 'lat-bad'}>{String(healthInfo.ok)}</strong>
+				</li>
+				<li>
+					{t('dashboard.field.apiVersion')}:
+					<span class="mono">{healthInfo.api_version}</span>
+				</li>
 				<li>
 					{t('dashboard.field.daeBinary')}:
 					{#if healthInfo.dae_binary}
@@ -126,10 +133,12 @@
 						<span class="muted">{t('common.none')}</span>
 					{/if}
 				</li>
-				<li
-					>{t('dashboard.field.daeBinaryOk')}:
-					<strong>{String(healthInfo.dae_binary_ok)}</strong></li
-				>
+				<li>
+					{t('dashboard.field.daeBinaryOk')}:
+					<strong class={healthInfo.dae_binary_ok ? 'lat-good' : 'lat-bad'}
+						>{String(healthInfo.dae_binary_ok)}</strong
+					>
+				</li>
 			</ul>
 		{:else}
 			<p class="muted">{t('dashboard.loading')}</p>
@@ -146,9 +155,15 @@
 						>{String(runtime.running)}</strong
 					>
 				</li>
-				<li>{t('dashboard.field.configExists')}: {String(runtime.config_exists)}</li>
+				<li>
+					{t('dashboard.field.configExists')}:
+					<span class="mono">{String(runtime.config_exists)}</span>
+				</li>
 				<li>{t('dashboard.field.workDir')}: <code>{runtime.work_dir}</code></li>
-				<li>{t('dashboard.field.daeBinaryOk')}: {String(runtime.dae_binary_ok)}</li>
+				<li>
+					{t('dashboard.field.daeBinaryOk')}:
+					<span class="mono">{String(runtime.dae_binary_ok)}</span>
+				</li>
 			</ul>
 		{:else}
 			<p class="muted">{t('dashboard.loading')}</p>
@@ -157,7 +172,7 @@
 
 	<div class="card">
 		<h2>{t('dashboard.latencySummary')}</h2>
-		<p>
+		<p class="summary-line mono">
 			{t('dashboard.aliveLine', {
 				alive: latencySummary.alive,
 				total: latencySummary.total,
@@ -199,101 +214,35 @@
 </div>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
+	.mono {
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+		color: var(--ink-muted);
 	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.cards {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-		gap: 1rem;
-		margin: 1.25rem 0;
-	}
-	.card {
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-		padding: 1rem 1.1rem;
-	}
-	.card h2 {
-		margin: 0 0 0.6rem;
-		font-size: 1rem;
-	}
-	.card ul {
+	.summary-line {
 		margin: 0;
-		padding-left: 1.1rem;
-		font-size: 0.9rem;
-		line-height: 1.55;
-	}
-	code {
-		font-size: 0.85em;
-		word-break: break-all;
+		font-size: 0.85rem;
+		line-height: 1.5;
+		color: var(--ink);
 	}
 	.lat-list {
 		list-style: none;
 		padding: 0;
-		margin: 0.5rem 0 0;
+		margin: 0.75rem 0 0;
 	}
 	.lat-list li {
 		display: flex;
 		justify-content: space-between;
 		gap: 0.5rem;
 		font-size: 0.85rem;
-		padding: 0.15rem 0;
+		padding: 0.3rem 0;
+		border-bottom: 1px solid var(--line);
+	}
+	.lat-list li:last-child {
+		border-bottom: none;
 	}
 	.id {
-		color: #666;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-	button {
-		font: inherit;
-		padding: 0.55rem 0.85rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.ghost {
-		background: transparent;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
-	}
-	:global(.lat-good) {
-		color: #027a48;
-		font-weight: 600;
-	}
-	:global(.lat-warn) {
-		color: #b54708;
-		font-weight: 600;
-	}
-	:global(.lat-bad) {
-		color: #b42318;
-		font-weight: 600;
-	}
-	:global(.lat-unknown) {
-		color: #667085;
+		color: var(--ink-dim);
+		font-size: 0.8rem;
 	}
 </style>

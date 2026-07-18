@@ -110,8 +110,9 @@
 	}
 </script>
 
-<h1>{t('groups.title')}</h1>
-<p class="muted">{t('groups.subtitle')}</p>
+<span class="eyebrow">policy · outbounds</span>
+<h1 class="page-title">{t('groups.title')}</h1>
+<p class="page-sub">{t('groups.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -156,12 +157,14 @@
 								<button type="button" class="primary" disabled={busy} onclick={onSaveEdit}
 									>{t('common.save')}</button
 								>
-								<button type="button" disabled={busy} onclick={() => (editId = null)}>…</button>
+								<button type="button" class="ghost" disabled={busy} onclick={() => (editId = null)}
+									>×</button
+								>
 							</td>
 						{:else}
 							<td><strong>{g.name}</strong></td>
-							<td><code>{g.policy}</code></td>
-							<td>{g.filter_tag ?? t('common.emDash')}</td>
+							<td><code class="policy">{g.policy}</code></td>
+							<td class="tag-cell">{g.filter_tag ?? t('common.emDash')}</td>
 							<td class="row-actions">
 								<button type="button" onclick={() => startEdit(g)}>Edit</button>
 								<button type="button" class="danger" onclick={() => onDelete(g.id)}
@@ -177,95 +180,13 @@
 </section>
 
 <style>
-	h1 {
-		margin: 0 0 0.25rem;
-		font-size: 1.5rem;
+	.policy {
+		font-size: 0.82rem;
+		color: var(--signal);
 	}
-	.muted {
-		color: #555;
-		font-size: 0.95rem;
-	}
-	.error {
-		color: #b42318;
-		font-size: 0.9rem;
-	}
-	.ok {
-		color: #027a48;
-		font-size: 0.9rem;
-	}
-	.import {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		margin: 1.25rem 0;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-		padding: 1rem;
-	}
-	label {
-		font-size: 0.9rem;
-		font-weight: 600;
-	}
-	input {
-		font: inherit;
-		padding: 0.5rem 0.6rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	button {
-		font: inherit;
-		padding: 0.45rem 0.75rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		background: #fff;
-		cursor: pointer;
-		align-self: flex-start;
-	}
-	button.primary {
-		background: #1a56db;
-		border-color: #1a56db;
-		color: #fff;
-	}
-	button.danger {
-		color: #b42318;
-		border-color: #f3b0a8;
-	}
-	button:disabled {
-		opacity: 0.7;
-		cursor: not-allowed;
-	}
-	.table-wrap {
-		overflow-x: auto;
-		background: #fff;
-		border: 1px solid #e5e7eb;
-		border-radius: 8px;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.55rem 0.75rem;
-		border-bottom: 1px solid #eee;
-		vertical-align: top;
-	}
-	th {
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: #555;
-		background: #fafafa;
-	}
-	.row-actions {
-		display: flex;
-		gap: 0.35rem;
-		white-space: nowrap;
-	}
-	code {
-		font-size: 0.85em;
+	.tag-cell {
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		color: var(--ink-muted);
 	}
 </style>
