@@ -3,7 +3,10 @@
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chaos_core::config_render::{render_minimal_dae_config, NodeForConfig};
+use chaos_core::config_render::{
+    render_dae_config, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig, GroupForConfig,
+    NodeForConfig, RoutingRuleForConfig,
+};
 use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager};
 use chaos_i18n::Locale;
 use serde::Serialize;
@@ -95,7 +98,8 @@ async fn apply_runtime(
             link: n.link.clone(),
         })
         .collect();
-    let content = render_minimal_dae_config(&for_config);
+    let plane = load_config_plane(&state).await?;
+    let content = render_dae_config(&for_config, &plane);
     let config_path = mgr
         .write_config(&content)
         .await
@@ -145,6 +149,55 @@ async fn stop_runtime(
         work_dir: work_dir.display().to_string(),
         config_exists: work_dir.join("config.dae").is_file(),
     }))
+}
+
+async fn load_config_plane(state: &AppState) -> Result<ConfigPlane, ApiError> {
+    let groups = chaos_store::list_groups(&state.pool).await?;
+    let routing_rules = chaos_store::list_routing_rules(&state.pool).await?;
+    let routing_fallback = chaos_store::get_meta(&state.pool, chaos_store::META_ROUTING_FALLBACK)
+        .await?
+        .unwrap_or_else(|| "proxy".into());
+    let dns_upstreams = chaos_store::list_dns_upstreams(&state.pool).await?;
+    let dns_rules = chaos_store::list_dns_rules(&state.pool).await?;
+    let dns_fallback = chaos_store::get_meta(&state.pool, chaos_store::META_DNS_FALLBACK)
+        .await?
+        .unwrap_or_else(|| "alidns".into());
+
+    Ok(ConfigPlane {
+        groups: groups
+            .into_iter()
+            .map(|g| GroupForConfig {
+                name: g.name,
+                policy: g.policy,
+                filter_tag: g.filter_tag,
+            })
+            .collect(),
+        routing_rules: routing_rules
+            .into_iter()
+            .map(|r| RoutingRuleForConfig {
+                expression: r.expression,
+                outbound: r.outbound,
+                enabled: r.enabled != 0,
+            })
+            .collect(),
+        routing_fallback,
+        dns_upstreams: dns_upstreams
+            .into_iter()
+            .map(|u| DnsUpstreamForConfig {
+                name: u.name,
+                address: u.address,
+            })
+            .collect(),
+        dns_rules: dns_rules
+            .into_iter()
+            .map(|r| DnsRuleForConfig {
+                expression: r.expression,
+                upstream: r.upstream,
+                enabled: r.enabled != 0,
+            })
+            .collect(),
+        dns_fallback,
+    })
 }
 
 pub fn runtime_router() -> Router<AppState> {

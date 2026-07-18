@@ -15,8 +15,11 @@ use tracing_subscriber::EnvFilter;
 
 use auth::{auth_router, load_or_create_jwt_secret};
 use health::health_router;
+use routes::dns::dns_router;
+use routes::groups::groups_router;
 use routes::latency::latency_router;
 use routes::nodes::nodes_router;
+use routes::routing::routing_router;
 use routes::runtime::runtime_router;
 use routes::subscriptions::subscriptions_router;
 use state::AppState;
@@ -46,7 +49,10 @@ async fn main() -> anyhow::Result<()> {
                 .merge(nodes_router())
                 .merge(subscriptions_router())
                 .merge(latency_router())
-                .merge(runtime_router()),
+                .merge(runtime_router())
+                .merge(groups_router())
+                .merge(routing_router())
+                .merge(dns_router()),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state);

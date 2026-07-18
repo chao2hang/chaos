@@ -36,6 +36,9 @@
 				<a href="/subscriptions" class:active={path.startsWith('/subscriptions')}
 					>{t('nav.subscriptions')}</a
 				>
+				<a href="/groups" class:active={path.startsWith('/groups')}>{t('nav.groups')}</a>
+				<a href="/routing" class:active={path.startsWith('/routing')}>{t('nav.routing')}</a>
+				<a href="/dns" class:active={path.startsWith('/dns')}>{t('nav.dns')}</a>
 			</nav>
 			<LocaleSwitcher />
 			<button type="button" class="logout" onclick={logout}>{t('nav.logout')}</button>

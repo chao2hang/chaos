@@ -1,4 +1,4 @@
-//! Minimal dae config rendering from imported nodes (MVP fixed template).
+//! dae config rendering from nodes + groups + routing + DNS.
 
 use std::collections::HashSet;
 
@@ -10,12 +10,77 @@ pub struct NodeForConfig {
     pub link: String,
 }
 
-/// Render a minimal bootable-ish dae config with the given nodes.
-///
-/// Node keys are `node.<sanitized_name>` with uniqueness suffixes from id when needed.
-/// Group `proxy` omits `filter` (MVP: all nodes).
-pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
-    let mut out = String::with_capacity(768 + nodes.len() * 64);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupForConfig {
+    pub name: String,
+    pub policy: String,
+    /// When set, emits `filter: subtag(tag)` style filter.
+    pub filter_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingRuleForConfig {
+    pub expression: String,
+    pub outbound: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsUpstreamForConfig {
+    pub name: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsRuleForConfig {
+    pub expression: String,
+    pub upstream: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPlane {
+    pub groups: Vec<GroupForConfig>,
+    pub routing_rules: Vec<RoutingRuleForConfig>,
+    pub routing_fallback: String,
+    pub dns_upstreams: Vec<DnsUpstreamForConfig>,
+    pub dns_rules: Vec<DnsRuleForConfig>,
+    pub dns_fallback: String,
+}
+
+impl Default for ConfigPlane {
+    fn default() -> Self {
+        Self {
+            groups: vec![GroupForConfig {
+                name: "proxy".into(),
+                policy: "min_moving_avg".into(),
+                filter_tag: None,
+            }],
+            routing_rules: vec![RoutingRuleForConfig {
+                expression: "pname(NetworkManager, systemd-resolved)".into(),
+                outbound: "must_direct".into(),
+                enabled: true,
+            }],
+            routing_fallback: "proxy".into(),
+            dns_upstreams: vec![
+                DnsUpstreamForConfig {
+                    name: "alidns".into(),
+                    address: "udp://dns.alidns.com:53".into(),
+                },
+                DnsUpstreamForConfig {
+                    name: "googledns".into(),
+                    address: "tcp+udp://dns.google:53".into(),
+                },
+            ],
+            dns_rules: vec![],
+            dns_fallback: "alidns".into(),
+        }
+    }
+}
+
+/// Render a full dae config from nodes + config plane.
+pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String {
+    let mut out = String::with_capacity(1024 + nodes.len() * 64);
     let mut used_keys: HashSet<String> = HashSet::new();
 
     out.push_str(
@@ -28,13 +93,40 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
          }\n\
          \n\
          dns {\n\
-         \x20\x20upstream {\n\
-         \x20\x20\x20\x20alidns: 'udp://dns.alidns.com:53'\n\
-         \x20\x20\x20\x20googledns: 'tcp+udp://dns.google:53'\n\
-         \x20\x20}\n\
+         \x20\x20upstream {\n",
+    );
+
+    for u in &plane.dns_upstreams {
+        let name = sanitize_ident(&u.name);
+        if name.is_empty() {
+            continue;
+        }
+        out.push_str("    ");
+        out.push_str(&name);
+        out.push_str(": '");
+        out.push_str(&escape_single_quotes(&u.address));
+        out.push_str("'\n");
+    }
+
+    out.push_str(
+        "  }\n\
          \x20\x20routing {\n\
-         \x20\x20\x20\x20request {\n\
-         \x20\x20\x20\x20\x20\x20fallback: alidns\n\
+         \x20\x20\x20\x20request {\n",
+    );
+    for r in plane.dns_rules.iter().filter(|r| r.enabled) {
+        if r.expression.trim().is_empty() {
+            continue;
+        }
+        out.push_str("      ");
+        out.push_str(r.expression.trim());
+        out.push_str(" -> ");
+        out.push_str(r.upstream.trim());
+        out.push('\n');
+    }
+    out.push_str("      fallback: ");
+    out.push_str(plane.dns_fallback.trim());
+    out.push_str(
+        "\n\
          \x20\x20\x20\x20}\n\
          \x20\x20}\n\
          }\n\
@@ -55,22 +147,50 @@ pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
         out.push_str("'\n");
     }
 
-    out.push_str(
-        "}\n\
-         \n\
-         group {\n\
-         \x20\x20proxy {\n\
-         \x20\x20\x20\x20policy: min_moving_avg\n\
-         \x20\x20}\n\
-         }\n\
-         \n\
-         routing {\n\
-         \x20\x20pname(NetworkManager, systemd-resolved) -> must_direct\n\
-         \x20\x20fallback: proxy\n\
-         }\n",
-    );
+    out.push_str("}\n\ngroup {\n");
+    let groups = if plane.groups.is_empty() {
+        ConfigPlane::default().groups
+    } else {
+        plane.groups.clone()
+    };
+    for g in &groups {
+        let gname = sanitize_ident(&g.name);
+        if gname.is_empty() {
+            continue;
+        }
+        out.push_str("  ");
+        out.push_str(&gname);
+        out.push_str(" {\n");
+        if let Some(tag) = g.filter_tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str("    filter: subtag(");
+            out.push_str(tag);
+            out.push_str(")\n");
+        }
+        out.push_str("    policy: ");
+        out.push_str(g.policy.trim());
+        out.push_str("\n  }\n");
+    }
+    out.push_str("}\n\nrouting {\n");
+    for r in plane.routing_rules.iter().filter(|r| r.enabled) {
+        if r.expression.trim().is_empty() {
+            continue;
+        }
+        out.push_str("  ");
+        out.push_str(r.expression.trim());
+        out.push_str(" -> ");
+        out.push_str(r.outbound.trim());
+        out.push('\n');
+    }
+    out.push_str("  fallback: ");
+    out.push_str(plane.routing_fallback.trim());
+    out.push_str("\n}\n");
 
     out
+}
+
+/// Backward-compatible helper: nodes only + default plane.
+pub fn render_minimal_dae_config(nodes: &[NodeForConfig]) -> String {
+    render_dae_config(nodes, &ConfigPlane::default())
 }
 
 fn unique_node_key(name: &str, id: &str, used: &mut HashSet<String>) -> String {
@@ -190,5 +310,40 @@ mod tests {
         assert!(s.contains("node.same_bbbb2222") || s.contains("node.same_bbbb"));
         let count_same = s.matches("node.same").count();
         assert!(count_same >= 2);
+    }
+
+    #[test]
+    fn custom_plane_emits_group_filter_and_rules() {
+        let plane = ConfigPlane {
+            groups: vec![GroupForConfig {
+                name: "home".into(),
+                policy: "fixed".into(),
+                filter_tag: Some("hk".into()),
+            }],
+            routing_rules: vec![RoutingRuleForConfig {
+                expression: "domain(example.com)".into(),
+                outbound: "home".into(),
+                enabled: true,
+            }],
+            routing_fallback: "direct".into(),
+            dns_upstreams: vec![DnsUpstreamForConfig {
+                name: "cloudflare".into(),
+                address: "udp://1.1.1.1:53".into(),
+            }],
+            dns_rules: vec![DnsRuleForConfig {
+                expression: "qname(geosite:cn)".into(),
+                upstream: "cloudflare".into(),
+                enabled: true,
+            }],
+            dns_fallback: "cloudflare".into(),
+        };
+        let s = render_dae_config(&[], &plane);
+        assert!(s.contains("home {"));
+        assert!(s.contains("filter: subtag(hk)"));
+        assert!(s.contains("policy: fixed"));
+        assert!(s.contains("domain(example.com) -> home"));
+        assert!(s.contains("fallback: direct"));
+        assert!(s.contains("cloudflare: 'udp://1.1.1.1:53'"));
+        assert!(s.contains("qname(geosite:cn) -> cloudflare"));
     }
 }

@@ -226,3 +226,94 @@ export function applyRuntime() {
 export function stopRuntime() {
 	return api<RuntimeStatus>('/api/v1/runtime/stop', { method: 'POST' });
 }
+
+export type GroupDto = {
+	id: string;
+	name: string;
+	policy: string;
+	filter_tag: string | null;
+	sort_order: number;
+	created_at: string;
+};
+
+export type RoutingRuleDto = {
+	expression: string;
+	outbound: string;
+	enabled: boolean;
+};
+
+export type RoutingDocument = {
+	rules: RoutingRuleDto[];
+	fallback: string;
+};
+
+export type DnsUpstreamDto = {
+	name: string;
+	address: string;
+};
+
+export type DnsRuleDto = {
+	expression: string;
+	upstream: string;
+	enabled: boolean;
+};
+
+export type DnsDocument = {
+	upstreams: DnsUpstreamDto[];
+	rules: DnsRuleDto[];
+	fallback: string;
+};
+
+export function listGroups() {
+	return api<{ groups: GroupDto[] }>('/api/v1/groups');
+}
+
+export function createGroup(body: {
+	name: string;
+	policy?: string;
+	filter_tag?: string;
+	sort_order?: number;
+}) {
+	return api<GroupDto>('/api/v1/groups', {
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
+}
+
+export function updateGroup(
+	id: string,
+	body: { name: string; policy: string; filter_tag?: string | null; sort_order?: number }
+) {
+	return api<GroupDto>(`/api/v1/groups/${encodeURIComponent(id)}`, {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
+export function deleteGroup(id: string) {
+	return api<{ deleted: boolean }>(`/api/v1/groups/${encodeURIComponent(id)}`, {
+		method: 'DELETE'
+	});
+}
+
+export function getRouting() {
+	return api<RoutingDocument>('/api/v1/routing');
+}
+
+export function putRouting(doc: RoutingDocument) {
+	return api<RoutingDocument>('/api/v1/routing', {
+		method: 'PUT',
+		body: JSON.stringify(doc)
+	});
+}
+
+export function getDns() {
+	return api<DnsDocument>('/api/v1/dns');
+}
+
+export function putDns(doc: DnsDocument) {
+	return api<DnsDocument>('/api/v1/dns', {
+		method: 'PUT',
+		body: JSON.stringify(doc)
+	});
+}

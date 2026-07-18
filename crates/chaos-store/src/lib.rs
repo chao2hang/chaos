@@ -1,13 +1,22 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
 mod models;
+pub mod config_plane;
 pub mod latency;
 pub mod nodes;
 pub mod subscriptions;
 pub mod users;
 
+pub use config_plane::{
+    delete_group, ensure_config_defaults, get_meta, insert_group, list_dns_rules, list_dns_upstreams,
+    list_groups, list_routing_rules, replace_dns, replace_routing_rules, set_meta, update_group,
+    META_DNS_FALLBACK, META_ROUTING_FALLBACK,
+};
 pub use latency::{list_latency_results, list_latency_results_for_ids, upsert_latency_result};
-pub use models::{LatencyResult, Node, Subscription, User, now_rfc3339, parse_rfc3339};
+pub use models::{
+    DnsRule, DnsUpstream, Group, LatencyResult, Node, RoutingRule, Subscription, User, now_rfc3339,
+    parse_rfc3339,
+};
 pub use nodes::{delete_node, get_node, insert_node, insert_node_with_id, list_nodes};
 pub use subscriptions::{
     delete_subscription, get_subscription, insert_subscription, list_subscriptions,
@@ -45,6 +54,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
         .run(pool)
         .await
         .context("failed to run database migrations")?;
+    ensure_config_defaults(pool)
+        .await
+        .context("failed to seed config defaults")?;
     Ok(())
 }
 
@@ -98,13 +110,26 @@ mod tests {
         let pool = connect("sqlite::memory:").await.unwrap();
         migrate(&pool).await.unwrap();
 
-        for table in ["users", "subscriptions", "nodes", "latency_results"] {
-            let n: (i64,) =
-                sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap_or_else(|e| panic!("table {table} missing: {e}"));
-            assert_eq!(n.0, 0, "expected empty {table}");
+        for table in [
+            "users",
+            "subscriptions",
+            "nodes",
+            "latency_results",
+            "groups",
+            "routing_rules",
+            "dns_upstreams",
+            "dns_rules",
+            "config_meta",
+        ] {
+            let n: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("table {table} missing: {e}"));
+            if matches!(table, "users" | "subscriptions" | "nodes" | "latency_results") {
+                assert_eq!(n.0, 0, "expected empty {table}");
+            }
         }
+        let groups = list_groups(&pool).await.unwrap();
+        assert_eq!(groups[0].name, "proxy");
     }
 }

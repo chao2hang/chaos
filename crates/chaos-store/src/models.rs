@@ -42,6 +42,42 @@ pub struct LatencyResult {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub policy: String,
+    pub filter_tag: Option<String>,
+    pub sort_order: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RoutingRule {
+    pub id: String,
+    pub expression: String,
+    pub outbound: String,
+    pub sort_order: i64,
+    pub enabled: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct DnsUpstream {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct DnsRule {
+    pub id: String,
+    pub expression: String,
+    pub upstream: String,
+    pub sort_order: i64,
+    pub enabled: i64,
+}
+
 impl User {
     pub fn new(username: impl Into<String>, password_hash: impl Into<String>) -> Self {
         Self {

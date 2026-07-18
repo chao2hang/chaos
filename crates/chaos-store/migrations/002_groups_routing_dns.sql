@@ -1,0 +1,36 @@
+CREATE TABLE IF NOT EXISTS groups (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  policy TEXT NOT NULL DEFAULT 'min_moving_avg',
+  filter_tag TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS routing_rules (
+  id TEXT PRIMARY KEY NOT NULL,
+  expression TEXT NOT NULL,
+  outbound TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS dns_upstreams (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  address TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS dns_rules (
+  id TEXT PRIMARY KEY NOT NULL,
+  expression TEXT NOT NULL,
+  upstream TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS config_meta (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+);
