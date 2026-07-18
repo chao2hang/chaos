@@ -1,6 +1,27 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
+		SvelteFlow,
+		Background,
+		Controls,
+		MiniMap,
+		BackgroundVariant,
+		MarkerType,
+		type Node,
+		type Edge,
+		type Connection,
+		type IsValidConnection
+	} from '@xyflow/svelte';
+	import '@xyflow/svelte/dist/style.css';
+
+	import StartNode from '$lib/flow/StartNode.svelte';
+	import ProxyNode from '$lib/flow/ProxyNode.svelte';
+	import GroupNode from '$lib/flow/GroupNode.svelte';
+	import RuleNode from '$lib/flow/RuleNode.svelte';
+	import FallbackNode from '$lib/flow/FallbackNode.svelte';
+	import BuiltinNode from '$lib/flow/BuiltinNode.svelte';
+
+	import {
 		listNodes,
 		listGroups,
 		createGroup,
@@ -16,34 +37,256 @@
 	} from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 
-	let nodes = $state<NodeDto[]>([]);
-	let groups = $state<GroupDto[]>([]);
-	let rules = $state<RoutingRuleDto[]>([]);
+	const nodeTypes = {
+		start: StartNode,
+		proxy: ProxyNode,
+		group: GroupNode,
+		rule: RuleNode,
+		fallback: FallbackNode,
+		builtin: BuiltinNode
+	};
+
+	let nodes = $state.raw<Node[]>([]);
+	let edges = $state.raw<Edge[]>([]);
+	let apiNodes = $state<NodeDto[]>([]);
+	let apiGroups = $state<GroupDto[]>([]);
+	let apiRules = $state<RoutingRuleDto[]>([]);
 	let fallback = $state('proxy');
 	let error = $state('');
 	let message = $state('');
 	let busy = $state(false);
-	let dragNodeId = $state<string | null>(null);
-	let dragOverGroup = $state<string | null>(null);
 	let newGroupName = $state('');
 	let newPolicy = $state('fixed');
+	let dirty = $state(false);
 
-	const memberIds = $derived.by(() => {
-		const s = new Set<string>();
-		for (const g of groups) for (const m of g.members ?? []) s.add(m.node_id);
-		return s;
-	});
+	function rebuildGraph(
+		proxyNodes: NodeDto[],
+		groups: GroupDto[],
+		rules: RoutingRuleDto[],
+		fb: string
+	) {
+		const n: Node[] = [];
+		const e: Edge[] = [];
 
-	const freeNodes = $derived(nodes.filter((n) => !memberIds.has(n.id)));
+		n.push({
+			id: 'start',
+			type: 'start',
+			position: { x: 40, y: 220 },
+			data: { label: 'Traffic' },
+			draggable: true
+		});
+
+		// Proxy pool (left column)
+		proxyNodes.forEach((pn, i) => {
+			n.push({
+				id: `proxy:${pn.id}`,
+				type: 'proxy',
+				position: { x: 40, y: 320 + i * 88 },
+				data: {
+					name: pn.name,
+					protocol: pn.protocol,
+					address: pn.address,
+					nodeId: pn.id
+				}
+			});
+		});
+
+		// Groups (middle)
+		groups.forEach((g, i) => {
+			n.push({
+				id: `group:${g.id}`,
+				type: 'group',
+				position: { x: 320, y: 80 + i * 200 },
+				data: {
+					name: g.name,
+					policy: g.policy,
+					groupId: g.id,
+					members: (g.members ?? []).map((m) => ({
+						node_id: m.node_id,
+						name: m.name,
+						weight: m.weight
+					})),
+					onWeight: (nodeId: string, weight: number) => {
+						void handleWeight(g.id, nodeId, weight);
+					},
+					onRemove: (nodeId: string) => {
+						void handleRemoveMember(g.id, nodeId);
+					}
+				}
+			});
+
+			// proxy → group membership edges
+			for (const m of g.members ?? []) {
+				e.push({
+					id: `mem:${g.id}:${m.node_id}`,
+					source: `proxy:${m.node_id}`,
+					target: `group:${g.id}`,
+					sourceHandle: 'out',
+					targetHandle: 'in',
+					animated: true,
+					style: 'stroke: #22c55e; stroke-width: 1.5',
+					markerEnd: { type: MarkerType.ArrowClosed, color: '#22c55e' },
+					label: `w${m.weight}`,
+					data: { kind: 'member', groupId: g.id, nodeId: m.node_id }
+				});
+			}
+		});
+
+		// Builtin outbounds
+		const builtins = ['direct', 'must_direct', 'block'];
+		builtins.forEach((name, i) => {
+			n.push({
+				id: `builtin:${name}`,
+				type: 'builtin',
+				position: { x: 320, y: 80 + (groups.length + i) * 100 + 40 },
+				data: { name }
+			});
+		});
+
+		// Rules chain
+		rules.forEach((r, i) => {
+			const rid = `rule:${i}`;
+			n.push({
+				id: rid,
+				type: 'rule',
+				position: { x: 620, y: 60 + i * 160 },
+				data: {
+					expression: r.expression,
+					outbound: r.outbound,
+					enabled: r.enabled,
+					index: i,
+					onChange: (patch: { expression?: string; enabled?: boolean }) => {
+						const next = [...apiRules];
+						next[i] = { ...next[i], ...patch };
+						apiRules = next;
+						dirty = true;
+						// update node label fields without full rebuild
+						nodes = nodes.map((nd) =>
+							nd.id === rid
+								? {
+										...nd,
+										data: {
+											...nd.data,
+											expression: next[i].expression,
+											enabled: next[i].enabled
+										}
+									}
+								: nd
+						);
+					}
+				}
+			});
+
+			// start → first rule, rule → next rule
+			if (i === 0) {
+				e.push({
+					id: 'flow:start-rule0',
+					source: 'start',
+					target: rid,
+					sourceHandle: 'out',
+					targetHandle: 'in',
+					style: 'stroke: #94a3b8',
+					markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+					data: { kind: 'chain' }
+				});
+			} else {
+				e.push({
+					id: `flow:rule${i - 1}-${i}`,
+					source: `rule:${i - 1}`,
+					target: rid,
+					sourceHandle: 'out',
+					targetHandle: 'in',
+					style: 'stroke: #94a3b8',
+					markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+					data: { kind: 'chain' }
+				});
+			}
+
+			// rule → group/builtin by outbound name
+			const target = resolveOutboundNodeId(r.outbound, groups);
+			if (target) {
+				e.push({
+					id: `out:${i}:${r.outbound}`,
+					source: rid,
+					target,
+					sourceHandle: 'out',
+					targetHandle: 'in',
+					style: 'stroke: #fbbf24; stroke-dasharray: 4 3',
+					markerEnd: { type: MarkerType.ArrowClosed, color: '#fbbf24' },
+					data: { kind: 'route', ruleIndex: i }
+				});
+			}
+		});
+
+		// Fallback node
+		n.push({
+			id: 'fallback',
+			type: 'fallback',
+			position: { x: 620, y: 60 + rules.length * 160 + 20 },
+			data: { outbound: fb }
+		});
+		if (rules.length) {
+			e.push({
+				id: 'flow:last-fallback',
+				source: `rule:${rules.length - 1}`,
+				target: 'fallback',
+				sourceHandle: 'out',
+				targetHandle: 'in',
+				style: 'stroke: #f87171',
+				markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
+				data: { kind: 'chain' }
+			});
+		} else {
+			e.push({
+				id: 'flow:start-fallback',
+				source: 'start',
+				target: 'fallback',
+				sourceHandle: 'out',
+				targetHandle: 'in',
+				style: 'stroke: #f87171',
+				markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
+				data: { kind: 'chain' }
+			});
+		}
+		const fbTarget = resolveOutboundNodeId(fb, groups);
+		if (fbTarget) {
+			e.push({
+				id: `fb-out:${fb}`,
+				source: 'fallback',
+				target: fbTarget,
+				sourceHandle: 'out',
+				targetHandle: 'in',
+				style: 'stroke: #f87171; stroke-dasharray: 2 2',
+				markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
+				data: { kind: 'fallback-out' }
+			});
+		}
+
+		nodes = n;
+		edges = e;
+	}
+
+	function resolveOutboundNodeId(outbound: string, groups: GroupDto[]): string | null {
+		const o = outbound.trim();
+		const g = groups.find((x) => x.name === o);
+		if (g) return `group:${g.id}`;
+		if (['direct', 'must_direct', 'block'].includes(o)) return `builtin:${o}`;
+		// proxy default group by name
+		const proxy = groups.find((x) => x.name === 'proxy');
+		if (o === 'proxy' && proxy) return `group:${proxy.id}`;
+		return null;
+	}
 
 	async function reload() {
 		error = '';
 		try {
 			const [n, g, r] = await Promise.all([listNodes(), listGroups(), getRouting()]);
-			nodes = n.nodes;
-			groups = g.groups.map((x) => ({ ...x, members: x.members ?? [] }));
-			rules = r.rules;
+			apiNodes = n.nodes;
+			apiGroups = g.groups.map((x) => ({ ...x, members: x.members ?? [] }));
+			apiRules = r.rules;
 			fallback = r.fallback;
+			rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
+			dirty = false;
 		} catch (e) {
 			error = e instanceof ApiClientError ? apiErrorText(e) : t('groups.loadFailed');
 		}
@@ -53,39 +296,28 @@
 		void reload();
 	});
 
-	function onDragStart(id: string, e: DragEvent) {
-		dragNodeId = id;
-		e.dataTransfer?.setData('text/plain', id);
-		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove';
-	}
-
-	function onDragEnd() {
-		dragNodeId = null;
-		dragOverGroup = null;
-	}
-
-	async function dropOnGroup(groupId: string, e: DragEvent) {
-		e.preventDefault();
-		const id = e.dataTransfer?.getData('text/plain') || dragNodeId;
-		dragOverGroup = null;
-		dragNodeId = null;
-		if (!id) return;
-		busy = true;
-		error = '';
-		message = '';
+	async function handleWeight(groupId: string, nodeId: string, weight: number) {
+		const w = Math.max(1, Math.min(99, Math.floor(weight) || 1));
 		try {
-			const g = await addGroupMember(groupId, id, 1);
-			groups = groups.map((x) => (x.id === g.id ? { ...g, members: g.members ?? [] } : x));
+			await setGroupMemberWeight(groupId, nodeId, w);
+			apiGroups = apiGroups.map((g) =>
+				g.id !== groupId
+					? g
+					: {
+							...g,
+							members: (g.members ?? []).map((m) =>
+								m.node_id === nodeId ? { ...m, weight: w } : m
+							)
+						}
+			);
+			rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
 		} catch (err) {
 			error = err instanceof ApiClientError ? apiErrorText(err) : t('groups.saveFailed');
-		} finally {
-			busy = false;
 		}
 	}
 
-	async function onRemoveMember(groupId: string, nodeId: string) {
+	async function handleRemoveMember(groupId: string, nodeId: string) {
 		busy = true;
-		error = '';
 		try {
 			await removeGroupMember(groupId, nodeId);
 			await reload();
@@ -96,22 +328,61 @@
 		}
 	}
 
-	async function onWeight(groupId: string, nodeId: string, weight: number) {
-		const w = Math.max(1, Math.min(99, Math.floor(weight) || 1));
-		try {
-			await setGroupMemberWeight(groupId, nodeId, w);
-			groups = groups.map((g) =>
-				g.id !== groupId
-					? g
-					: {
-							...g,
-							members: (g.members ?? []).map((m) =>
-								m.node_id === nodeId ? { ...m, weight: w } : m
-							)
-						}
-			);
-		} catch (err) {
-			error = err instanceof ApiClientError ? apiErrorText(err) : t('groups.saveFailed');
+	const isValidConnection: IsValidConnection = (c) => {
+		if (!c.source || !c.target || c.source === c.target) return false;
+		// proxy → group only for membership
+		if (c.source.startsWith('proxy:') && c.target.startsWith('group:')) return true;
+		// rule → group/builtin for outbound
+		if (c.source.startsWith('rule:') && (c.target.startsWith('group:') || c.target.startsWith('builtin:')))
+			return true;
+		// start → rule
+		if (c.source === 'start' && c.target.startsWith('rule:')) return true;
+		// rule → rule (reorder chain manually still allowed as visual only; save uses array order)
+		if (c.source.startsWith('rule:') && c.target.startsWith('rule:')) return true;
+		return false;
+	};
+
+	async function onconnect(c: Connection) {
+		if (!c.source || !c.target) return;
+
+		// Membership: proxy → group
+		if (c.source.startsWith('proxy:') && c.target.startsWith('group:')) {
+			const nodeId = c.source.slice('proxy:'.length);
+			const groupId = c.target.slice('group:'.length);
+			busy = true;
+			error = '';
+			try {
+				const g = await addGroupMember(groupId, nodeId, 1);
+				apiGroups = apiGroups.map((x) =>
+					x.id === g.id ? { ...g, members: g.members ?? [] } : x
+				);
+				rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
+				message = t('flow.saved');
+			} catch (err) {
+				error = err instanceof ApiClientError ? apiErrorText(err) : t('groups.saveFailed');
+			} finally {
+				busy = false;
+			}
+			return;
+		}
+
+		// Route: rule → group/builtin — set rule outbound
+		if (c.source.startsWith('rule:') && (c.target.startsWith('group:') || c.target.startsWith('builtin:'))) {
+			const idx = Number(c.source.slice('rule:'.length));
+			if (Number.isNaN(idx) || !apiRules[idx]) return;
+			let outbound = '';
+			if (c.target.startsWith('group:')) {
+				const gid = c.target.slice('group:'.length);
+				outbound = apiGroups.find((g) => g.id === gid)?.name ?? '';
+			} else {
+				outbound = c.target.slice('builtin:'.length);
+			}
+			if (!outbound) return;
+			const next = [...apiRules];
+			next[idx] = { ...next[idx], outbound };
+			apiRules = next;
+			dirty = true;
+			rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
 		}
 	}
 
@@ -125,8 +396,9 @@
 		error = '';
 		try {
 			const g = await createGroup({ name, policy: newPolicy || 'fixed' });
-			groups = [...groups, { ...g, members: g.members ?? [] }];
+			apiGroups = [...apiGroups, { ...g, members: g.members ?? [] }];
 			newGroupName = '';
+			rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
 		} catch (err) {
 			error = err instanceof ApiClientError ? apiErrorText(err) : t('groups.saveFailed');
 		} finally {
@@ -134,23 +406,14 @@
 		}
 	}
 
-	function moveRule(i: number, dir: -1 | 1) {
-		const j = i + dir;
-		if (j < 0 || j >= rules.length) return;
-		const next = [...rules];
-		const tmp = next[i];
-		next[i] = next[j];
-		next[j] = tmp;
-		rules = next;
-	}
-
 	function addRule() {
-		const out = groups[0]?.name || 'proxy';
-		rules = [...rules, { expression: 'domain(example.com)', outbound: out, enabled: true }];
-	}
-
-	function removeRule(i: number) {
-		rules = rules.filter((_, idx) => idx !== i);
+		const out = apiGroups[0]?.name || 'proxy';
+		apiRules = [
+			...apiRules,
+			{ expression: 'domain(example.com)', outbound: out, enabled: true }
+		];
+		dirty = true;
+		rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
 	}
 
 	async function saveRouting() {
@@ -159,15 +422,17 @@
 		message = '';
 		try {
 			const doc = await putRouting({
-				rules: rules.map((r) => ({
+				rules: apiRules.map((r) => ({
 					expression: r.expression.trim(),
 					outbound: r.outbound.trim(),
 					enabled: r.enabled
 				})),
 				fallback: fallback.trim() || 'proxy'
 			});
-			rules = doc.rules;
+			apiRules = doc.rules;
 			fallback = doc.fallback;
+			rebuildGraph(apiNodes, apiGroups, apiRules, fallback);
+			dirty = false;
 			message = t('flow.saved');
 		} catch (err) {
 			error = err instanceof ApiClientError ? apiErrorText(err) : t('routing.saveFailed');
@@ -175,19 +440,30 @@
 			busy = false;
 		}
 	}
-
-	const outbounds = $derived([
-		...groups.map((g) => g.name),
-		'direct',
-		'must_direct',
-		'block',
-		'proxy'
-	]);
 </script>
 
-<span class="eyebrow">orchestrate · visual flow</span>
-<h1 class="page-title">{t('flow.title')}</h1>
-<p class="page-sub">{t('flow.subtitle')}</p>
+<span class="eyebrow">orchestrate · svelte flow</span>
+<div class="title-row">
+	<div>
+		<h1 class="page-title">{t('flow.title')}</h1>
+		<p class="page-sub">{t('flow.subtitle')}</p>
+	</div>
+	<div class="toolbar">
+		<input class="gname" placeholder={t('groups.name')} bind:value={newGroupName} disabled={busy} />
+		<select bind:value={newPolicy} disabled={busy}>
+			<option value="fixed">fixed</option>
+			<option value="random">random</option>
+			<option value="min_moving_avg">min_moving_avg</option>
+			<option value="min">min</option>
+		</select>
+		<button type="button" disabled={busy} onclick={onCreateGroup}>{t('flow.addGroup')}</button>
+		<button type="button" disabled={busy} onclick={addRule}>{t('flow.addRule')}</button>
+		<button type="button" class="primary" disabled={busy} onclick={saveRouting}>
+			{busy ? t('common.saving') : t('flow.saveRules')}
+			{#if dirty}<span class="dot">●</span>{/if}
+		</button>
+	</div>
+</div>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -196,446 +472,78 @@
 	<p class="ok" role="status">{message}</p>
 {/if}
 
-<div class="flow-grid">
-	<!-- Node pool -->
-	<section class="panel lane">
-		<header class="lane-head">
-			<span class="step">01</span>
-			<div>
-				<h2>{t('flow.pool')}</h2>
-				<p class="lane-hint">{t('flow.dropHint')}</p>
-			</div>
-		</header>
-		<div class="pool">
-			{#if !freeNodes.length && !nodes.length}
-				<p class="muted empty">{t('flow.emptyPool')}</p>
-			{:else if !freeNodes.length}
-				<p class="muted empty">All nodes assigned</p>
-			{:else}
-				{#each freeNodes as n (n.id)}
-					<div
-						class="chip"
-						class:dragging={dragNodeId === n.id}
-						draggable="true"
-						ondragstart={(e) => onDragStart(n.id, e)}
-						ondragend={onDragEnd}
-						role="listitem"
-					>
-						<span class="chip-name">{n.name}</span>
-						<span class="chip-meta mono">{n.protocol ?? '—'} · {n.address ?? '—'}</span>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	</section>
+<p class="legend mono">
+	<span class="l g">proxy → group</span> membership ·
+	<span class="l y">rule → group</span> outbound · drag cards freely · connect handles
+</p>
 
-	<!-- Groups as flow nodes -->
-	<section class="panel lane">
-		<header class="lane-head">
-			<span class="step">02</span>
-			<div>
-				<h2>{t('flow.groups')}</h2>
-				<p class="lane-hint">{t('flow.policy')}: fixed / random / min_moving_avg</p>
-			</div>
-		</header>
-
-		<div class="group-create">
-			<input placeholder={t('groups.name')} bind:value={newGroupName} disabled={busy} />
-			<select bind:value={newPolicy} disabled={busy}>
-				<option value="fixed">fixed (weight)</option>
-				<option value="random">random (weight)</option>
-				<option value="min_moving_avg">min_moving_avg</option>
-				<option value="min">min</option>
-			</select>
-			<button type="button" class="primary" disabled={busy} onclick={onCreateGroup}
-				>{t('flow.addGroup')}</button
-			>
-		</div>
-
-		<div class="group-stack">
-			{#each groups as g (g.id)}
-				<div
-					class="group-node"
-					class:over={dragOverGroup === g.id}
-					ondragover={(e) => {
-						e.preventDefault();
-						dragOverGroup = g.id;
-					}}
-					ondragleave={() => {
-						if (dragOverGroup === g.id) dragOverGroup = null;
-					}}
-					ondrop={(e) => dropOnGroup(g.id, e)}
-					role="region"
-					aria-label={g.name}
-				>
-					<div class="group-head">
-						<strong class="gname">{g.name}</strong>
-						<span class="gpill mono">{g.policy}</span>
-					</div>
-					{#if !(g.members?.length)}
-						<p class="muted dropzone">{t('flow.emptyGroup')}</p>
-					{:else}
-						<ul class="member-list">
-							{#each g.members as m (m.node_id)}
-								<li>
-									<div class="m-main">
-										<span class="m-name">{m.name ?? m.node_id.slice(0, 8)}</span>
-										<span class="m-meta mono">{m.protocol ?? ''} {m.address ?? ''}</span>
-									</div>
-									<label class="wlab">
-										<span class="sr">{t('flow.weight')}</span>
-										<input
-											type="number"
-											min="1"
-											max="99"
-											value={m.weight}
-											disabled={busy}
-											onchange={(e) =>
-												onWeight(
-													g.id,
-													m.node_id,
-													Number((e.currentTarget as HTMLInputElement).value)
-												)}
-										/>
-									</label>
-									<button
-										type="button"
-										class="danger sm"
-										disabled={busy}
-										onclick={() => onRemoveMember(g.id, m.node_id)}>×</button
-									>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-					<div class="flow-arrow" aria-hidden="true">↓</div>
-				</div>
-			{/each}
-		</div>
-	</section>
-
-	<!-- Routing chain -->
-	<section class="panel lane">
-		<header class="lane-head">
-			<span class="step">03</span>
-			<div>
-				<h2>{t('flow.rules')}</h2>
-				<p class="lane-hint">match → outbound (order matters)</p>
-			</div>
-		</header>
-
-		<label class="fallback-lab">
-			{t('flow.fallback')}
-			<input bind:value={fallback} disabled={busy} list="outbound-list" />
-		</label>
-		<datalist id="outbound-list">
-			{#each outbounds as o}
-				<option value={o}></option>
-			{/each}
-		</datalist>
-
-		<ol class="rule-chain">
-			{#each rules as r, i (i)}
-				<li class="rule-card" class:off={!r.enabled}>
-					<div class="rule-ord mono">{String(i + 1).padStart(2, '0')}</div>
-					<div class="rule-body">
-						<label>
-							{t('flow.match')}
-							<input class="wide" bind:value={r.expression} disabled={busy} />
-						</label>
-						<label>
-							{t('flow.outbound')}
-							<input bind:value={r.outbound} disabled={busy} list="outbound-list" />
-						</label>
-						<label class="chk">
-							<input type="checkbox" bind:checked={r.enabled} disabled={busy} />
-							{t('common.enabled')}
-						</label>
-					</div>
-					<div class="rule-ops">
-						<button type="button" class="ghost sm" disabled={busy || i === 0} onclick={() => moveRule(i, -1)}
-							>{t('flow.moveUp')}</button
-						>
-						<button
-							type="button"
-							class="ghost sm"
-							disabled={busy || i === rules.length - 1}
-							onclick={() => moveRule(i, 1)}>{t('flow.moveDown')}</button
-						>
-						<button type="button" class="danger sm" disabled={busy} onclick={() => removeRule(i)}
-							>×</button
-						>
-					</div>
-				</li>
-			{/each}
-		</ol>
-
-		<div class="actions">
-			<button type="button" disabled={busy} onclick={addRule}>{t('flow.addRule')}</button>
-			<button type="button" class="primary" disabled={busy} onclick={saveRouting}
-				>{busy ? t('common.saving') : t('flow.saveRules')}</button
-			>
-		</div>
-	</section>
+<div class="canvas panel">
+	<SvelteFlow
+		bind:nodes
+		bind:edges
+		{nodeTypes}
+		fitView
+		colorMode="dark"
+		minZoom={0.25}
+		maxZoom={1.75}
+		defaultEdgeOptions={{ type: 'smoothstep' }}
+		isValidConnection={isValidConnection}
+		onconnect={onconnect}
+	>
+		<Controls />
+		<MiniMap pannable zoomable />
+		<Background variant={BackgroundVariant.Dots} gap={18} size={1} />
+	</SvelteFlow>
 </div>
 
 <style>
-	.flow-grid {
-		display: grid;
-		grid-template-columns: minmax(14rem, 1fr) minmax(16rem, 1.2fr) minmax(18rem, 1.3fr);
-		gap: var(--space-sm);
-		align-items: start;
-	}
-	.lane {
-		padding: var(--space-md);
-		min-height: 20rem;
-	}
-	.lane-head {
+	.title-row {
 		display: flex;
-		gap: 0.75rem;
-		align-items: flex-start;
-		margin-bottom: var(--space-md);
-	}
-	.lane-head h2 {
-		margin: 0;
-		font-size: 0.95rem;
-		font-family: var(--font-mono);
-	}
-	.lane-hint {
-		margin: 0.15rem 0 0;
-		font-size: 0.75rem;
-		color: var(--ink-dim);
-	}
-	.step {
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		font-weight: 700;
-		color: var(--signal);
-		background: var(--signal-soft);
-		border: 1px solid rgba(34, 197, 94, 0.3);
-		border-radius: 6px;
-		padding: 0.25rem 0.4rem;
-	}
-	.pool {
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
-		max-height: 28rem;
-		overflow: auto;
-	}
-	.chip {
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-		padding: 0.55rem 0.65rem;
-		border: 1px solid var(--line);
-		border-radius: var(--r-md);
-		background: var(--bg-raised);
-		cursor: grab;
-		user-select: none;
-		transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-	}
-	.chip:hover {
-		border-color: var(--signal);
-		box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25);
-	}
-	.chip.dragging {
-		opacity: 0.55;
-		transform: scale(0.98);
-	}
-	.chip-name {
-		font-weight: 600;
-		font-size: 0.9rem;
-	}
-	.chip-meta,
-	.m-meta,
-	.mono {
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		color: var(--ink-dim);
-	}
-	.group-create {
-		display: grid;
-		grid-template-columns: 1fr 1fr auto;
-		gap: 0.4rem;
-		margin-bottom: var(--space-md);
-	}
-	.group-stack {
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-	.group-node {
-		position: relative;
-		border: 1px dashed var(--line-strong);
-		border-radius: var(--r-lg);
-		padding: 0.75rem;
-		background: rgba(15, 23, 42, 0.65);
-		transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-		min-height: 5.5rem;
-	}
-	.group-node.over {
-		border-color: var(--signal);
-		background: var(--signal-soft);
-		box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
-	}
-	.group-head {
-		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
-		align-items: center;
-		gap: 0.5rem;
+		gap: 1rem;
+		align-items: flex-start;
 		margin-bottom: 0.5rem;
 	}
-	.gname {
-		font-family: var(--font-mono);
-		font-size: 0.95rem;
-	}
-	.gpill {
-		font-size: 0.68rem;
-		padding: 0.15rem 0.4rem;
-		border-radius: 999px;
-		background: var(--bg-raised);
-		border: 1px solid var(--line);
-		color: var(--ink-muted);
-	}
-	.dropzone {
-		font-size: 0.82rem;
-		padding: 0.75rem;
-		text-align: center;
-		border: 1px dashed var(--line);
-		border-radius: var(--r-md);
-	}
-	.member-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
+	.toolbar {
 		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
-	.member-list li {
-		display: grid;
-		grid-template-columns: 1fr auto auto;
+		flex-wrap: wrap;
 		gap: 0.4rem;
 		align-items: center;
-		padding: 0.4rem 0.5rem;
-		background: var(--bg-raised);
-		border: 1px solid var(--line);
-		border-radius: var(--r-md);
 	}
-	.m-name {
+	.gname {
+		width: 8rem;
+	}
+	.dot {
+		margin-left: 0.25rem;
+		color: #fbbf24;
+	}
+	.legend {
+		font-size: 0.75rem;
+		color: var(--ink-dim);
+		margin: 0 0 0.75rem;
+	}
+	.l {
 		font-weight: 600;
-		font-size: 0.85rem;
 	}
-	.wlab input {
-		width: 3.2rem;
-		padding: 0.3rem 0.35rem;
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-	}
-	.sm {
-		padding: 0.25rem 0.45rem;
-		font-size: 0.78rem;
-	}
-	.flow-arrow {
-		position: absolute;
-		left: 50%;
-		bottom: -0.85rem;
-		transform: translateX(-50%);
+	.l.g {
 		color: var(--signal);
-		font-size: 0.85rem;
-		opacity: 0.7;
-		pointer-events: none;
 	}
-	.group-stack .group-node:last-child .flow-arrow {
-		display: none;
+	.l.y {
+		color: #fbbf24;
 	}
-	.fallback-lab {
-		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-		font-size: 0.7rem;
-		font-family: var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--ink-dim);
-		margin-bottom: var(--space-md);
-	}
-	.rule-chain {
-		list-style: none;
-		margin: 0;
+	.canvas {
+		height: min(72vh, 720px);
 		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		max-height: 28rem;
-		overflow: auto;
-	}
-	.rule-card {
-		display: grid;
-		grid-template-columns: auto 1fr auto;
-		gap: 0.55rem;
-		padding: 0.65rem;
-		border: 1px solid var(--line);
-		border-radius: var(--r-md);
-		background: var(--bg-raised);
-	}
-	.rule-card.off {
-		opacity: 0.55;
-	}
-	.rule-ord {
-		font-weight: 700;
-		color: var(--signal);
-		padding-top: 0.35rem;
-	}
-	.rule-body {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
-	.rule-body label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		font-size: 0.68rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--ink-dim);
-		font-family: var(--font-mono);
-	}
-	.rule-body input.wide {
-		width: 100%;
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-	}
-	.chk {
-		flex-direction: row !important;
-		align-items: center;
-		gap: 0.4rem !important;
-		text-transform: none !important;
-		font-size: 0.8rem !important;
-		color: var(--ink-muted) !important;
-	}
-	.rule-ops {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.empty {
-		padding: 1rem;
-		text-align: center;
-	}
-	.sr {
-		position: absolute;
-		width: 1px;
-		height: 1px;
 		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
 	}
-
-	@media (max-width: 1100px) {
-		.flow-grid {
-			grid-template-columns: 1fr;
-		}
+	.canvas :global(.svelte-flow) {
+		background: transparent;
+	}
+	.canvas :global(.svelte-flow__minimap) {
+		background: #0f172a !important;
+	}
+	.mono {
+		font-family: var(--font-mono);
 	}
 </style>
