@@ -86,6 +86,20 @@ They can run side by side. chaos does **not** use dae-wing GraphQL.
 - **Apply** writes a minimal dae config and runs `dae run -c <work_dir>` (MVP restart strategy). Real transparent proxy needs **capabilities/root** and a suitable kernel; without privileges apply may fail with a clear error.
 - For UI-only testing of apply spawn without eBPF, point `CHAOS_DAE_BIN` at `crates/chaos-dae/tests/fixtures/fake-dae.sh`.
 
+## i18n
+
+Shared catalogs live at repo root:
+
+```text
+locales/en.json
+locales/zh-CN.json
+```
+
+- **Web:** `$lib/i18n` + language switcher; choice stored in `localStorage.chaos_locale`; API calls send `Accept-Language`.
+- **API:** `chaos-i18n` embeds the same JSON; `error.message` is localized; `error.code` stays stable.
+- Default / fallback: **`en`**. Browser language is used on first visit when no stored preference.
+- Design: [i18n design](docs/superpowers/specs/2026-07-18-chaos-i18n-design.md).
+
 ## Tests
 
 ```bash

@@ -13,6 +13,7 @@
 		type LatencyDto
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
+	import { apiErrorText, t } from '$lib/i18n';
 
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);
@@ -29,7 +30,7 @@
 			runtime = r;
 			latency = lat.results;
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Failed to load dashboard';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('dashboard.loadFailed');
 		}
 	}
 
@@ -45,9 +46,12 @@
 			const res = await testLatency(null);
 			latency = res.results;
 			const alive = res.results.filter((r) => r.alive).length;
-			message = `Latency test finished: ${alive}/${res.results.length} alive`;
+			message = t('dashboard.latencyFinished', {
+				alive,
+				total: res.results.length
+			});
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Latency test failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('dashboard.latencyFailed');
 		} finally {
 			busy = '';
 		}
@@ -59,10 +63,14 @@
 		message = '';
 		try {
 			const res = await applyRuntime();
-			message = `Applied config (${res.nodes} nodes) → ${res.config_path}; running=${res.running}`;
+			message = t('dashboard.applied', {
+				nodes: res.nodes,
+				path: res.config_path,
+				running: String(res.running)
+			});
 			runtime = await getRuntime();
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Apply failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('dashboard.applyFailed');
 		} finally {
 			busy = '';
 		}
@@ -74,9 +82,9 @@
 		message = '';
 		try {
 			runtime = await stopRuntime();
-			message = 'dae stop requested';
+			message = t('dashboard.stopRequested');
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Stop failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('dashboard.stopFailed');
 		} finally {
 			busy = '';
 		}
@@ -93,8 +101,8 @@
 	});
 </script>
 
-<h1>Dashboard</h1>
-<p class="muted">Health, runtime, and latency overview.</p>
+<h1>{t('dashboard.title')}</h1>
+<p class="muted">{t('dashboard.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -105,52 +113,58 @@
 
 <section class="cards">
 	<div class="card">
-		<h2>API health</h2>
+		<h2>{t('dashboard.apiHealth')}</h2>
 		{#if healthInfo}
 			<ul>
-				<li>ok: <strong>{String(healthInfo.ok)}</strong></li>
-				<li>api_version: {healthInfo.api_version}</li>
+				<li>{t('dashboard.field.ok')}: <strong>{String(healthInfo.ok)}</strong></li>
+				<li>{t('dashboard.field.apiVersion')}: {healthInfo.api_version}</li>
 				<li>
-					dae_binary:
+					{t('dashboard.field.daeBinary')}:
 					{#if healthInfo.dae_binary}
 						<code>{healthInfo.dae_binary}</code>
 					{:else}
-						<span class="muted">none</span>
+						<span class="muted">{t('common.none')}</span>
 					{/if}
 				</li>
-				<li>dae_binary_ok: <strong>{String(healthInfo.dae_binary_ok)}</strong></li>
+				<li
+					>{t('dashboard.field.daeBinaryOk')}:
+					<strong>{String(healthInfo.dae_binary_ok)}</strong></li
+				>
 			</ul>
 		{:else}
-			<p class="muted">Loading…</p>
+			<p class="muted">{t('dashboard.loading')}</p>
 		{/if}
 	</div>
 
 	<div class="card">
-		<h2>Runtime (dae)</h2>
+		<h2>{t('dashboard.runtime')}</h2>
 		{#if runtime}
 			<ul>
 				<li>
-					running:
+					{t('dashboard.field.running')}:
 					<strong class={runtime.running ? 'lat-good' : 'lat-bad'}
 						>{String(runtime.running)}</strong
 					>
 				</li>
-				<li>config_exists: {String(runtime.config_exists)}</li>
-				<li>work_dir: <code>{runtime.work_dir}</code></li>
-				<li>dae_binary_ok: {String(runtime.dae_binary_ok)}</li>
+				<li>{t('dashboard.field.configExists')}: {String(runtime.config_exists)}</li>
+				<li>{t('dashboard.field.workDir')}: <code>{runtime.work_dir}</code></li>
+				<li>{t('dashboard.field.daeBinaryOk')}: {String(runtime.dae_binary_ok)}</li>
 			</ul>
 		{:else}
-			<p class="muted">Loading…</p>
+			<p class="muted">{t('dashboard.loading')}</p>
 		{/if}
 	</div>
 
 	<div class="card">
-		<h2>Latency summary</h2>
+		<h2>{t('dashboard.latencySummary')}</h2>
 		<p>
-			{latencySummary.alive}/{latencySummary.total} alive ·
-			<span class="lat-good">{latencySummary.good} good</span> ·
-			<span class="lat-warn">{latencySummary.warn} warn</span> ·
-			<span class="lat-bad">{latencySummary.bad} bad</span>
+			{t('dashboard.aliveLine', {
+				alive: latencySummary.alive,
+				total: latencySummary.total,
+				good: latencySummary.good,
+				warn: latencySummary.warn,
+				bad: latencySummary.bad
+			})}
 		</p>
 		{#if latency.length}
 			<ul class="lat-list">
@@ -164,22 +178,24 @@
 				{/each}
 			</ul>
 		{:else}
-			<p class="muted">No latency results yet.</p>
+			<p class="muted">{t('dashboard.noLatency')}</p>
 		{/if}
 	</div>
 </section>
 
 <div class="actions">
 	<button type="button" disabled={!!busy} onclick={runAllLatency}>
-		{busy === 'latency' ? 'Testing…' : 'Test all latency'}
+		{busy === 'latency' ? t('dashboard.testing') : t('dashboard.testAll')}
 	</button>
 	<button type="button" class="primary" disabled={!!busy} onclick={onApply}>
-		{busy === 'apply' ? 'Applying…' : 'Apply config'}
+		{busy === 'apply' ? t('dashboard.applying') : t('dashboard.apply')}
 	</button>
 	<button type="button" disabled={!!busy} onclick={onStop}>
-		{busy === 'stop' ? 'Stopping…' : 'Stop dae'}
+		{busy === 'stop' ? t('dashboard.stopping') : t('dashboard.stop')}
 	</button>
-	<button type="button" class="ghost" disabled={!!busy} onclick={() => refresh()}>Refresh</button>
+	<button type="button" class="ghost" disabled={!!busy} onclick={() => refresh()}
+		>{t('common.refresh')}</button
+	>
 </div>
 
 <style>

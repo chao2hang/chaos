@@ -11,6 +11,7 @@
 		type LatencyDto
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
+	import { apiErrorText, t } from '$lib/i18n';
 
 	let nodes = $state<NodeDto[]>([]);
 	let latencyById = $state<Record<string, LatencyDto>>({});
@@ -35,7 +36,7 @@
 			for (const r of lat.results) map[r.id] = r;
 			latencyById = map;
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Failed to load nodes';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.loadFailed');
 		}
 	}
 
@@ -51,7 +52,7 @@
 			.map((l) => l.trim())
 			.filter(Boolean);
 		if (!lines.length) {
-			error = 'Paste one share link per line.';
+			error = t('nodes.importEmpty');
 			return;
 		}
 		busy = true;
@@ -59,18 +60,21 @@
 			const res = await importNodes(lines.map((link) => ({ link })));
 			const ok = res.results.filter((r) => r.ok).length;
 			const fail = res.results.length - ok;
-			message = `Imported ${ok} node(s)${fail ? `, ${fail} failed` : ''}`;
+			const failSuffix = fail
+				? t('nodes.importedFailSuffix', { fail })
+				: '';
+			message = t('nodes.imported', { ok, failSuffix });
 			if (fail) {
 				const errs = res.results
 					.filter((r): r is Extract<typeof r, { ok: false }> => !r.ok)
-					.map((r) => r.error.message)
+					.map((r) => apiErrorText(r.error))
 					.slice(0, 3);
 				if (errs.length) error = errs.join('; ');
 			}
 			importText = '';
 			await load();
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Import failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.importFailed');
 		} finally {
 			busy = false;
 		}
@@ -83,14 +87,14 @@
 			const res = await testLatency([id]);
 			mergeLatency(res.results);
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Latency test failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.latencyFailed');
 		} finally {
 			testingId = null;
 		}
 	}
 
 	async function onDelete(id: string) {
-		if (!confirm('Delete this node?')) return;
+		if (!confirm(t('nodes.deleteConfirm'))) return;
 		error = '';
 		try {
 			await deleteNode(id);
@@ -98,13 +102,13 @@
 			const { [id]: _, ...rest } = latencyById;
 			latencyById = rest;
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Delete failed';
+			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.deleteFailed');
 		}
 	}
 </script>
 
-<h1>Nodes</h1>
-<p class="muted">Import share links and run TCP latency probes.</p>
+<h1>{t('nodes.title')}</h1>
+<p class="muted">{t('nodes.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -114,16 +118,16 @@
 {/if}
 
 <section class="import">
-	<label for="links">Share links (one per line)</label>
+	<label for="links">{t('nodes.linksLabel')}</label>
 	<textarea
 		id="links"
 		rows="5"
-		placeholder="trojan://…&#10;ss://…&#10;vmess://…"
+		placeholder={t('nodes.linksPlaceholder')}
 		bind:value={importText}
 		disabled={busy}
 	></textarea>
 	<button type="button" class="primary" disabled={busy} onclick={onImport}>
-		{busy ? 'Importing…' : 'Import'}
+		{busy ? t('common.importing') : t('common.import')}
 	</button>
 </section>
 
@@ -131,33 +135,31 @@
 	<table>
 		<thead>
 			<tr>
-				<th>Name</th>
-				<th>Protocol</th>
-				<th>Address</th>
-				<th>Latency</th>
+				<th>{t('nodes.col.name')}</th>
+				<th>{t('nodes.col.protocol')}</th>
+				<th>{t('nodes.col.address')}</th>
+				<th>{t('nodes.col.latency')}</th>
 				<th></th>
 			</tr>
 		</thead>
 		<tbody>
 			{#if !nodes.length}
 				<tr>
-					<td colspan="5" class="muted">No nodes yet.</td>
+					<td colspan="5" class="muted">{t('nodes.empty')}</td>
 				</tr>
 			{:else}
 				{#each nodes as n (n.id)}
 					{@const lat = latencyById[n.id]}
-					{@const tone = lat
-						? latencyTone(lat.latency_ms, lat.alive)
-						: 'unknown'}
+					{@const tone = lat ? latencyTone(lat.latency_ms, lat.alive) : 'unknown'}
 					<tr>
 						<td>
 							<div class="name">{n.name}</div>
 							{#if n.tag}<span class="tag">{n.tag}</span>{/if}
 						</td>
-						<td>{n.protocol ?? '—'}</td>
-						<td class="addr">{n.address ?? '—'}</td>
+						<td>{n.protocol ?? t('common.emDash')}</td>
+						<td class="addr">{n.address ?? t('common.emDash')}</td>
 						<td class={latencyClass(tone)}>
-							{lat ? formatLatencyMs(lat.latency_ms, lat.alive) : '—'}
+							{lat ? formatLatencyMs(lat.latency_ms, lat.alive) : t('common.emDash')}
 							{#if lat?.message && !lat.alive}
 								<span class="msg" title={lat.message}>!</span>
 							{/if}
@@ -168,10 +170,10 @@
 								disabled={testingId === n.id}
 								onclick={() => onTestOne(n.id)}
 							>
-								{testingId === n.id ? '…' : 'Test'}
+								{testingId === n.id ? '…' : t('common.test')}
 							</button>
 							<button type="button" class="danger" onclick={() => onDelete(n.id)}
-								>Delete</button
+								>{t('common.delete')}</button
 							>
 						</td>
 					</tr>

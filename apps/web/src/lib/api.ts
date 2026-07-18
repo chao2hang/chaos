@@ -1,5 +1,7 @@
 /** Minimal browser API client for chaos-api (Bearer from localStorage.token). */
 
+import { getLocale } from '$lib/i18n';
+
 export type ApiErrorBody = {
 	error: {
 		code: string;
@@ -33,6 +35,7 @@ export function setToken(token: string | null): void {
 /**
  * Fetch JSON from the API. Paths should be absolute under the app origin, e.g. `/api/v1/health`.
  * Attaches `Authorization: Bearer <localStorage.token>` when a token is present.
+ * Sends `Accept-Language` from the active UI locale.
  */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	const headers = new Headers(init.headers);
@@ -46,6 +49,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	const token = getToken();
 	if (token && !headers.has('Authorization')) {
 		headers.set('Authorization', `Bearer ${token}`);
+	}
+
+	if (!headers.has('Accept-Language')) {
+		headers.set('Accept-Language', getLocale());
 	}
 
 	const res = await fetch(path, {

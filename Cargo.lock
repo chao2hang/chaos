@@ -216,6 +216,7 @@ dependencies = [
  "axum",
  "chaos-core",
  "chaos-dae",
+ "chaos-i18n",
  "chaos-store",
  "chrono",
  "hex",
@@ -246,6 +247,18 @@ dependencies = [
 [[package]]
 name = "chaos-dae"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+]
+
+[[package]]
+name = "chaos-i18n"
+version = "0.1.0"
+dependencies = [
+ "once_cell",
+ "serde_json",
+]
 
 [[package]]
 name = "chaos-store"

@@ -1,0 +1,13 @@
+[package]
+name = "chaos-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared locale catalog for chaos (API, future CLI)"
+
+[dependencies]
+serde_json = { workspace = true }
+once_cell = "1"
+
+[dev-dependencies]
+serde_json = { workspace = true }

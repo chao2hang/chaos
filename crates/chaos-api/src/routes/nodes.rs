@@ -3,6 +3,7 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use chaos_i18n::error_message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +11,7 @@ use chaos_store::{delete_node, insert_node_with_id, list_nodes, Node};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::locale::RequestLocale;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -101,13 +103,11 @@ async fn list_nodes_handler(
 async fn import_nodes(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Json(body): Json<ImportNodesRequest>,
 ) -> Result<Json<ImportNodesResponse>, ApiError> {
     if body.links.is_empty() {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "links must not be empty",
-        ));
+        return Err(ApiError::bad_request("invalid_request", locale));
     }
 
     let mut results = Vec::with_capacity(body.links.len());
@@ -119,8 +119,8 @@ async fn import_nodes(
                 ok: false,
                 link: item.link,
                 error: ImportErrorBody {
-                    code: "invalid_link",
-                    message: "link is required".to_string(),
+                    code: "link_required",
+                    message: error_message(locale, "link_required"),
                 },
             });
             continue;
@@ -133,8 +133,8 @@ async fn import_nodes(
                 ok: false,
                 link: raw.to_string(),
                 error: ImportErrorBody {
-                    code: "invalid_link",
-                    message: "unrecognized share link scheme".to_string(),
+                    code: "unrecognized_scheme",
+                    message: error_message(locale, "unrecognized_scheme"),
                 },
             });
             continue;
@@ -172,8 +172,8 @@ async fn import_nodes(
                     ok: false,
                     link: raw.to_string(),
                     error: ImportErrorBody {
-                        code: "internal_error",
-                        message: "database error".to_string(),
+                        code: "database_error",
+                        message: error_message(locale, "database_error"),
                     },
                 });
             }
@@ -186,11 +186,12 @@ async fn import_nodes(
 async fn delete_node_handler(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteNodeResponse>, ApiError> {
     let deleted = delete_node(&state.pool, &id).await?;
     if !deleted {
-        return Err(ApiError::not_found("not_found", "node not found"));
+        return Err(ApiError::not_found("not_found", locale));
     }
     Ok(Json(DeleteNodeResponse { deleted: true }))
 }
@@ -295,5 +296,32 @@ mod tests {
             .unwrap();
         assert_eq!(del.status(), StatusCode::OK);
         assert_eq!(json_body(del).await["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn import_invalid_link_localizes() {
+        let (app, state) = test_app().await;
+        let token = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let import = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/nodes")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .header("accept-language", "zh-CN")
+                    .body(Body::from(r#"{"links":[{"link":"not-a-valid-share-link"}]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(import.status(), StatusCode::OK);
+        let body = json_body(import).await;
+        assert_eq!(body["results"][0]["ok"], false);
+        assert_eq!(body["results"][0]["error"]["code"], "unrecognized_scheme");
+        assert_eq!(
+            body["results"][0]["error"]["message"],
+            "无法识别的分享链接协议"
+        );
     }
 }

@@ -1,8 +1,9 @@
-//! API error type with consistent JSON envelope.
+//! API error type with consistent JSON envelope and localized messages.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use chaos_i18n::{error_message, Locale};
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
@@ -21,24 +22,40 @@ impl ApiError {
         }
     }
 
-    pub fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, code, message)
+    /// Coded error: `message` resolved from shared locale catalog.
+    pub fn coded(status: StatusCode, code: &'static str, locale: Locale) -> Self {
+        Self {
+            status,
+            code,
+            message: error_message(locale, code),
+        }
     }
 
-    pub fn unauthorized(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, code, message)
+    pub fn bad_request(code: &'static str, locale: Locale) -> Self {
+        Self::coded(StatusCode::BAD_REQUEST, code, locale)
     }
 
-    pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::CONFLICT, code, message)
+    pub fn unauthorized(code: &'static str, locale: Locale) -> Self {
+        Self::coded(StatusCode::UNAUTHORIZED, code, locale)
     }
 
-    pub fn not_found(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, code, message)
+    pub fn conflict(code: &'static str, locale: Locale) -> Self {
+        Self::coded(StatusCode::CONFLICT, code, locale)
     }
 
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
+    pub fn not_found(code: &'static str, locale: Locale) -> Self {
+        Self::coded(StatusCode::NOT_FOUND, code, locale)
+    }
+
+    /// Client-facing internal error (generic localized message). Details go to logs.
+    pub fn internal(locale: Locale) -> Self {
+        Self::coded(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", locale)
+    }
+
+    /// Like `internal` but logs an English diagnostic first.
+    pub fn internal_logged(locale: Locale, log: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %log, "internal error");
+        Self::internal(locale)
     }
 }
 
@@ -68,13 +85,14 @@ impl IntoResponse for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
         tracing::error!(?err, "database error");
-        ApiError::internal("database error")
+        // Default English when locale is unavailable (From impl has no request context).
+        ApiError::internal(Locale::En)
     }
 }
 
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         tracing::error!(error = %err, "internal error");
-        ApiError::internal(err.to_string())
+        ApiError::internal(Locale::En)
     }
 }

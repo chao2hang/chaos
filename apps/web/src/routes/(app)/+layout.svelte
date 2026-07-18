@@ -3,6 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { setToken } from '$lib/api';
+	import { t } from '$lib/i18n';
+	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -29,20 +31,21 @@
 		<header class="top">
 			<a class="brand" href="/dashboard">chaos</a>
 			<nav>
-				<a href="/dashboard" class:active={path.startsWith('/dashboard')}>Dashboard</a>
-				<a href="/nodes" class:active={path.startsWith('/nodes')}>Nodes</a>
+				<a href="/dashboard" class:active={path.startsWith('/dashboard')}>{t('nav.dashboard')}</a>
+				<a href="/nodes" class:active={path.startsWith('/nodes')}>{t('nav.nodes')}</a>
 				<a href="/subscriptions" class:active={path.startsWith('/subscriptions')}
-					>Subscriptions</a
+					>{t('nav.subscriptions')}</a
 				>
 			</nav>
-			<button type="button" class="logout" onclick={logout}>Log out</button>
+			<LocaleSwitcher />
+			<button type="button" class="logout" onclick={logout}>{t('nav.logout')}</button>
 		</header>
 		<main class="content">
 			{@render children()}
 		</main>
 	</div>
 {:else}
-	<main class="boot">Checking session…</main>
+	<main class="boot">{t('nav.checkingSession')}</main>
 {/if}
 
 <style>

@@ -10,4 +10,14 @@ declare global {
 	}
 }
 
+declare module '$locales/en.json' {
+	const value: Record<string, string>;
+	export default value;
+}
+
+declare module '$locales/zh-CN.json' {
+	const value: Record<string, string>;
+	export default value;
+}
+
 export {};

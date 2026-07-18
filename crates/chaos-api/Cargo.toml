@@ -28,6 +28,7 @@ uuid = { workspace = true }
 chaos-store = { path = "../chaos-store" }
 chaos-core = { path = "../chaos-core" }
 chaos-dae = { path = "../chaos-dae" }
+chaos-i18n = { path = "../chaos-i18n" }
 
 [dev-dependencies]
 http-body-util = "0.1"

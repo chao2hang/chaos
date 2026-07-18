@@ -9,6 +9,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use chaos_i18n::Locale;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -17,6 +18,7 @@ use std::path::Path;
 use chaos_store::{count_users, create_user, find_user_by_username};
 
 use crate::error::ApiError;
+use crate::locale::RequestLocale;
 use crate::state::AppState;
 
 const JWT_TTL_HOURS: i64 = 24;
@@ -96,23 +98,44 @@ fn random_hex_secret(num_bytes: usize) -> String {
 }
 
 pub fn hash_password(password: &str) -> Result<String, ApiError> {
+    hash_password_locale(password, Locale::En)
+}
+
+fn hash_password_locale(password: &str, locale: Locale) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| ApiError::internal(format!("password hash failed: {e}")))
+        .map_err(|e| ApiError::internal_logged(locale, format!("password hash failed: {e}")))
 }
 
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, ApiError> {
+    verify_password_locale(password, password_hash, Locale::En)
+}
+
+fn verify_password_locale(
+    password: &str,
+    password_hash: &str,
+    locale: Locale,
+) -> Result<bool, ApiError> {
     let parsed = PasswordHash::new(password_hash)
-        .map_err(|e| ApiError::internal(format!("invalid password hash: {e}")))?;
+        .map_err(|e| ApiError::internal_logged(locale, format!("invalid password hash: {e}")))?;
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok())
 }
 
 pub fn issue_token(user_id: &str, username: &str, secret: &str) -> Result<String, ApiError> {
+    issue_token_locale(user_id, username, secret, Locale::En)
+}
+
+fn issue_token_locale(
+    user_id: &str,
+    username: &str,
+    secret: &str,
+    locale: Locale,
+) -> Result<String, ApiError> {
     let exp = (Utc::now() + Duration::hours(JWT_TTL_HOURS)).timestamp();
     let claims = Claims {
         sub: user_id.to_string(),
@@ -124,76 +147,68 @@ pub fn issue_token(user_id: &str, username: &str, secret: &str) -> Result<String
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
-    .map_err(|e| ApiError::internal(format!("jwt encode failed: {e}")))
+    .map_err(|e| ApiError::internal_logged(locale, format!("jwt encode failed: {e}")))
 }
 
 pub fn decode_token(token: &str, secret: &str) -> Result<Claims, ApiError> {
+    decode_token_locale(token, secret, Locale::En)
+}
+
+fn decode_token_locale(token: &str, secret: &str, locale: Locale) -> Result<Claims, ApiError> {
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     )
     .map(|data| data.claims)
-    .map_err(|_| ApiError::unauthorized("invalid_token", "invalid or expired token"))
+    .map_err(|_| ApiError::unauthorized("invalid_token", locale))
 }
 
-fn validate_credentials(body: &Credentials) -> Result<(), ApiError> {
+fn validate_credentials(body: &Credentials, locale: Locale) -> Result<(), ApiError> {
     let username = body.username.trim();
     if username.is_empty() {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "username is required",
-        ));
+        return Err(ApiError::bad_request("invalid_request", locale));
     }
     if body.password.len() < MIN_PASSWORD_LEN {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
-        ));
+        return Err(ApiError::bad_request("invalid_password", locale));
     }
     Ok(())
 }
 
 async fn setup(
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Json(body): Json<Credentials>,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    validate_credentials(&body)?;
+    validate_credentials(&body, locale)?;
 
     let n = count_users(&state.pool).await?;
     if n > 0 {
-        return Err(ApiError::conflict(
-            "already_initialized",
-            "admin user already exists",
-        ));
+        return Err(ApiError::conflict("already_initialized", locale));
     }
 
-    let hash = hash_password(&body.password)?;
+    let hash = hash_password_locale(&body.password, locale)?;
     let user = create_user(&state.pool, body.username.trim(), &hash).await?;
-    let token = issue_token(&user.id, &user.username, &state.jwt_secret)?;
+    let token = issue_token_locale(&user.id, &user.username, &state.jwt_secret, locale)?;
     Ok(Json(TokenResponse { token }))
 }
 
 async fn login(
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Json(body): Json<Credentials>,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    validate_credentials(&body)?;
+    validate_credentials(&body, locale)?;
 
     let user = find_user_by_username(&state.pool, body.username.trim())
         .await?
-        .ok_or_else(|| {
-            ApiError::unauthorized("invalid_credentials", "invalid username or password")
-        })?;
+        .ok_or_else(|| ApiError::unauthorized("invalid_credentials", locale))?;
 
-    if !verify_password(&body.password, &user.password_hash)? {
-        return Err(ApiError::unauthorized(
-            "invalid_credentials",
-            "invalid username or password",
-        ));
+    if !verify_password_locale(&body.password, &user.password_hash, locale)? {
+        return Err(ApiError::unauthorized("invalid_credentials", locale));
     }
 
-    let token = issue_token(&user.id, &user.username, &state.jwt_secret)?;
+    let token = issue_token_locale(&user.id, &user.username, &state.jwt_secret, locale)?;
     Ok(Json(TokenResponse { token }))
 }
 
@@ -211,22 +226,25 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        let locale = Locale::from_accept_language(
+            parts
+                .headers
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok()),
+        );
+
         let auth = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorized("unauthorized", "missing Authorization header")
-            })?;
+            .ok_or_else(|| ApiError::unauthorized("unauthorized", locale))?;
 
         let token = auth
             .strip_prefix("Bearer ")
             .or_else(|| auth.strip_prefix("bearer "))
-            .ok_or_else(|| {
-                ApiError::unauthorized("unauthorized", "expected Bearer token")
-            })?;
+            .ok_or_else(|| ApiError::unauthorized("unauthorized", locale))?;
 
-        let claims = decode_token(token, &state.jwt_secret)?;
+        let claims = decode_token_locale(token, &state.jwt_secret, locale)?;
         Ok(AuthUser {
             user_id: claims.sub,
             username: claims.username,
@@ -376,6 +394,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(json_body(status1).await["initialized"], true);
+    }
+
+    #[tokio::test]
+    async fn login_error_localizes_with_accept_language() {
+        let (app, _) = test_app().await;
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"password1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let login_bad = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .header("accept-language", "zh-CN")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"wrongpass"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_bad.status(), StatusCode::UNAUTHORIZED);
+        let err = json_body(login_bad).await;
+        assert_eq!(err["error"]["code"], "invalid_credentials");
+        assert_eq!(err["error"]["message"], "用户名或密码错误");
     }
 
     #[test]

@@ -8,6 +8,7 @@
 		ApiClientError,
 		type SubscriptionDto
 	} from '$lib/api';
+	import { apiErrorText, t } from '$lib/i18n';
 
 	let subs = $state<SubscriptionDto[]>([]);
 	let url = $state('');
@@ -23,7 +24,8 @@
 			const res = await listSubscriptions();
 			subs = res.subscriptions;
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Failed to load subscriptions';
+			error =
+				e instanceof ApiClientError ? apiErrorText(e) : t('subscriptions.loadFailed');
 		}
 	}
 
@@ -36,18 +38,19 @@
 		message = '';
 		const u = url.trim();
 		if (!u) {
-			error = 'URL is required';
+			error = t('subscriptions.urlRequired');
 			return;
 		}
 		busy = true;
 		try {
 			const res = await importSubscription(u, tag.trim() || undefined);
-			message = `Imported subscription (${res.subscription.node_count} nodes)`;
+			message = t('subscriptions.imported', { count: res.subscription.node_count });
 			url = '';
 			tag = '';
 			await load();
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Import failed';
+			error =
+				e instanceof ApiClientError ? apiErrorText(e) : t('subscriptions.importFailed');
 			await load();
 		} finally {
 			busy = false;
@@ -60,10 +63,11 @@
 		message = '';
 		try {
 			const res = await refreshSubscription(id);
-			message = `Refreshed: ${res.subscription.node_count} nodes`;
+			message = t('subscriptions.refreshed', { count: res.subscription.node_count });
 			await load();
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Refresh failed';
+			error =
+				e instanceof ApiClientError ? apiErrorText(e) : t('subscriptions.refreshFailed');
 			await load();
 		} finally {
 			refreshingId = null;
@@ -71,22 +75,23 @@
 	}
 
 	async function onDelete(id: string) {
-		if (!confirm('Delete this subscription and its nodes?')) return;
+		if (!confirm(t('subscriptions.deleteConfirm'))) return;
 		error = '';
 		try {
 			await deleteSubscription(id);
 			subs = subs.filter((s) => s.id !== id);
-			message = 'Subscription deleted';
+			message = t('subscriptions.deleted');
 		} catch (e) {
-			error = e instanceof ApiClientError ? e.message : 'Delete failed';
+			error =
+				e instanceof ApiClientError ? apiErrorText(e) : t('subscriptions.deleteFailed');
 		}
 	}
 
 	const totalNodes = $derived(subs.reduce((n, s) => n + s.node_count, 0));
 </script>
 
-<h1>Subscriptions</h1>
-<p class="muted">Import a subscription URL; refresh re-fetches and replaces nodes.</p>
+<h1>{t('subscriptions.title')}</h1>
+<p class="muted">{t('subscriptions.subtitle')}</p>
 
 {#if error}
 	<p class="error" role="alert">{error}</p>
@@ -96,7 +101,7 @@
 {/if}
 
 <section class="import">
-	<label for="sub-url">Subscription URL</label>
+	<label for="sub-url">{t('subscriptions.urlLabel')}</label>
 	<input
 		id="sub-url"
 		type="url"
@@ -104,38 +109,44 @@
 		bind:value={url}
 		disabled={busy}
 	/>
-	<label for="sub-tag">Tag (optional)</label>
-	<input id="sub-tag" type="text" placeholder="home" bind:value={tag} disabled={busy} />
+	<label for="sub-tag">{t('subscriptions.tagLabel')}</label>
+	<input
+		id="sub-tag"
+		type="text"
+		placeholder={t('subscriptions.tagPlaceholder')}
+		bind:value={tag}
+		disabled={busy}
+	/>
 	<button type="button" class="primary" disabled={busy} onclick={onImport}>
-		{busy ? 'Importing…' : 'Import'}
+		{busy ? t('common.importing') : t('common.import')}
 	</button>
 </section>
 
 <p class="counts">
-	{subs.length} subscription(s) · {totalNodes} node(s) total
+	{t('subscriptions.counts', { subs: subs.length, nodes: totalNodes })}
 </p>
 
 <section class="table-wrap">
 	<table>
 		<thead>
 			<tr>
-				<th>Tag</th>
-				<th>URL</th>
-				<th>Status</th>
-				<th>Nodes</th>
-				<th>Updated</th>
+				<th>{t('subscriptions.col.tag')}</th>
+				<th>{t('subscriptions.col.url')}</th>
+				<th>{t('subscriptions.col.status')}</th>
+				<th>{t('subscriptions.col.nodes')}</th>
+				<th>{t('subscriptions.col.updated')}</th>
 				<th></th>
 			</tr>
 		</thead>
 		<tbody>
 			{#if !subs.length}
 				<tr>
-					<td colspan="6" class="muted">No subscriptions yet.</td>
+					<td colspan="6" class="muted">{t('subscriptions.empty')}</td>
 				</tr>
 			{:else}
 				{#each subs as s (s.id)}
 					<tr>
-						<td>{s.tag ?? '—'}</td>
+						<td>{s.tag ?? t('common.emDash')}</td>
 						<td class="url" title={s.url}>{s.url}</td>
 						<td>
 							<span class:status-ok={s.status === 'ok'} class:status-err={s.status === 'error'}
@@ -150,10 +161,10 @@
 								disabled={refreshingId === s.id}
 								onclick={() => onRefresh(s.id)}
 							>
-								{refreshingId === s.id ? '…' : 'Refresh'}
+								{refreshingId === s.id ? '…' : t('subscriptions.refresh')}
 							</button>
 							<button type="button" class="danger" onclick={() => onDelete(s.id)}
-								>Delete</button
+								>{t('common.delete')}</button
 							>
 						</td>
 					</tr>

@@ -2,10 +2,12 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { authStatus, setupAdmin, setToken, ApiClientError } from '$lib/api';
+	import { apiErrorText, t } from '$lib/i18n';
+	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 
 	let username = $state('admin');
 	let password = $state('');
-	let confirm = $state('');
+	let confirmPw = $state('');
 	let error = $state('');
 	let busy = $state(false);
 	let ready = $state(false);
@@ -20,9 +22,7 @@
 			ready = true;
 		} catch (e) {
 			error =
-				e instanceof ApiClientError
-					? e.message
-					: 'Cannot reach API. Start chaos-api on :2030.';
+				e instanceof ApiClientError ? apiErrorText(e) : t('auth.setup.apiDown');
 			ready = true;
 		}
 	});
@@ -31,24 +31,24 @@
 		e.preventDefault();
 		error = '';
 		if (password.length < 8) {
-			error = 'Password must be at least 8 characters.';
+			error = t('auth.setup.passwordTooShort');
 			return;
 		}
-		if (password !== confirm) {
-			error = 'Passwords do not match.';
+		if (password !== confirmPw) {
+			error = t('auth.setup.passwordMismatch');
 			return;
 		}
-busy = true;
-			try {
-				const res = await setupAdmin(username.trim(), password);
-				setToken(res.token);
-				await goto('/dashboard');
-			} catch (err) {
+		busy = true;
+		try {
+			const res = await setupAdmin(username.trim(), password);
+			setToken(res.token);
+			await goto('/dashboard');
+		} catch (err) {
 			if (err instanceof ApiClientError && err.code === 'already_initialized') {
 				await goto('/login');
 				return;
 			}
-			error = err instanceof ApiClientError ? err.message : 'Setup failed';
+			error = err instanceof ApiClientError ? apiErrorText(err) : t('auth.setup.failed');
 		} finally {
 			busy = false;
 		}
@@ -56,19 +56,22 @@ busy = true;
 </script>
 
 <main class="shell">
-	<h1>Initial setup</h1>
-	<p class="muted">Create the first admin account for chaos.</p>
+	<div class="toolbar">
+		<LocaleSwitcher />
+	</div>
+	<h1>{t('auth.setup.title')}</h1>
+	<p class="muted">{t('auth.setup.subtitle')}</p>
 
 	{#if !ready}
-		<p>Checking status…</p>
+		<p>{t('auth.setup.checking')}</p>
 	{:else}
 		<form onsubmit={onSubmit}>
 			<label>
-				Username
+				{t('auth.setup.username')}
 				<input bind:value={username} autocomplete="username" required disabled={busy} />
 			</label>
 			<label>
-				Password
+				{t('auth.setup.password')}
 				<input
 					type="password"
 					bind:value={password}
@@ -79,10 +82,10 @@ busy = true;
 				/>
 			</label>
 			<label>
-				Confirm password
+				{t('auth.setup.confirmPassword')}
 				<input
 					type="password"
-					bind:value={confirm}
+					bind:value={confirmPw}
 					autocomplete="new-password"
 					required
 					minlength="8"
@@ -92,9 +95,11 @@ busy = true;
 			{#if error}
 				<p class="error" role="alert">{error}</p>
 			{/if}
-			<button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create admin'}</button>
+			<button type="submit" disabled={busy}
+				>{busy ? t('auth.setup.submitting') : t('auth.setup.submit')}</button
+			>
 		</form>
-		<p class="muted"><a href="/login">Already initialized? Log in</a></p>
+		<p class="muted"><a href="/login">{t('auth.setup.alreadyInitialized')}</a></p>
 	{/if}
 </main>
 
@@ -105,6 +110,11 @@ busy = true;
 		margin: 4rem auto;
 		padding: 0 1rem;
 		color: #1a1a1a;
+	}
+	.toolbar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.75rem;
 	}
 	.muted {
 		color: #555;

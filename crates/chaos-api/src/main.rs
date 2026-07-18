@@ -3,6 +3,7 @@
 mod auth;
 mod error;
 mod health;
+mod locale;
 mod routes;
 mod state;
 

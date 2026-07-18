@@ -5,10 +5,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chaos_core::config_render::{render_minimal_dae_config, NodeForConfig};
 use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager};
+use chaos_i18n::Locale;
 use serde::Serialize;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::locale::RequestLocale;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -34,25 +36,28 @@ fn dae_work_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("./data/dae"))
 }
 
-fn manager_or_missing() -> Result<DaeManager, ApiError> {
+fn manager_or_missing(locale: Locale) -> Result<DaeManager, ApiError> {
     let Some(bin) = resolve_dae_bin() else {
-        return Err(ApiError::new(
+        return Err(ApiError::coded(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "dae_binary_missing",
-            "dae binary not found; set CHAOS_DAE_BIN or run scripts/fetch-dae.sh",
+            locale,
         ));
     };
     if !dae_bin_ok(&bin) {
-        return Err(ApiError::new(
+        return Err(ApiError::coded(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "dae_binary_missing",
-            format!("dae binary path is not a file: {}", bin.display()),
+            locale,
         ));
     }
     Ok(DaeManager::new(bin, dae_work_dir()))
 }
 
-async fn get_runtime(_user: AuthUser, _state: State<AppState>) -> Result<Json<RuntimeStatus>, ApiError> {
+async fn get_runtime(
+    _user: AuthUser,
+    _state: State<AppState>,
+) -> Result<Json<RuntimeStatus>, ApiError> {
     let bin = resolve_dae_bin();
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);
     let work_dir = dae_work_dir();
@@ -78,8 +83,9 @@ async fn get_runtime(_user: AuthUser, _state: State<AppState>) -> Result<Json<Ru
 async fn apply_runtime(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
 ) -> Result<Json<ApplyResponse>, ApiError> {
-    let mgr = manager_or_missing()?;
+    let mgr = manager_or_missing(locale)?;
     let nodes = chaos_store::nodes::list_nodes(&state.pool).await?;
     let for_config: Vec<NodeForConfig> = nodes
         .iter()
@@ -93,27 +99,25 @@ async fn apply_runtime(
     let config_path = mgr
         .write_config(&content)
         .await
-        .map_err(|e| ApiError::internal(format!("write config: {e}")))?;
-    mgr.reload()
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("missing") || msg.contains("not a file") {
-                ApiError::new(
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "dae_binary_missing",
-                    msg,
-                )
-            } else if msg.contains("Permission") || msg.contains("permission") {
-                ApiError::new(
-                    axum::http::StatusCode::FORBIDDEN,
-                    "dae_permission_denied",
-                    msg,
-                )
-            } else {
-                ApiError::internal(format!("dae reload: {msg}"))
-            }
-        })?;
+        .map_err(|e| ApiError::internal_logged(locale, format!("write config: {e}")))?;
+    mgr.reload().await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("missing") || msg.contains("not a file") {
+            ApiError::coded(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "dae_binary_missing",
+                locale,
+            )
+        } else if msg.contains("Permission") || msg.contains("permission") {
+            ApiError::coded(
+                axum::http::StatusCode::FORBIDDEN,
+                "dae_permission_denied",
+                locale,
+            )
+        } else {
+            ApiError::internal_logged(locale, format!("dae reload: {msg}"))
+        }
+    })?;
     Ok(Json(ApplyResponse {
         ok: true,
         running: mgr.is_running(),
@@ -122,11 +126,14 @@ async fn apply_runtime(
     }))
 }
 
-async fn stop_runtime(_user: AuthUser) -> Result<Json<RuntimeStatus>, ApiError> {
-    if let Ok(mgr) = manager_or_missing() {
+async fn stop_runtime(
+    _user: AuthUser,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<RuntimeStatus>, ApiError> {
+    if let Ok(mgr) = manager_or_missing(locale) {
         mgr.stop()
             .await
-            .map_err(|e| ApiError::internal(format!("stop dae: {e}")))?;
+            .map_err(|e| ApiError::internal_logged(locale, format!("stop dae: {e}")))?;
     }
     let bin = resolve_dae_bin();
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);

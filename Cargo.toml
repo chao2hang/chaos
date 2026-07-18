@@ -4,6 +4,7 @@ members = [
   "crates/chaos-api",
   "crates/chaos-core",
   "crates/chaos-dae",
+  "crates/chaos-i18n",
   "crates/chaos-store",
 ]
 

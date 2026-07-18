@@ -6,6 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chaos_i18n::Locale;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -17,6 +18,7 @@ use chaos_store::{
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::locale::RequestLocale;
 use crate::state::AppState;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -134,20 +136,15 @@ async fn list_subscriptions_handler(
 async fn import_subscription(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Json(body): Json<ImportSubscriptionRequest>,
 ) -> Result<Json<ImportSubscriptionResponse>, ApiError> {
     let url = body.url.trim();
     if url.is_empty() {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "url is required",
-        ));
+        return Err(ApiError::bad_request("empty_url", locale));
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "url must be http or https",
-        ));
+        return Err(ApiError::bad_request("invalid_url", locale));
     }
 
     let tag = body
@@ -156,11 +153,9 @@ async fn import_subscription(
         .map(str::trim)
         .filter(|t| !t.is_empty());
 
-    // Create row first so refresh/delete have a stable id even if fetch fails after insert.
-    // On fetch failure we mark status and return subscription_fetch_failed.
     let sub = insert_subscription(&state.pool, tag, url, "pending").await?;
 
-    match fetch_and_replace_nodes(&state, &sub.id, tag, url).await {
+    match fetch_and_replace_nodes(&state, &sub.id, tag, url, locale).await {
         Ok((sub, nodes)) => Ok(Json(ImportSubscriptionResponse {
             subscription: SubscriptionDto::from_sub(sub, nodes.len()),
             nodes: nodes.into_iter().map(NodeDto::from).collect(),
@@ -175,14 +170,15 @@ async fn import_subscription(
 async fn refresh_subscription(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<ImportSubscriptionResponse>, ApiError> {
     let sub = get_subscription(&state.pool, &id)
         .await?
-        .ok_or_else(|| ApiError::not_found("not_found", "subscription not found"))?;
+        .ok_or_else(|| ApiError::not_found("not_found", locale))?;
 
     let tag = sub.tag.as_deref();
-    match fetch_and_replace_nodes(&state, &sub.id, tag, &sub.url).await {
+    match fetch_and_replace_nodes(&state, &sub.id, tag, &sub.url, locale).await {
         Ok((sub, nodes)) => Ok(Json(ImportSubscriptionResponse {
             subscription: SubscriptionDto::from_sub(sub, nodes.len()),
             nodes: nodes.into_iter().map(NodeDto::from).collect(),
@@ -197,11 +193,12 @@ async fn refresh_subscription(
 async fn delete_subscription_handler(
     _user: AuthUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteSubscriptionResponse>, ApiError> {
     let deleted = delete_subscription(&state.pool, &id).await?;
     if !deleted {
-        return Err(ApiError::not_found("not_found", "subscription not found"));
+        return Err(ApiError::not_found("not_found", locale));
     }
     Ok(Json(DeleteSubscriptionResponse { deleted: true }))
 }
@@ -211,8 +208,9 @@ async fn fetch_and_replace_nodes(
     subscription_id: &str,
     sub_tag: Option<&str>,
     url: &str,
+    locale: Locale,
 ) -> Result<(Subscription, Vec<Node>), ApiError> {
-    let body = fetch_subscription_body(url).await?;
+    let body = fetch_subscription_body(url, locale).await?;
     let text = decode_subscription_body(&body);
     let links = parse_subscription_links(&text);
 
@@ -237,16 +235,18 @@ async fn fetch_and_replace_nodes(
 
     let sub = get_subscription(&state.pool, subscription_id)
         .await?
-        .ok_or_else(|| ApiError::internal("subscription disappeared after replace"))?;
+        .ok_or_else(|| {
+            ApiError::internal_logged(locale, "subscription disappeared after replace")
+        })?;
 
     Ok((sub, nodes))
 }
 
-fn subscription_body_too_large() -> ApiError {
+fn subscription_fetch_failed(locale: Locale) -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         "subscription_fetch_failed",
-        "subscription body exceeds 5 MiB limit",
+        chaos_i18n::error_message(locale, "subscription_fetch_failed"),
     )
 }
 
@@ -254,9 +254,12 @@ fn subscription_body_too_large() -> ApiError {
 fn append_body_chunk(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> Result<(), ApiError> {
     let next = buf.len().saturating_add(chunk.len());
     if next > max {
-        return Err(subscription_body_too_large());
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "body_too_large",
+            chaos_i18n::error_message(Locale::En, "body_too_large"),
+        ));
     }
-    // Reserve only up to the hard cap so we never grow beyond `max`.
     buf.reserve(chunk.len());
     buf.extend_from_slice(chunk);
     Ok(())
@@ -265,11 +268,15 @@ fn append_body_chunk(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> Result<(), 
 async fn read_body_capped(
     mut response: reqwest::Response,
     max: usize,
+    locale: Locale,
 ) -> Result<Vec<u8>, ApiError> {
-    // Fast path: reject advertised oversize before reading.
     if let Some(len) = response.content_length() {
         if len as usize > max {
-            return Err(subscription_body_too_large());
+            return Err(ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "body_too_large",
+                chaos_i18n::error_message(locale, "body_too_large"),
+            ));
         }
     }
 
@@ -277,21 +284,27 @@ async fn read_body_capped(
     loop {
         let chunk = response.chunk().await.map_err(|e| {
             tracing::warn!(error = %e, "subscription body read failed");
-            ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "subscription_fetch_failed",
-                format!("failed to read subscription body: {e}"),
-            )
+            subscription_fetch_failed(locale)
         })?;
         let Some(chunk) = chunk else {
             break;
         };
-        append_body_chunk(&mut body, &chunk, max)?;
+        if let Err(e) = append_body_chunk(&mut body, &chunk, max) {
+            // re-localize body_too_large with request locale
+            if e.code == "body_too_large" {
+                return Err(ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "body_too_large",
+                    chaos_i18n::error_message(locale, "body_too_large"),
+                ));
+            }
+            return Err(e);
+        }
     }
     Ok(body)
 }
 
-async fn fetch_subscription_body(url: &str) -> Result<Vec<u8>, ApiError> {
+async fn fetch_subscription_body(url: &str, locale: Locale) -> Result<Vec<u8>, ApiError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(5))
@@ -299,31 +312,19 @@ async fn fetch_subscription_body(url: &str) -> Result<Vec<u8>, ApiError> {
         .build()
         .map_err(|e| {
             tracing::error!(?e, "reqwest client build failed");
-            ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "subscription_fetch_failed",
-                "failed to build HTTP client",
-            )
+            subscription_fetch_failed(locale)
         })?;
 
     let response = client.get(url).send().await.map_err(|e| {
         tracing::warn!(error = %e, "subscription fetch failed");
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "subscription_fetch_failed",
-            format!("failed to fetch subscription: {e}"),
-        )
+        subscription_fetch_failed(locale)
     })?;
 
     if !response.status().is_success() {
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "subscription_fetch_failed",
-            format!("subscription URL returned HTTP {}", response.status()),
-        ));
+        return Err(subscription_fetch_failed(locale));
     }
 
-    read_body_capped(response, MAX_BODY_BYTES).await
+    read_body_capped(response, MAX_BODY_BYTES, locale).await
 }
 
 #[cfg(test)]
@@ -365,8 +366,7 @@ mod tests {
     fn append_body_chunk_rejects_oversize_without_growing_past_cap() {
         let mut buf = vec![0u8; 8];
         let err = append_body_chunk(&mut buf, &[1u8; 4], 10).unwrap_err();
-        assert_eq!(err.code, "subscription_fetch_failed");
-        // Buffer must not have been extended past the pre-check size.
+        assert_eq!(err.code, "body_too_large");
         assert_eq!(buf.len(), 8);
     }
 
@@ -375,7 +375,7 @@ mod tests {
         let mut buf = Vec::new();
         let chunk = vec![0u8; MAX_BODY_BYTES + 1];
         let err = append_body_chunk(&mut buf, &chunk, MAX_BODY_BYTES).unwrap_err();
-        assert_eq!(err.code, "subscription_fetch_failed");
+        assert_eq!(err.code, "body_too_large");
         assert!(buf.is_empty());
     }
 

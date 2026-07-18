@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { authStatus, login, setToken, health, ApiClientError } from '$lib/api';
+	import { apiErrorText, t } from '$lib/i18n';
+	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 
 	let username = $state('admin');
 	let password = $state('');
@@ -22,9 +24,7 @@
 			ready = true;
 		} catch (e) {
 			error =
-				e instanceof ApiClientError
-					? e.message
-					: 'Cannot reach API. Start chaos-api on :2030.';
+				e instanceof ApiClientError ? apiErrorText(e) : t('auth.login.apiDown');
 			ready = true;
 		}
 	});
@@ -38,7 +38,7 @@
 			setToken(res.token);
 			await goto('/dashboard');
 		} catch (err) {
-			error = err instanceof ApiClientError ? err.message : 'Login failed';
+			error = err instanceof ApiClientError ? apiErrorText(err) : t('auth.login.failed');
 		} finally {
 			busy = false;
 		}
@@ -46,22 +46,25 @@
 </script>
 
 <main class="shell">
-	<h1>Log in</h1>
-	<p class="muted">Sign in to the chaos control plane.</p>
+	<div class="toolbar">
+		<LocaleSwitcher />
+	</div>
+	<h1>{t('auth.login.title')}</h1>
+	<p class="muted">{t('auth.login.subtitle')}</p>
 
 	{#if !ready}
-		<p>Checking API…</p>
+		<p>{t('auth.login.checkingApi')}</p>
 	{:else}
 		{#if !apiOk && error}
 			<p class="error" role="alert">{error}</p>
 		{/if}
 		<form onsubmit={onSubmit}>
 			<label>
-				Username
+				{t('auth.login.username')}
 				<input bind:value={username} autocomplete="username" required disabled={busy} />
 			</label>
 			<label>
-				Password
+				{t('auth.login.password')}
 				<input
 					type="password"
 					bind:value={password}
@@ -74,9 +77,11 @@
 			{#if error && apiOk}
 				<p class="error" role="alert">{error}</p>
 			{/if}
-			<button type="submit" disabled={busy || !apiOk}>{busy ? 'Signing in…' : 'Sign in'}</button>
+			<button type="submit" disabled={busy || !apiOk}
+				>{busy ? t('auth.login.submitting') : t('auth.login.submit')}</button
+			>
 		</form>
-		<p class="muted"><a href="/setup">First run? Create admin</a></p>
+		<p class="muted"><a href="/setup">{t('auth.login.firstRun')}</a></p>
 	{/if}
 </main>
 
@@ -87,6 +92,11 @@
 		margin: 4rem auto;
 		padding: 0 1rem;
 		color: #1a1a1a;
+	}
+	.toolbar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.75rem;
 	}
 	.muted {
 		color: #555;
