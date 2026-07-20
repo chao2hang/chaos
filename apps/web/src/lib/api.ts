@@ -1,23 +1,48 @@
 /** Minimal browser API client for chaos-api (Bearer from localStorage.token). */
 
 import { getLocale } from '$lib/i18n.svelte';
+import type { Edge } from '@xyflow/svelte';
+
+let sessionRedirectPending = false;
+const SESSION_REDIRECT_KEY = 'chaos_force_session_redirect';
+const API_TIMEOUT_MS = 30_000;
+
+export function markSessionRedirect(): void {
+	if (typeof sessionStorage === 'undefined') return;
+	sessionStorage.setItem(SESSION_REDIRECT_KEY, '1');
+	// SPA guards use this key; a full location change uses the unload guard.
+	sessionStorage.setItem('chaos_allow_dirty_navigation', '1');
+}
+
+export function isSessionRedirectPending(): boolean {
+	return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SESSION_REDIRECT_KEY) === '1';
+}
+
+export function clearSessionRedirect(): void {
+	if (typeof sessionStorage === 'undefined') return;
+	sessionStorage.removeItem(SESSION_REDIRECT_KEY);
+	sessionStorage.removeItem('chaos_allow_dirty_navigation');
+}
 
 export type ApiErrorBody = {
 	error: {
 		code: string;
 		message: string;
+		draft_saved?: boolean;
 	};
 };
 
 export class ApiClientError extends Error {
 	status: number;
 	code: string;
+	draftSaved: boolean;
 
-	constructor(status: number, code: string, message: string) {
+	constructor(status: number, code: string, message: string, draftSaved = false) {
 		super(message);
 		this.name = 'ApiClientError';
 		this.status = status;
 		this.code = code;
+		this.draftSaved = draftSaved;
 	}
 }
 
@@ -55,11 +80,29 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 		headers.set('Accept-Language', getLocale());
 	}
 
-	const res = await fetch(path, {
-		...init,
-		method,
-		headers
-	});
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+	const externalSignal = init.signal;
+	if (externalSignal) {
+		if (externalSignal.aborted) controller.abort();
+		else externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+	}
+	let res: Response;
+	try {
+		res = await fetch(path, {
+			...init,
+			method,
+			headers,
+			signal: controller.signal
+		});
+	} catch (cause) {
+		if (cause instanceof Error && cause.name === 'AbortError') {
+			throw new ApiClientError(408, 'request_timeout', 'request timed out');
+		}
+		throw cause;
+	} finally {
+		clearTimeout(timeout);
+	}
 
 	const text = await res.text();
 	let data: unknown = null;
@@ -75,10 +118,24 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	}
 
 	if (!res.ok) {
+		if (
+			res.status === 401 &&
+			token &&
+			!path.includes('/auth/login') &&
+			!path.includes('/auth/setup') &&
+			typeof window !== 'undefined' &&
+			!sessionRedirectPending
+		) {
+			sessionRedirectPending = true;
+			setToken(null);
+			markSessionRedirect();
+			const next = `${window.location.pathname}${window.location.search}`;
+			window.location.replace(`/login?expired=1&next=${encodeURIComponent(next)}`);
+		}
 		const body = data as ApiErrorBody | null;
 		const code = body?.error?.code ?? 'request_failed';
 		const message = body?.error?.message ?? (res.statusText || 'request failed');
-		throw new ApiClientError(res.status, code, message);
+		throw new ApiClientError(res.status, code, message, body?.error?.draft_saved === true);
 	}
 
 	return data as T;
@@ -91,6 +148,8 @@ export type HealthResponse = {
 	api_version: string;
 	dae_binary: string | null;
 	dae_binary_ok: boolean;
+	data_plane: string;
+	data_plane_ready: boolean;
 };
 
 export function authStatus() {
@@ -124,6 +183,7 @@ export type NodeDto = {
 	address: string | null;
 	subscription_id: string | null;
 	created_at: string;
+	country_code: string | null;
 };
 
 export type ImportItemResult =
@@ -137,6 +197,7 @@ export type SubscriptionDto = {
 	updated_at: string;
 	status: string;
 	node_count: number;
+	needs_republish: boolean;
 };
 
 export type LatencyDto = {
@@ -153,6 +214,9 @@ export type RuntimeStatus = {
 	dae_binary_ok: boolean;
 	work_dir: string;
 	config_exists: boolean;
+	needs_republish: boolean;
+	data_plane: string;
+	data_plane_ready: boolean;
 };
 
 export type ApplyResponse = {
@@ -160,6 +224,119 @@ export type ApplyResponse = {
 	running: boolean;
 	config_path: string;
 	nodes: number;
+	needs_republish: boolean;
+	data_plane: string;
+};
+
+export type OrchestrationNodeKind = 'rule' | 'node_group' | 'builtin';
+
+export type OrchestrationSource = {
+	kind: 'node' | 'subscription' | 'group';
+	id: string;
+	weight: number;
+};
+
+export type OrchestrationRuleMatcher = {
+	kind: 'domain_suffix' | 'destination_cidr';
+	pattern: string;
+};
+
+export type OrchestrationRuleData = {
+	matcher: OrchestrationRuleMatcher;
+	priority?: number;
+	/** Render-only information. Removed before persistence. */
+	target_name?: string;
+};
+
+export type OrchestrationNodeGroupData = {
+	name: string;
+	policy: string;
+	sources: OrchestrationSource[];
+	runtime_group_id?: string | null;
+	/** Render-only information. Removed before persistence. */
+	route_count?: number;
+};
+
+export type OrchestrationBuiltinData = {
+	builtin: 'direct';
+	/** Render-only information. Removed before persistence. */
+	route_count?: number;
+};
+
+export type OrchestrationNodeData =
+	| OrchestrationRuleData
+	| OrchestrationNodeGroupData
+	| OrchestrationBuiltinData;
+
+type OrchestrationNodePresentation = {
+	selected?: boolean;
+	draggable?: boolean;
+	deletable?: boolean;
+	ariaLabel?: string;
+};
+
+export type OrchestrationRuleNodeDto = OrchestrationNodePresentation & {
+	id: string;
+	type: 'rule';
+	position: { x: number; y: number };
+	data: OrchestrationRuleData;
+};
+
+export type OrchestrationNodeGroupDto = OrchestrationNodePresentation & {
+	id: string;
+	type: 'node_group';
+	position: { x: number; y: number };
+	data: OrchestrationNodeGroupData;
+};
+
+export type OrchestrationBuiltinNodeDto = OrchestrationNodePresentation & {
+	id: string;
+	type: 'builtin';
+	position: { x: number; y: number };
+	data: OrchestrationBuiltinData;
+};
+
+export type OrchestrationNodeDto =
+	| OrchestrationRuleNodeDto
+	| OrchestrationNodeGroupDto
+	| OrchestrationBuiltinNodeDto;
+
+export type OrchestrationEdgeDto = {
+	id: string;
+	source: string;
+	target: string;
+	type?: string;
+	selected?: boolean;
+	deletable?: boolean;
+	markerEnd?: Edge['markerEnd'];
+	style?: string;
+	label?: string;
+};
+
+export type OrchestrationDocument = {
+	version: 2;
+	nodes: OrchestrationNodeDto[];
+	edges: OrchestrationEdgeDto[];
+	viewport: { x: number; y: number; zoom: number };
+	needs_republish?: boolean;
+};
+
+export type OrchestrationValidationIssue = {
+	code: string;
+	scope: 'graph' | 'runtime';
+	node_id?: string;
+	edge_id?: string;
+};
+
+export type OrchestrationValidation = {
+	valid: boolean;
+	dae_compatible: boolean;
+	issues: OrchestrationValidationIssue[];
+};
+
+export type PublishOrchestrationResponse = {
+	document: OrchestrationDocument;
+	applied: ApplyResponse;
 };
 
 export function listNodes() {
@@ -221,6 +398,31 @@ export function getRuntime() {
 
 export function applyRuntime() {
 	return api<ApplyResponse>('/api/v1/runtime/apply', { method: 'POST' });
+}
+
+export function getOrchestration() {
+	return api<OrchestrationDocument>('/api/v1/orchestration');
+}
+
+export function putOrchestration(document: OrchestrationDocument) {
+	return api<OrchestrationDocument>('/api/v1/orchestration', {
+		method: 'PUT',
+		body: JSON.stringify(document)
+	});
+}
+
+export function validateOrchestration(document: OrchestrationDocument) {
+	return api<OrchestrationValidation>('/api/v1/orchestration/validate', {
+		method: 'POST',
+		body: JSON.stringify(document)
+	});
+}
+
+export function publishOrchestration(document: OrchestrationDocument) {
+	return api<PublishOrchestrationResponse>('/api/v1/orchestration/publish', {
+		method: 'POST',
+		body: JSON.stringify(document)
+	});
 }
 
 export function stopRuntime() {

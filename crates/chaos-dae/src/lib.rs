@@ -14,8 +14,88 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+
+/// Backend-neutral data-plane capability exposed to the control plane.
+///
+/// Linux currently uses dae. Windows deliberately reports an unavailable
+/// backend until a signed Wintun + sing-box/mihomo implementation is wired in;
+/// this prevents the API from accidentally trying to run a Linux dae config on
+/// Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DataPlaneStatus {
+    pub kind: &'static str,
+    pub ready: bool,
+    pub reason: &'static str,
+}
+
+pub trait DataPlaneBackend: Send + Sync {
+    fn status(&self) -> DataPlaneStatus;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinuxDaeBackend;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WindowsWintunBackend;
+
+impl DataPlaneBackend for LinuxDaeBackend {
+    fn status(&self) -> DataPlaneStatus {
+        let ready = resolve_dae_bin().is_some_and(|path| dae_bin_ok(&path));
+        DataPlaneStatus {
+            kind: "linux-dae",
+            ready,
+            reason: if ready {
+                "dae backend ready"
+            } else {
+                "dae binary missing"
+            },
+        }
+    }
+}
+
+impl DataPlaneBackend for WindowsWintunBackend {
+    fn status(&self) -> DataPlaneStatus {
+        DataPlaneStatus {
+            kind: "windows-wintun-engine",
+            ready: false,
+            reason: "Windows data plane requires a signed Wintun adapter and a configured sing-box or mihomo engine",
+        }
+    }
+}
+
+pub enum PlatformBackend {
+    Linux(LinuxDaeBackend),
+    Windows(WindowsWintunBackend),
+}
+
+impl DataPlaneBackend for PlatformBackend {
+    fn status(&self) -> DataPlaneStatus {
+        match self {
+            Self::Linux(backend) => backend.status(),
+            Self::Windows(backend) => backend.status(),
+        }
+    }
+}
+
+impl PlatformBackend {
+    pub fn status(&self) -> DataPlaneStatus {
+        <Self as DataPlaneBackend>::status(self)
+    }
+}
+
+pub fn platform_backend() -> PlatformBackend {
+    #[cfg(windows)]
+    {
+        return PlatformBackend::Windows(WindowsWintunBackend);
+    }
+    #[cfg(not(windows))]
+    {
+        PlatformBackend::Linux(LinuxDaeBackend)
+    }
+}
 
 /// Resolve the path to the `dae` binary.
 ///
@@ -75,41 +155,101 @@ impl DaeManager {
         tokio::fs::create_dir_all(&self.work_dir)
             .await
             .with_context(|| format!("create work_dir {}", self.work_dir.display()))?;
+        secure_work_dir(&self.work_dir)?;
         let path = self.config_path();
-        tokio::fs::write(&path, content)
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp = self.work_dir.join(format!("config.dae.tmp-{nonce}"));
+        tokio::fs::write(&temp, content)
             .await
-            .with_context(|| format!("write config {}", path.display()))?;
+            .with_context(|| format!("write config {}", temp.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&path, perms)
-                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+            std::fs::set_permissions(&temp, perms)
+                .with_context(|| format!("chmod 0600 {}", temp.display()))?;
         }
+        #[cfg(windows)]
+        if path.exists() {
+            // Windows cannot rename over an existing file. The destination is
+            // still private to the work directory; the next write is complete
+            // before this replacement occurs.
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        tokio::fs::rename(&temp, &path)
+            .await
+            .with_context(|| format!("replace config {}", path.display()))?;
         Ok(path)
     }
 
     /// Whether the process recorded in `dae.pid` is still alive.
     pub fn is_running(&self) -> bool {
         match self.read_pid() {
-            Some(pid) => process_alive(pid),
+            Some(pid) => process_alive(pid, Some(&self.bin), Some(&self.config_path())),
             None => false,
         }
+    }
+
+    /// Ask dae to parse the staged config before interrupting a running process.
+    pub async fn validate_config(&self) -> Result<()> {
+        if !self.bin.is_file() {
+            bail!("dae binary missing or not a file: {}", self.bin.display());
+        }
+        let bin = std::fs::canonicalize(&self.bin)
+            .with_context(|| format!("canonicalize dae bin {}", self.bin.display()))?;
+        let config = std::fs::canonicalize(self.config_path())
+            .with_context(|| format!("canonicalize config {}", self.config_path().display()))?;
+        let output = tokio::process::Command::new(&bin)
+            .arg("validate")
+            .arg("-c")
+            .arg(&config)
+            .output()
+            .await
+            .with_context(|| format!("run `{} validate -c {}`", bin.display(), config.display()))?;
+        if !output.status.success() {
+            let detail = if output.stderr.is_empty() {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            } else {
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            };
+            bail!(
+                "dae config validation failed ({}): {}",
+                output.status,
+                if detail.is_empty() {
+                    "no diagnostic"
+                } else {
+                    &detail
+                }
+            );
+        }
+        Ok(())
     }
 
     /// Stop a running dae process (if any) and clear the pid file.
     pub async fn stop(&self) -> Result<()> {
         if let Some(pid) = self.read_pid() {
-            if process_alive(pid) {
-                let status = Command::new("kill")
-                    .arg(pid.to_string())
-                    .status()
-                    .with_context(|| format!("kill dae pid {pid}"))?;
-                if !status.success() && process_alive(pid) {
-                    // Escalate once if still alive.
-                    let _ = Command::new("kill")
-                        .args(["-9", &pid.to_string()])
-                        .status();
+            if process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
+                terminate_process(pid).with_context(|| format!("stop dae pid {pid}"))?;
+                for _ in 0..40 {
+                    if !process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                if process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
+                    force_kill_process(pid).with_context(|| format!("force stop dae pid {pid}"))?;
+                    for _ in 0..20 {
+                        if !process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+                if process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
+                    bail!("dae pid {pid} did not exit after stop");
                 }
             }
             let _ = tokio::fs::remove_file(self.pid_path()).await;
@@ -129,6 +269,7 @@ impl DaeManager {
         tokio::fs::create_dir_all(&self.work_dir)
             .await
             .with_context(|| format!("create work_dir {}", self.work_dir.display()))?;
+        secure_work_dir(&self.work_dir)?;
 
         if self.is_running() {
             self.stop().await?;
@@ -165,6 +306,12 @@ impl DaeManager {
         let log_path = work_dir.join("dae.log");
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("create log {}", log_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", log_path.display()))?;
+        }
         let log_err = log_file
             .try_clone()
             .with_context(|| format!("clone log handle {}", log_path.display()))?;
@@ -190,13 +337,7 @@ impl DaeManager {
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .spawn()
-            .with_context(|| {
-                format!(
-                    "spawn `{} run -c {}`",
-                    bin.display(),
-                    config.display()
-                )
-            })?;
+            .with_context(|| format!("spawn `{} run -c {}`", bin.display(), config.display()))?;
 
         let pid = child.id();
         tokio::fs::write(self.pid_path(), pid.to_string())
@@ -214,7 +355,7 @@ impl DaeManager {
             Err(_) => None,
         };
 
-        if early_exit.is_some() || !process_alive(pid) {
+        if early_exit.is_some() || !process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
             let log_tail = tokio::fs::read_to_string(&log_path)
                 .await
                 .unwrap_or_default();
@@ -248,13 +389,132 @@ impl DaeManager {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
+#[cfg(unix)]
+fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<&Path>) -> bool {
     // `kill -0` checks existence / permission without sending a signal.
-    Command::new("kill")
+    let alive = Command::new("kill")
         .args(["-0", &pid.to_string()])
         .status()
         .map(|s| s.success())
+        .unwrap_or(false);
+    if !alive {
+        return false;
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    if let Some(expected_bin) = expected_bin {
+        let expected = absolute_path(expected_bin);
+        let deleted = PathBuf::from(format!("{} (deleted)", expected.display()));
+        let exe_matches = std::fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .is_some_and(|path| {
+                path == expected
+                    || path == deleted
+                    || std::fs::canonicalize(path).is_ok_and(|path| path == expected)
+            });
+        let expected_bytes = expected.as_os_str().as_bytes();
+        let command_matches = !expected_bytes.is_empty()
+            && cmdline
+                .windows(expected_bytes.len())
+                .any(|window| window == expected_bytes);
+        if exe_matches || command_matches {
+            return true;
+        }
+        if expected_bin.is_file() {
+            return false;
+        }
+    }
+
+    // If the binary was deleted or its configured path was lost, the private
+    // pid file is not enough by itself: require the daemon's exact config path
+    // and CLI shape before signalling the process.
+    let Some(config) = expected_config.map(absolute_path) else {
+        return false;
+    };
+    let args: Vec<&[u8]> = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    args.contains(&b"run".as_slice())
+        && args.contains(&b"-c".as_slice())
+        && args.contains(&config.as_os_str().as_bytes())
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    })
+}
+
+fn secure_work_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("chmod work directory {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32, _expected_bin: Option<&Path>, _expected_config: Option<&Path>) -> bool {
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
         .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn terminate_process(pid: u32) -> Result<()> {
+    let status = Command::new("kill").arg(pid.to_string()).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("kill returned {status}")
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<()> {
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("taskkill returned {status}")
+    }
+}
+
+#[cfg(unix)]
+fn force_kill_process(pid: u32) -> Result<()> {
+    let status = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("kill -9 returned {status}")
+    }
+}
+
+#[cfg(windows)]
+fn force_kill_process(pid: u32) -> Result<()> {
+    let status = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("taskkill /F returned {status}")
+    }
 }
 
 #[cfg(test)]
@@ -296,5 +556,17 @@ mod tests {
     #[test]
     fn dae_bin_ok_false_for_missing() {
         assert!(!dae_bin_ok(Path::new("/no/such/dae-binary-xyz")));
+    }
+
+    #[test]
+    fn platform_backend_reports_an_explicit_kind() {
+        let status = platform_backend().status();
+        #[cfg(windows)]
+        {
+            assert_eq!(status.kind, "windows-wintun-engine");
+            assert!(!status.ready);
+        }
+        #[cfg(not(windows))]
+        assert_eq!(status.kind, "linux-dae");
     }
 }

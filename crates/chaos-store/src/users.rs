@@ -32,6 +32,45 @@ pub async fn create_admin_user(
     create_user_with_role(pool, username, password_hash, User::ROLE_ADMIN).await
 }
 
+/// Atomically create the install account only when the users table is empty.
+/// SQLite serializes the conditional INSERT, so concurrent setup requests cannot
+/// both observe an empty table and become administrators.
+pub async fn create_first_admin_user(
+    pool: &SqlitePool,
+    username: &str,
+    password_hash: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    let user = User::new_with_role(username, password_hash, User::ROLE_ADMIN);
+    let result = sqlx::query(
+        r#"
+        INSERT INTO users (id, username, password_hash, created_at, role)
+        SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE NOT EXISTS (SELECT 1 FROM users)
+        "#,
+    )
+    .bind(&user.id)
+    .bind(&user.username)
+    .bind(&user.password_hash)
+    .bind(&user.created_at)
+    .bind(&user.role)
+    .execute(pool)
+    .await?;
+    Ok((result.rows_affected() == 1).then_some(user))
+}
+
+pub async fn find_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        r#"
+        SELECT id, username, password_hash, created_at, role
+        FROM users
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+}
+
 async fn create_user_with_role(
     pool: &SqlitePool,
     username: &str,
@@ -89,12 +128,18 @@ mod tests {
         assert!(created.is_admin());
         assert_eq!(count_users(&pool).await.unwrap(), 1);
 
-        let found = find_user_by_username(&pool, "admin").await.unwrap().unwrap();
+        let found = find_user_by_username(&pool, "admin")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found.id, created.id);
         assert_eq!(found.password_hash, "hash");
         assert_eq!(found.role, "admin");
 
-        assert!(find_user_by_username(&pool, "missing").await.unwrap().is_none());
+        assert!(find_user_by_username(&pool, "missing")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

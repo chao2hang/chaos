@@ -7,11 +7,15 @@ use chaos_i18n::error_message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use chaos_store::{delete_node, insert_node_with_id, list_nodes, Node};
+use chaos_store::{delete_node, insert_node_with_id, list_nodes, NewNode, Node};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
+use crate::routes::orchestration::{
+    active_plan_references_any_node, mark_republish_if_published_node_added,
+    orchestration_references_source,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -24,6 +28,7 @@ pub struct NodeDto {
     pub address: Option<String>,
     pub subscription_id: Option<String>,
     pub created_at: String,
+    pub country_code: Option<String>,
 }
 
 impl From<Node> for NodeDto {
@@ -37,6 +42,7 @@ impl From<Node> for NodeDto {
             address: n.address,
             subscription_id: n.subscription_id,
             created_at: n.created_at,
+            country_code: n.country_code,
         }
     }
 }
@@ -65,7 +71,10 @@ pub struct ImportNodesResponse {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum ImportItemResult {
-    Ok { ok: bool, node: NodeDto },
+    Ok {
+        ok: bool,
+        node: NodeDto,
+    },
     Err {
         ok: bool,
         link: String,
@@ -110,6 +119,8 @@ async fn import_nodes(
         return Err(ApiError::bad_request("invalid_request", locale));
     }
 
+    let _runtime_guard = state.runtime_lock.lock().await;
+
     let mut results = Vec::with_capacity(body.links.len());
 
     for item in body.links {
@@ -141,31 +152,47 @@ async fn import_nodes(
         }
 
         let address = chaos_core::link::detect_address(raw);
-        let tag = item
+        // Manual import: user-supplied tag wins, else extract from link fragment.
+        let tag_owned: Option<String> = item
             .tag
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty());
+            .filter(|t| !t.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| chaos_core::link::detect_tag(raw));
 
         let id = Uuid::new_v4().to_string();
-        let name = chaos_core::link::node_name(tag, protocol.as_deref(), &id);
+        // No subscription-level tag for manual imports.
+        let name =
+            chaos_core::link::node_name(tag_owned.as_deref(), None, protocol.as_deref(), &id);
 
         match insert_node_with_id(
             &state.pool,
             Some(id),
-            &name,
-            tag,
-            raw,
-            protocol.as_deref(),
-            address.as_deref(),
-            None,
+            NewNode {
+                name: &name,
+                tag: tag_owned.as_deref(),
+                link: raw,
+                protocol: protocol.as_deref(),
+                address: address.as_deref(),
+                subscription_id: None,
+            },
         )
         .await
         {
-            Ok(node) => results.push(ImportItemResult::Ok {
-                ok: true,
-                node: NodeDto::from(node),
-            }),
+            Ok(node) => {
+                let _ = mark_republish_if_published_node_added(
+                    &state,
+                    &node.id,
+                    node.subscription_id.as_deref(),
+                    node.tag.as_deref(),
+                )
+                .await?;
+                results.push(ImportItemResult::Ok {
+                    ok: true,
+                    node: NodeDto::from(node),
+                });
+            }
             Err(e) => {
                 tracing::error!(?e, "insert node failed");
                 results.push(ImportItemResult::Err {
@@ -180,6 +207,34 @@ async fn import_nodes(
         }
     }
 
+    // GeoIP: look up country codes for successfully imported nodes.
+    let geo_pairs: Vec<(String, String)> = results
+        .iter()
+        .filter_map(|r| match r {
+            ImportItemResult::Ok { node, .. } => {
+                node.address.as_ref().map(|a| (node.id.clone(), a.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    drop(_runtime_guard);
+
+    if chaos_core::geoip::enabled() && !geo_pairs.is_empty() {
+        let geo = chaos_core::geoip::batch_lookup_country(&geo_pairs).await;
+        for (node_id, cc) in &geo {
+            let _ = chaos_store::update_node_country_code(&state.pool, node_id, cc).await;
+        }
+        // Patch country_code into response DTOs.
+        for r in &mut results {
+            if let ImportItemResult::Ok { node, .. } = r {
+                if let Some(cc) = geo.get(&node.id) {
+                    node.country_code = Some(cc.clone());
+                }
+            }
+        }
+    }
+
     Ok(Json(ImportNodesResponse { results }))
 }
 
@@ -189,6 +244,12 @@ async fn delete_node_handler(
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteNodeResponse>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    if orchestration_references_source(&state, "node", &id).await?
+        || active_plan_references_any_node(&state, &std::iter::once(id.clone()).collect()).await?
+    {
+        return Err(ApiError::conflict("resource_in_use", locale));
+    }
     let deleted = delete_node(&state.pool, &id).await?;
     if !deleted {
         return Err(ApiError::not_found("not_found", locale));
@@ -210,6 +271,17 @@ mod tests {
     async fn test_app() -> (Router, AppState) {
         let pool = connect("sqlite::memory:").await.unwrap();
         migrate(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("u1")
+        .bind("admin")
+        .bind("test-hash")
+        .bind("now")
+        .bind("admin")
+        .execute(&pool)
+        .await
+        .unwrap();
         let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
         let app = Router::new()
             .nest("/api/v1/auth", auth_router())
@@ -265,7 +337,10 @@ mod tests {
         assert_eq!(body["results"][0]["node"]["name"], "n1");
         assert_eq!(body["results"][0]["node"]["protocol"], "trojan");
         assert_eq!(body["results"][0]["node"]["address"], "1.2.3.4:443");
-        let id = body["results"][0]["node"]["id"].as_str().unwrap().to_string();
+        let id = body["results"][0]["node"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let list = app
             .clone()
@@ -310,7 +385,9 @@ mod tests {
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .header("accept-language", "zh-CN")
-                    .body(Body::from(r#"{"links":[{"link":"not-a-valid-share-link"}]}"#))
+                    .body(Body::from(
+                        r#"{"links":[{"link":"not-a-valid-share-link"}]}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -321,7 +398,7 @@ mod tests {
         assert_eq!(body["results"][0]["error"]["code"], "unrecognized_scheme");
         assert_eq!(
             body["results"][0]["error"]["message"],
-            "无法识别的分享链接协议"
+            "无法识别分享链接协议"
         );
     }
 }

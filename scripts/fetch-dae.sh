@@ -3,6 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "error: dae is a Linux-only data plane; use docs/platform/windows-data-plane.md on Windows" >&2
+  exit 1
+fi
+
 VERSION_FILE="$ROOT/third_party/dae/VERSION"
 DEST_DIR="$ROOT/third_party/dae/current"
 DEST_BIN="$DEST_DIR/dae"

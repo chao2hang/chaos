@@ -43,6 +43,7 @@ async fn get_dns(
     _user: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<DnsDocument>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let upstreams = chaos_store::list_dns_upstreams(&state.pool).await?;
     let rules = chaos_store::list_dns_rules(&state.pool).await?;
     let fallback = chaos_store::get_meta(&state.pool, chaos_store::META_DNS_FALLBACK)
@@ -74,45 +75,55 @@ async fn put_dns(
     RequestLocale(locale): RequestLocale,
     Json(body): Json<DnsDocument>,
 ) -> Result<Json<DnsDocument>, ApiError> {
-    let fallback = body.fallback.trim();
-    if fallback.is_empty() {
-        return Err(ApiError::bad_request("invalid_request", locale));
-    }
     if body.upstreams.is_empty() {
         return Err(ApiError::bad_request("invalid_request", locale));
     }
-    let ups: Vec<(String, String, i64)> = body
-        .upstreams
-        .iter()
-        .enumerate()
-        .map(|(i, u)| {
-            (
-                u.name.trim().to_string(),
-                u.address.trim().to_string(),
-                i as i64,
-            )
-        })
-        .filter(|(n, a, _)| !n.is_empty() && !a.is_empty())
-        .collect();
-    if ups.is_empty() {
+    let mut upstream_names = std::collections::HashMap::<String, String>::new();
+    let mut ups = Vec::with_capacity(body.upstreams.len());
+    for (index, upstream) in body.upstreams.iter().enumerate() {
+        let raw_name = upstream.name.trim();
+        let name = chaos_core::config_render::normalized_dae_identifier(raw_name)
+            .ok_or_else(|| ApiError::bad_request("invalid_request", locale))?;
+        let key = name.to_ascii_lowercase();
+        if upstream_names.insert(key, name.clone()).is_some() {
+            return Err(ApiError::conflict("invalid_request", locale));
+        }
+        let address = upstream.address.trim();
+        if address.is_empty()
+            || address.len() > 2048
+            || address
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+        {
+            return Err(ApiError::bad_request("invalid_request", locale));
+        }
+        ups.push((name, address.to_string(), index as i64));
+    }
+
+    let fallback = chaos_core::config_render::normalized_dae_identifier(body.fallback.trim())
+        .ok_or_else(|| ApiError::bad_request("invalid_request", locale))?;
+    if !upstream_names.contains_key(&fallback.to_ascii_lowercase()) {
         return Err(ApiError::bad_request("invalid_request", locale));
     }
-    let rules: Vec<(String, String, i64, bool)> = body
-        .rules
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            (
-                r.expression.trim().to_string(),
-                r.upstream.trim().to_string(),
-                i as i64,
-                r.enabled,
-            )
-        })
-        .filter(|(e, u, _, _)| !e.is_empty() && !u.is_empty())
-        .collect();
+
+    let mut rules = Vec::with_capacity(body.rules.len());
+    for (index, rule) in body.rules.iter().enumerate() {
+        let expression = rule.expression.trim();
+        let upstream = chaos_core::config_render::normalized_dae_identifier(rule.upstream.trim())
+            .ok_or_else(|| ApiError::bad_request("invalid_request", locale))?;
+        if expression.is_empty()
+            || expression.len() > 4096
+            || expression
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+            || !upstream_names.contains_key(&upstream.to_ascii_lowercase())
+        {
+            return Err(ApiError::bad_request("invalid_request", locale));
+        }
+        rules.push((expression.to_string(), upstream, index as i64, rule.enabled));
+    }
     let (saved_ups, saved_rules) =
-        chaos_store::replace_dns(&state.pool, &ups, &rules, fallback).await?;
+        chaos_store::replace_dns(&state.pool, &ups, &rules, &fallback).await?;
     Ok(Json(DnsDocument {
         upstreams: saved_ups
             .into_iter()
@@ -129,6 +140,6 @@ async fn put_dns(
                 enabled: r.enabled != 0,
             })
             .collect(),
-        fallback: fallback.to_string(),
+        fallback,
     }))
 }

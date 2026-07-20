@@ -5,8 +5,5 @@
 		"dev:web": "pnpm --dir apps/web dev",
 		"dev:api": "cargo run -p chaos-api",
 		"dev": "bash scripts/dev.sh"
-	},
-	"dependencies": {
-		"ls": "^1.0.0"
 	}
 }

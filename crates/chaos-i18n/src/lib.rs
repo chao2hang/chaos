@@ -187,17 +187,14 @@ mod tests {
             "dashboard.latencyFinished",
             &[("alive", "3"), ("total", "5")],
         );
-        assert_eq!(s, "Latency test finished: 3/5 alive");
+        assert_eq!(s, "Latency test complete: 3/5 nodes available");
     }
 
     #[test]
     fn catalogs_share_error_keys() {
         for key in EN.keys() {
             if key.starts_with("error.") {
-                assert!(
-                    ZH_CN.contains_key(key),
-                    "zh-CN missing {key}"
-                );
+                assert!(ZH_CN.contains_key(key), "zh-CN missing {key}");
             }
         }
     }

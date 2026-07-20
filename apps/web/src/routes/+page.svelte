@@ -1,13 +1,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { RefreshCw } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { authStatus, ApiClientError } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
+	import AppLogo from '$lib/components/ui/AppLogo.svelte';
+	import Notice from '$lib/components/ui/Notice.svelte';
+	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 
 	let message = $state('');
+	let busy = $state(false);
 
-	onMount(async () => {
-		message = t('home.loading');
+	async function checkStatus() {
+		busy = true;
+		message = '';
 		try {
 			const status = await authStatus();
 			if (!status.initialized) {
@@ -15,42 +22,49 @@
 				return;
 			}
 			const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
-			if (!token) {
-				await goto('/login');
-				return;
-			}
-			await goto('/dashboard');
-		} catch (e) {
-			const err = e instanceof ApiClientError ? e.message : t('error.request_failed');
-			message = t('home.apiUnreachable', { error: err });
+			await goto(token ? '/dashboard' : '/login');
+		} catch (cause) {
+			const detail = cause instanceof ApiClientError ? cause.message : t('error.request_failed');
+			message = t('home.apiUnreachable', { error: detail });
+		} finally {
+			busy = false;
 		}
+	}
+
+	onMount(() => {
+		void checkStatus();
 	});
 </script>
 
 <main class="boot">
-	<div class="panel boot-card">
-		<span class="eyebrow">chaos</span>
-		<p class="mono-msg">{message || t('home.loading')}</p>
+	<div class="boot-content">
+		<AppLogo />
+		{#if message}
+			<Notice tone="error" {message} />
+			<Button icon={RefreshCw} loading={busy} onclick={() => void checkStatus()}>{t('common.retry')}</Button>
+		{:else}
+			<LoadingState label={t('home.loading')} />
+		{/if}
 	</div>
 </main>
 
 <style>
 	.boot {
+		display: grid;
 		min-height: 100vh;
+		place-items: center;
+		padding: var(--space-4);
+	}
+
+	.boot-content {
 		display: flex;
+		width: min(28rem, 100%);
+		flex-direction: column;
 		align-items: center;
-		justify-content: center;
-		padding: 2rem 1rem;
+		gap: var(--space-6);
 	}
-	.boot-card {
-		max-width: 28rem;
+
+	.boot-content :global(.notice) {
 		width: 100%;
-	}
-	.mono-msg {
-		margin: 0;
-		font-family: var(--font-mono);
-		font-size: 0.9rem;
-		color: var(--ink-muted);
-		line-height: 1.55;
 	}
 </style>

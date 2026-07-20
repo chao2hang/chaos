@@ -1,13 +1,12 @@
 //! Integration tests for DaeManager using the fake-dae fixture.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chaos_dae::DaeManager;
 
 // Serialize tests that spawn processes / touch shared env assumptions.
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fixture_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-dae.sh")
@@ -35,14 +34,14 @@ fn chmod_755(path: &std::path::Path) {
 
 #[tokio::test]
 async fn write_config_and_reload_with_long_lived_fake() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().await;
     let work_dir = temp_work_dir();
     let log_path = work_dir.join("fake-dae.log");
 
     // Embed absolute log path so concurrent tests cannot clobber via env.
     let wrapper = work_dir.join("fake-dae-sleep.sh");
     let script = format!(
-        "#!/usr/bin/env bash\necho \"fake-dae $*\" >> \"{}\"\nsleep 3\nexit 0\n",
+        "#!/usr/bin/env bash\necho \"fake-dae $*\" >> \"{}\"\nif [[ \"${{1:-}}\" == \"validate\" ]]; then exit 0; fi\nsleep 3\nexit 0\n",
         log_path.display()
     );
     std::fs::write(&wrapper, script).unwrap();
@@ -57,8 +56,15 @@ async fn write_config_and_reload_with_long_lived_fake() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&config_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "dae requires private config mode, got {mode:o}");
+        let mode = std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "dae requires private config mode, got {mode:o}"
+        );
     }
 
     mgr.reload().await.expect("reload/spawn");
@@ -95,7 +101,7 @@ async fn write_config_and_reload_with_long_lived_fake() {
 
 #[tokio::test]
 async fn immediate_exit_fake_reports_error() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().await;
     let bin = fixture_bin();
     assert!(bin.is_file(), "missing fixture {}", bin.display());
     chmod_755(&bin);
@@ -120,10 +126,40 @@ async fn immediate_exit_fake_reports_error() {
 
 #[tokio::test]
 async fn stop_without_pid_is_ok() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().await;
     let work_dir = temp_work_dir();
     let mgr = DaeManager::new(fixture_bin(), work_dir.clone());
     assert!(!mgr.is_running());
     mgr.stop().await.expect("stop noop");
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_still_works_after_binary_is_deleted() {
+    let _guard = TEST_LOCK.lock().await;
+    let work_dir = temp_work_dir();
+    let wrapper = work_dir.join("ephemeral-dae.sh");
+    std::fs::write(
+        &wrapper,
+        "#!/usr/bin/env bash\nif [[ \"${1:-}\" == \"validate\" ]]; then exit 0; fi\nsleep 30\n",
+    )
+    .unwrap();
+    chmod_755(&wrapper);
+
+    let mgr = DaeManager::new(&wrapper, &work_dir);
+    mgr.write_config("global {}\n").await.unwrap();
+    mgr.reload().await.expect("spawn daemon");
+    assert!(mgr.is_running());
+
+    std::fs::remove_file(&wrapper).expect("delete daemon binary");
+    let stopper = DaeManager::new(work_dir.join("missing-dae"), &work_dir);
+    assert!(
+        stopper.is_running(),
+        "config-path identity should find the existing process"
+    );
+    stopper.stop().await.expect("stop without daemon binary");
+    assert!(!stopper.pid_path().exists());
+
     let _ = std::fs::remove_dir_all(&work_dir);
 }

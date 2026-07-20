@@ -1,34 +1,64 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
+	import type { OrchestrationBuiltinData } from '$lib/api';
+	import { t } from '$lib/i18n.svelte';
 
-	let { data }: NodeProps = $props();
-	const d = $derived(data as { name?: string });
+	let { data, selected = false }: NodeProps = $props();
+	const details = $derived(data as unknown as OrchestrationBuiltinData);
 </script>
 
-<div class="fn bi">
+<div class="flow-node builtin-node" class:selected>
 	<Handle type="target" position={Position.Left} id="in" />
-	<span class="tag">OUT</span>
-	<strong>{d.name ?? 'direct'}</strong>
+	<span>BUILT-IN</span>
+	<strong>{details.builtin.toUpperCase()}</strong>
+	<small>{t('flow.ruleCount', { count: details.route_count ?? 0 })}</small>
 </div>
 
 <style>
-	.fn {
-		min-width: 8rem;
-		padding: 0.55rem 0.75rem;
-		border-radius: 10px;
-		border: 1px solid #334155;
-		background: #0f172a;
+	.flow-node {
+		min-width: 9rem;
+		padding: 0.6rem 0.7rem;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-md);
+		background: var(--surface-subtle);
 		color: var(--ink);
+		box-shadow: 0 0 0 0 transparent;
 	}
-	.tag {
+
+	.flow-node:hover,
+	.flow-node.selected {
+		border-color: var(--ink);
+	}
+
+	.flow-node.selected {
+		box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.14);
+	}
+
+	span,
+	small {
 		display: block;
+		color: var(--ink-faint);
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
-		color: var(--ink-dim);
-		letter-spacing: 0.08em;
+		font-size: 0.56rem;
+		font-weight: 650;
 	}
+
 	strong {
+		display: block;
+		margin-top: 0.12rem;
 		font-family: var(--font-mono);
-		font-size: 0.85rem;
+		font-size: 0.72rem;
+	}
+
+	small {
+		margin-top: 0.25rem;
+		font-weight: 500;
+	}
+
+	.flow-node :global(.svelte-flow__handle) {
+		width: 0.55rem;
+		height: 0.55rem;
+		border: 2px solid var(--surface);
+		background: var(--ink);
 	}
 </style>

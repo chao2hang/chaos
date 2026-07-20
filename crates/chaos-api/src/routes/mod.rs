@@ -4,6 +4,7 @@ pub mod dns;
 pub mod groups;
 pub mod latency;
 pub mod nodes;
+pub mod orchestration;
 pub mod routing;
 pub mod runtime;
 pub mod subscriptions;

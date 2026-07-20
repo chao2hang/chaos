@@ -1,30 +1,63 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
+	import { RefreshCw, Save } from '@lucide/svelte';
 	import {
 		getDns,
 		putDns,
 		ApiClientError,
-		type DnsRuleDto,
-		type DnsUpstreamDto
+		isSessionRedirectPending,
+		type RoutingRuleDto
 	} from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import Notice from '$lib/components/ui/Notice.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Section from '$lib/components/ui/Section.svelte';
+	import NamedEndpointEditor, {
+		type NamedEndpoint
+	} from '$lib/components/features/NamedEndpointEditor.svelte';
+	import RoutingRuleEditor from '$lib/components/features/RoutingRuleEditor.svelte';
 
-	let upstreams = $state<DnsUpstreamDto[]>([]);
-	let rules = $state<DnsRuleDto[]>([]);
+	let upstreams = $state<NamedEndpoint[]>([]);
+	let rules = $state<RoutingRuleDto[]>([]);
 	let fallback = $state('alidns');
 	let error = $state('');
 	let message = $state('');
+	let loaded = $state(false);
 	let busy = $state(false);
+	let savedSnapshot = $state('');
+	let confirmReload = $state(false);
+
+	function snapshot() {
+		return JSON.stringify({ upstreams, rules, fallback });
+	}
 
 	async function load() {
+		busy = true;
 		error = '';
 		try {
-			const doc = await getDns();
-			upstreams = doc.upstreams;
-			rules = doc.rules;
-			fallback = doc.fallback;
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('dns.loadFailed');
+			const document = await getDns();
+			upstreams = document.upstreams.map((upstream) => ({
+				name: upstream.name,
+				value: upstream.address
+			}));
+			rules = document.rules.map((rule) => ({
+				expression: rule.expression,
+				outbound: rule.upstream,
+				enabled: rule.enabled
+			}));
+			fallback = document.fallback;
+			savedSnapshot = snapshot();
+			confirmReload = false;
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.loadFailed');
+		} finally {
+			busy = false;
+			loaded = true;
 		}
 	}
 
@@ -32,160 +65,192 @@
 		void load();
 	});
 
-	function addUpstream() {
-		upstreams = [...upstreams, { name: '', address: '' }];
-	}
+	beforeNavigate(({ cancel }) => {
+		if (!dirty || typeof window === 'undefined') return;
+		if (isSessionRedirectPending()) return;
+		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
+			sessionStorage.removeItem('chaos_allow_dirty_navigation');
+			return;
+		}
+		if (!window.confirm(t('common.discardDescription'))) cancel();
+	});
 
-	function removeUpstream(i: number) {
-		upstreams = upstreams.filter((_, idx) => idx !== i);
-	}
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		document.documentElement.dataset.chaosUnsaved = dirty ? 'true' : 'false';
+		return () => {
+			delete document.documentElement.dataset.chaosUnsaved;
+		};
+	});
 
-	function addRule() {
-		rules = [...rules, { expression: '', upstream: fallback || 'alidns', enabled: true }];
-	}
-
-	function removeRule(i: number) {
-		rules = rules.filter((_, idx) => idx !== i);
+	function requestReload() {
+		if (dirty) confirmReload = true;
+		else void load();
 	}
 
 	async function onSave() {
 		error = '';
 		message = '';
-		if (!fallback.trim()) {
-			error = t('dns.fallbackRequired');
-			return;
-		}
-		if (!upstreams.some((u) => u.name.trim() && u.address.trim())) {
+		const names = upstreams.map((upstream) => upstream.name.trim()).filter(Boolean);
+		const nameSet = new Set(names);
+		if (!upstreams.length || upstreams.some((upstream) => !upstream.name.trim() || !upstream.value.trim())) {
 			error = t('dns.upstreamRequired');
 			return;
 		}
+		if (nameSet.size !== names.length) {
+			error = t('dns.duplicateUpstream');
+			return;
+		}
+		if (!fallback.trim() || !nameSet.has(fallback.trim())) {
+			error = t('dns.invalidFallback');
+			return;
+		}
+		if (
+			rules.some(
+				(rule) =>
+					rule.enabled &&
+					(!rule.expression.trim() || !rule.outbound.trim() || !nameSet.has(rule.outbound.trim()))
+			)
+		) {
+			error = t('dns.invalidRule');
+			return;
+		}
+
 		busy = true;
 		try {
-			const doc = await putDns({
-				upstreams: upstreams.map((u) => ({
-					name: u.name.trim(),
-					address: u.address.trim()
+			const document = await putDns({
+				upstreams: upstreams.map((upstream) => ({
+					name: upstream.name.trim(),
+					address: upstream.value.trim()
 				})),
-				rules: rules.map((r) => ({
-					expression: r.expression.trim(),
-					upstream: r.upstream.trim(),
-					enabled: r.enabled
+				rules: rules.map((rule) => ({
+					expression: rule.expression.trim(),
+					upstream: rule.outbound.trim(),
+					enabled: rule.enabled
 				})),
 				fallback: fallback.trim()
 			});
-			upstreams = doc.upstreams;
-			rules = doc.rules;
-			fallback = doc.fallback;
+			upstreams = document.upstreams.map((upstream) => ({ name: upstream.name, value: upstream.address }));
+			rules = document.rules.map((rule) => ({
+				expression: rule.expression,
+				outbound: rule.upstream,
+				enabled: rule.enabled
+			}));
+			fallback = document.fallback;
+			savedSnapshot = snapshot();
 			message = t('dns.saved');
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('dns.saveFailed');
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.saveFailed');
 		} finally {
 			busy = false;
 		}
 	}
+
+	function onBeforeUnload(event: BeforeUnloadEvent) {
+		if (!dirty || isSessionRedirectPending()) return;
+		event.preventDefault();
+		event.returnValue = '';
+	}
+
+	const upstreamNames = $derived(upstreams.map((upstream) => upstream.name.trim()).filter(Boolean));
+	const dirty = $derived(loaded && snapshot() !== savedSnapshot);
 </script>
 
-<span class="eyebrow">resolve · upstreams</span>
-<h1 class="page-title">{t('dns.title')}</h1>
-<p class="page-sub">{t('dns.subtitle')}</p>
-<p class="page-hint">{t('dns.hint')}</p>
+<svelte:window onbeforeunload={onBeforeUnload} />
 
-{#if error}
-	<p class="error" role="alert">{error}</p>
-{/if}
-{#if message}
-	<p class="ok" role="status">{message}</p>
-{/if}
+<div class="page-stack">
+	<PageHeader title={t('dns.title')} description={t('dns.subtitle')} meta="network / dns">
+		{#snippet actions()}
+			<Button
+				variant="ghost"
+				size="icon"
+				icon={RefreshCw}
+				disabled={busy}
+				aria-label={t('common.reload')}
+				title={t('common.reload')}
+				onclick={requestReload}
+			/>
+			<Button variant="primary" icon={Save} loading={busy && loaded} disabled={!dirty} onclick={onSave}>
+				{busy && loaded ? t('common.saving') : t('common.saveChanges')}
+			</Button>
+		{/snippet}
+	</PageHeader>
 
-<section class="import">
-	<label for="dns-fallback">{t('dns.fallback')}</label>
-	<input id="dns-fallback" bind:value={fallback} disabled={busy} />
-</section>
+	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
+	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
 
-<h2 class="section-label">{t('dns.upstreams')}</h2>
-<section class="table-wrap">
-	<table>
-		<thead>
-			<tr>
-				<th>{t('dns.name')}</th>
-				<th>{t('dns.address')}</th>
-				<th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each upstreams as u, i (i)}
-				<tr>
-					<td><input bind:value={u.name} disabled={busy} /></td>
-					<td><input class="wide" bind:value={u.address} disabled={busy} /></td>
-					<td>
-						<button type="button" class="danger" disabled={busy} onclick={() => removeUpstream(i)}
-							>{t('common.delete')}</button
-						>
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-</section>
-<button type="button" class="mb" disabled={busy} onclick={addUpstream}>{t('dns.addUpstream')}</button>
+	{#if !loaded}
+		<LoadingState label={t('common.loading')} />
+	{:else}
+		<Section title={t('dns.upstreams')} description={t('dns.upstreamsDescription')} count={upstreams.length}>
+			<NamedEndpointEditor
+				bind:items={upstreams}
+				nameLabel={t('dns.name')}
+				valueLabel={t('dns.address')}
+				namePlaceholder="alidns"
+				valuePlaceholder="https://dns.alidns.com/dns-query"
+				addLabel={t('dns.addUpstream')}
+				{busy}
+			/>
+		</Section>
 
-<h2 class="section-label">{t('dns.rules')}</h2>
-<section class="table-wrap">
-	<table>
-		<thead>
-			<tr>
-				<th>{t('common.enabled')}</th>
-				<th>{t('dns.expression')}</th>
-				<th>{t('dns.upstream')}</th>
-				<th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each rules as r, i (i)}
-				<tr>
-					<td><input type="checkbox" bind:checked={r.enabled} disabled={busy} /></td>
-					<td><input class="wide" bind:value={r.expression} disabled={busy} /></td>
-					<td><input bind:value={r.upstream} disabled={busy} /></td>
-					<td>
-						<button type="button" class="danger" disabled={busy} onclick={() => removeRule(i)}
-							>{t('common.delete')}</button
-						>
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-</section>
+		<Section title={t('dns.defaultsTitle')} description={t('dns.hint')}>
+			<div class="fallback-field">
+				<Field label={t('dns.fallback')} forId="dns-fallback">
+					<select id="dns-fallback" bind:value={fallback} disabled={busy}>
+						{#if fallback && !upstreamNames.includes(fallback)}<option value={fallback}>{fallback}</option>{/if}
+						{#each upstreamNames as name (name)}<option value={name}>{name}</option>{/each}
+					</select>
+				</Field>
+			</div>
+		</Section>
 
-<div class="actions">
-	<button type="button" disabled={busy} onclick={addRule}>{t('dns.addRule')}</button>
-	<button type="button" class="primary" disabled={busy} onclick={onSave}>
-		{busy ? t('common.saving') : t('common.save')}
-	</button>
+		<Section title={t('dns.rules')} description={t('dns.rulesDescription')} count={rules.length}>
+			<RoutingRuleEditor bind:rules outbounds={upstreamNames} {busy} />
+		</Section>
+
+		{#if dirty}
+			<div class="sticky-actions">
+				<div>
+					<strong>{t('common.unsavedChanges')}</strong>
+					<span>{t('dns.unsavedDescription')}</span>
+				</div>
+				<div class="inline-actions">
+					<Button disabled={busy} onclick={requestReload}>{t('common.discard')}</Button>
+					<Button variant="primary" icon={Save} loading={busy} onclick={onSave}>{t('common.saveChanges')}</Button>
+				</div>
+			</div>
+		{/if}
+	{/if}
 </div>
 
+<ConfirmDialog
+	bind:open={confirmReload}
+	title={t('common.discardTitle')}
+	description={t('common.discardDescription')}
+	confirmLabel={t('common.discard')}
+	cancelLabel={t('common.cancel')}
+	danger
+	onconfirm={load}
+/>
+
 <style>
-	.section-label {
-		margin: 1.5rem 0 0.65rem;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--ink-dim);
-		font-family: var(--font-mono);
+	.fallback-field {
+		width: min(22rem, 100%);
 	}
-	input.wide {
-		width: 100%;
-		min-width: 14rem;
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
+
+	.sticky-actions > div:first-child {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
 	}
-	input[type='checkbox'] {
-		width: 1rem;
-		height: 1rem;
-		accent-color: var(--signal);
+
+	.sticky-actions strong {
+		font-size: 0.8rem;
 	}
-	.mb {
-		margin: 0.65rem 0 0.25rem;
+
+	.sticky-actions span {
+		color: var(--ink-muted);
+		font-size: 0.7rem;
 	}
 </style>

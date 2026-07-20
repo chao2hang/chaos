@@ -33,6 +33,8 @@ pub struct Node {
     pub address: Option<String>,
     pub subscription_id: Option<String>,
     pub created_at: String,
+    /// ISO 3166-1 alpha-2 country code from GeoIP (e.g. "US", "HK", "JP").
+    pub country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

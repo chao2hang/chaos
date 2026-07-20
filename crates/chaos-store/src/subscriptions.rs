@@ -121,10 +121,7 @@ pub async fn replace_subscription_nodes(
 
     for n in nodes {
         let node = Node {
-            id: n
-                .id
-                .clone()
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            id: n.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string()),
             name: n.name.clone(),
             tag: n.tag.clone(),
             link: n.link.clone(),
@@ -132,12 +129,13 @@ pub async fn replace_subscription_nodes(
             address: n.address.clone(),
             subscription_id: Some(subscription_id.to_string()),
             created_at: created_at.clone(),
+            country_code: None,
         };
 
         sqlx::query(
             r#"
-            INSERT INTO nodes (id, name, tag, link, protocol, address, subscription_id, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            INSERT INTO nodes (id, name, tag, link, protocol, address, subscription_id, created_at, country_code)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(&node.id)
@@ -148,6 +146,7 @@ pub async fn replace_subscription_nodes(
         .bind(&node.address)
         .bind(&node.subscription_id)
         .bind(&node.created_at)
+        .bind(&node.country_code)
         .execute(&mut *tx)
         .await?;
 
@@ -184,7 +183,7 @@ pub async fn delete_subscription(pool: &SqlitePool, id: &str) -> Result<bool, sq
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{connect, migrate, list_nodes};
+    use crate::{connect, list_nodes, migrate};
 
     #[tokio::test]
     async fn insert_replace_delete_subscription() {

@@ -19,6 +19,7 @@ use routes::dns::dns_router;
 use routes::groups::groups_router;
 use routes::latency::latency_router;
 use routes::nodes::nodes_router;
+use routes::orchestration::orchestration_router;
 use routes::routing::routing_router;
 use routes::runtime::runtime_router;
 use routes::subscriptions::subscriptions_router;
@@ -40,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     let jwt_secret = load_or_create_jwt_secret()?;
     let state = AppState::new(pool, jwt_secret);
+    routes::orchestration::recover_pending_publication(&state).await?;
 
     let app = Router::new()
         .nest("/api/v1/auth", auth_router())
@@ -52,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 .merge(runtime_router())
                 .merge(groups_router())
                 .merge(routing_router())
+                .merge(orchestration_router())
                 .merge(dns_router()),
         )
         .layer(TraceLayer::new_for_http())

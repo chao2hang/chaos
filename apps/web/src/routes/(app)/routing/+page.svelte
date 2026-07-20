@@ -1,132 +1,160 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getRouting, putRouting, ApiClientError, type RoutingRuleDto } from '$lib/api';
+	import { ArrowRight, RefreshCw } from '@lucide/svelte';
+	import { ApiClientError, getRouting, type RoutingRuleDto } from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import Notice from '$lib/components/ui/Notice.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Section from '$lib/components/ui/Section.svelte';
 
 	let rules = $state<RoutingRuleDto[]>([]);
-	let fallback = $state('proxy');
+	let fallback = $state('direct');
 	let error = $state('');
-	let message = $state('');
+	let loaded = $state(false);
 	let busy = $state(false);
 
 	async function load() {
+		busy = true;
 		error = '';
 		try {
-			const doc = await getRouting();
-			rules = doc.rules;
-			fallback = doc.fallback;
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('routing.loadFailed');
+			const document = await getRouting();
+			rules = document.rules;
+			fallback = document.fallback;
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('routing.loadFailed');
+		} finally {
+			busy = false;
+			loaded = true;
 		}
 	}
 
 	onMount(() => {
 		void load();
 	});
-
-	function addRule() {
-		rules = [...rules, { expression: '', outbound: 'proxy', enabled: true }];
-	}
-
-	function removeRule(i: number) {
-		rules = rules.filter((_, idx) => idx !== i);
-	}
-
-	async function onSave() {
-		error = '';
-		message = '';
-		if (!fallback.trim()) {
-			error = t('routing.fallbackRequired');
-			return;
-		}
-		busy = true;
-		try {
-			const doc = await putRouting({
-				rules: rules.map((r) => ({
-					expression: r.expression.trim(),
-					outbound: r.outbound.trim(),
-					enabled: r.enabled
-				})),
-				fallback: fallback.trim()
-			});
-			rules = doc.rules;
-			fallback = doc.fallback;
-			message = t('routing.saved');
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('routing.saveFailed');
-		} finally {
-			busy = false;
-		}
-	}
 </script>
 
-<span class="eyebrow">policy · match rules</span>
-<h1 class="page-title">{t('routing.title')}</h1>
-<p class="page-sub">{t('routing.subtitle')}</p>
-<p class="page-hint">{t('routing.hint')}</p>
+<div class="page-stack">
+	<PageHeader title={t('routing.title')} description={t('routing.readOnlyDescription')} meta="generated / routing">
+		{#snippet actions()}
+			<Button
+				variant="ghost"
+				size="icon"
+				icon={RefreshCw}
+				disabled={busy}
+				aria-label={t('common.reload')}
+				title={t('common.reload')}
+				onclick={() => void load()}
+			/>
+			<a class="orchestrate-link" href="/orchestrate">
+				<span>{t('routing.openOrchestrate')}</span>
+				<ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" />
+			</a>
+		{/snippet}
+	</PageHeader>
 
-{#if error}
-	<p class="error" role="alert">{error}</p>
-{/if}
-{#if message}
-	<p class="ok" role="status">{message}</p>
-{/if}
+	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
 
-<section class="import">
-	<label for="fallback">{t('routing.fallback')}</label>
-	<input id="fallback" bind:value={fallback} disabled={busy} />
-</section>
+	{#if !loaded}
+		<LoadingState label={t('common.loading')} />
+	{:else}
+		<Notice tone="info" message={t('routing.readOnlyNotice')} />
 
-<section class="table-wrap">
-	<table>
-		<thead>
-			<tr>
-				<th>{t('common.enabled')}</th>
-				<th>{t('routing.expression')}</th>
-				<th>{t('routing.outbound')}</th>
-				<th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each rules as r, i (i)}
-				<tr>
-					<td>
-						<input type="checkbox" bind:checked={r.enabled} disabled={busy} />
-					</td>
-					<td>
-						<input class="wide" bind:value={r.expression} disabled={busy} />
-					</td>
-					<td>
-						<input bind:value={r.outbound} disabled={busy} />
-					</td>
-					<td>
-						<button type="button" class="danger" disabled={busy} onclick={() => removeRule(i)}
-							>{t('common.delete')}</button
-						>
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-</section>
+		<Section title={t('routing.defaultsTitle')} description={t('routing.generatedFallbackDescription')}>
+			<div class="fallback-value"><span>{t('routing.fallback')}</span><strong>{fallback}</strong></div>
+		</Section>
 
-<div class="actions">
-	<button type="button" disabled={busy} onclick={addRule}>{t('routing.addRule')}</button>
-	<button type="button" class="primary" disabled={busy} onclick={onSave}>
-		{busy ? t('common.saving') : t('common.save')}
-	</button>
+		<Section title={t('routing.rulesTitle')} description={t('routing.generatedRulesDescription')} count={rules.length}>
+			{#if rules.length}
+				<div class="rules-table" role="table" aria-label={t('routing.rulesTitle')}>
+					<div class="rule-row rule-head" role="row">
+						<span role="columnheader">#</span>
+						<span role="columnheader">{t('routing.expression')}</span>
+						<span role="columnheader">{t('routing.outbound')}</span>
+					</div>
+					{#each rules as rule, index (`${rule.expression}:${rule.outbound}:${index}`)}
+						<div class:disabled={!rule.enabled} class="rule-row" role="row">
+							<span class="rule-index" role="cell">{index + 1}</span>
+							<span role="cell"><code>{rule.expression}</code></span>
+							<span role="cell"><strong>{rule.outbound}</strong></span>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="empty-state">{t('routing.emptyDescription')}</div>
+			{/if}
+		</Section>
+	{/if}
 </div>
 
 <style>
-	input.wide {
-		width: 100%;
-		min-width: 14rem;
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
+	.orchestrate-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 2.25rem;
+		padding: 0 0.8rem;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-md);
+		background: var(--ink);
+		color: var(--surface);
+		font-size: 0.75rem;
+		font-weight: 700;
+		text-decoration: none;
 	}
-	input[type='checkbox'] {
-		width: 1rem;
-		height: 1rem;
-		accent-color: var(--signal);
+
+	.orchestrate-link:hover { opacity: 0.85; }
+
+	.fallback-value {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-3);
+		min-width: min(22rem, 100%);
+		padding: var(--space-3) var(--space-4);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-md);
+		background: var(--surface-subtle);
+	}
+
+	.fallback-value span {
+		color: var(--ink-muted);
+		font-size: 0.72rem;
+	}
+
+	.fallback-value strong,
+	.rule-row code,
+	.rule-row strong {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+	}
+
+	.rules-table {
+		overflow: hidden;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+	}
+
+	.rule-row {
+		display: grid;
+		grid-template-columns: 3rem minmax(12rem, 1fr) minmax(8rem, 0.4fr);
+		gap: var(--space-3);
+		align-items: center;
+		min-width: 34rem;
+		padding: 0.8rem var(--space-4);
+		border-top: 1px solid var(--line);
+	}
+
+	.rule-row:first-child { border-top: 0; }
+	.rule-head { color: var(--ink-muted); background: var(--surface-subtle); font-size: 0.65rem; font-weight: 700; text-transform: uppercase; }
+	.rule-index { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.7rem; }
+	.rule-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.rule-row.disabled { opacity: 0.45; }
+	.empty-state { padding: var(--space-5); color: var(--ink-muted); border: 1px dashed var(--line-strong); border-radius: var(--radius-md); font-size: 0.8rem; }
+
+	@media (max-width: 700px) {
+		.rules-table { overflow-x: auto; }
+		.orchestrate-link span { display: none; }
+		.orchestrate-link { padding: 0 0.65rem; }
 	}
 </style>

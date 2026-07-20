@@ -1,140 +1,158 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { authStatus, setupAdmin, setToken, ApiClientError } from '$lib/api';
+	import { RefreshCw, UserRoundCheck } from '@lucide/svelte';
+	import { authStatus, clearSessionRedirect, setupAdmin, setToken, ApiClientError } from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
-	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
+	import AuthShell from '$lib/components/ui/AuthShell.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import Notice from '$lib/components/ui/Notice.svelte';
+	import PasswordInput from '$lib/components/ui/PasswordInput.svelte';
 
 	let username = $state('admin');
 	let password = $state('');
-	let confirmPw = $state('');
+	let confirmPassword = $state('');
 	let error = $state('');
 	let busy = $state(false);
 	let ready = $state(false);
+	let apiOk = $state(false);
 
-	onMount(async () => {
+	async function checkStatus() {
+		ready = false;
+		error = '';
 		try {
 			const status = await authStatus();
+			apiOk = true;
 			if (status.initialized) {
 				await goto('/login');
 				return;
 			}
-			ready = true;
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('auth.setup.apiDown');
+		} catch (cause) {
+			apiOk = false;
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.apiDown');
+		} finally {
 			ready = true;
 		}
+	}
+
+	onMount(() => {
+		clearSessionRedirect();
+		void checkStatus();
 	});
 
-	async function onSubmit(e: Event) {
-		e.preventDefault();
+	async function onSubmit(event: SubmitEvent) {
+		event.preventDefault();
 		error = '';
 		if (password.length < 8) {
 			error = t('auth.setup.passwordTooShort');
 			return;
 		}
-		if (password !== confirmPw) {
+		if (password !== confirmPassword) {
 			error = t('auth.setup.passwordMismatch');
 			return;
 		}
+
 		busy = true;
 		try {
-			const res = await setupAdmin(username.trim(), password);
-			setToken(res.token);
+			const response = await setupAdmin(username.trim(), password);
+			setToken(response.token);
 			await goto('/dashboard');
-		} catch (err) {
-			if (err instanceof ApiClientError && err.code === 'already_initialized') {
+		} catch (cause) {
+			if (cause instanceof ApiClientError && cause.code === 'already_initialized') {
 				await goto('/login');
 				return;
 			}
-			error = err instanceof ApiClientError ? apiErrorText(err) : t('auth.setup.failed');
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.failed');
 		} finally {
 			busy = false;
 		}
 	}
+
+	const confirmError = $derived(
+		confirmPassword && password !== confirmPassword ? t('auth.setup.passwordMismatch') : ''
+	);
 </script>
 
-<main class="auth">
-	<div class="auth-card panel">
-		<div class="auth-top">
-			<span class="eyebrow">chaos · first run</span>
-			<div class="lang-wrap"><LocaleSwitcher /></div>
-		</div>
-		<h1 class="page-title">{t('auth.setup.title')}</h1>
-		<p class="page-sub">{t('auth.setup.subtitle')}</p>
+<AuthShell title={t('auth.setup.title')} description={t('auth.setup.subtitle')}>
+	{#if !ready}
+		<LoadingState label={t('auth.setup.checking')} />
+	{:else}
+		<div class="auth-stack">
+			{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
 
-		{#if !ready}
-			<p class="muted">{t('auth.setup.checking')}</p>
-		{:else}
-			<form class="form-stack" onsubmit={onSubmit}>
-				<label>
-					{t('auth.setup.username')}
-					<input bind:value={username} autocomplete="username" required disabled={busy} />
-				</label>
-				<label>
-					{t('auth.setup.password')}
-					<input
-						type="password"
-						bind:value={password}
-						autocomplete="new-password"
-						required
-						minlength="8"
-						disabled={busy}
-					/>
-				</label>
-				<label>
-					{t('auth.setup.confirmPassword')}
-					<input
-						type="password"
-						bind:value={confirmPw}
-						autocomplete="new-password"
-						required
-						minlength="8"
-						disabled={busy}
-					/>
-				</label>
-				{#if error}
-					<p class="error" role="alert">{error}</p>
-				{/if}
-				<button type="submit" class="primary" disabled={busy}
-					>{busy ? t('auth.setup.submitting') : t('auth.setup.submit')}</button
-				>
-			</form>
-			<p class="footer muted"><a href="/login">{t('auth.setup.alreadyInitialized')}</a></p>
-		{/if}
-	</div>
-</main>
+			{#if !apiOk}
+				<Button full icon={RefreshCw} onclick={checkStatus}>{t('common.retry')}</Button>
+			{:else}
+				<form onsubmit={onSubmit}>
+					<Field label={t('auth.setup.username')} forId="username">
+						<input
+							id="username"
+							type="text"
+							bind:value={username}
+							autocomplete="username"
+							required
+							disabled={busy}
+						/>
+					</Field>
+					<Field
+						label={t('auth.setup.password')}
+						forId="password"
+						hint={t('auth.setup.passwordHint')}
+					>
+						<PasswordInput
+							id="password"
+							bind:value={password}
+							autocomplete="new-password"
+							label={t('auth.setup.password')}
+							disabled={busy}
+						/>
+					</Field>
+					<Field
+						label={t('auth.setup.confirmPassword')}
+						forId="confirm-password"
+						error={confirmError}
+					>
+						<PasswordInput
+							id="confirm-password"
+							bind:value={confirmPassword}
+							autocomplete="new-password"
+							label={t('auth.setup.confirmPassword')}
+							disabled={busy}
+						/>
+					</Field>
+					<Button
+						type="submit"
+						variant="primary"
+						size="lg"
+						icon={UserRoundCheck}
+						loading={busy}
+						disabled={!!confirmError}
+						full
+					>
+						{busy ? t('auth.setup.submitting') : t('auth.setup.submit')}
+					</Button>
+				</form>
+			{/if}
+
+			<p class="alternate"><a href="/login">{t('auth.setup.alreadyInitialized')}</a></p>
+		</div>
+	{/if}
+</AuthShell>
 
 <style>
-	.auth {
-		min-height: 100vh;
+	.auth-stack,
+	form {
 		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 2rem 1rem;
+		flex-direction: column;
+		gap: var(--space-4);
 	}
-	.auth-card {
-		width: 100%;
-		max-width: 24rem;
-	}
-	.auth-top {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		gap: 1rem;
-		margin-bottom: 0.35rem;
-	}
-	.lang-wrap {
-		width: 8.5rem;
-		flex-shrink: 0;
-	}
-	.footer {
-		margin: 1.25rem 0 0;
-		font-size: 0.9rem;
-	}
-	form :global(button) {
-		margin-top: 0.35rem;
-		width: 100%;
-		padding: 0.7rem 0.9rem;
+
+	.alternate {
+		margin: var(--space-2) 0 0;
+		color: var(--ink-muted);
+		font-size: 0.78rem;
+		text-align: center;
 	}
 </style>

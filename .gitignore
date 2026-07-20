@@ -18,6 +18,8 @@ apps/web/dist
 # Vendored large binaries (fetched by script)
 /third_party/dae/**/dae
 /third_party/dae/**/*.zip
+/third_party/chaos-prober
+/tools/chaos-prober/chaos-prober
 
 # Logs & OS
 logs
@@ -27,3 +29,4 @@ logs
 .vscode/*
 !.vscode/extensions.json
 .superpowers/
+.zcode/

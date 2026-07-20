@@ -1,205 +1,165 @@
-# Design System Master File
+# chaos Interface System
 
-> **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.
-> If that file exists, its rules **override** this Master file.
-> If not, strictly follow the rules below.
+**Status:** Active
+**Scope:** SvelteKit console
+**Source of truth:** `apps/web/src/app.css` and `apps/web/src/lib/components/`
 
----
+## Direction
 
-**Project:** chaos
-**Generated:** 2026-07-18 12:02:10
-**Category:** Financial Dashboard
+chaos is an operational control plane. The interface is quiet, compact, and explicit.
 
----
+- True white canvas, near-black text, and neutral grays only.
+- No brand accent color, glow, decorative gradient, glass effect, or floating card grid.
+- Borders and spacing establish hierarchy. Shadows are reserved for modal layers and the mobile drawer.
+- System UI typography is used for reading speed. Monospace is limited to identifiers, paths, addresses, and expressions.
+- Status is never communicated by color alone. Every state has an icon and text.
+- Radius is capped at 6px. Repeated data rows may be framed; page sections are not decorative cards.
+- Controls remain stable in size during hover, loading, validation, and localization.
 
-## Global Rules
+## Tokens
 
-### Color Palette
+| Role | Token | Value |
+|---|---|---|
+| Canvas | `--canvas` | `#ffffff` |
+| Surface | `--surface` | `#ffffff` |
+| Subtle surface | `--surface-subtle` | `#f5f5f5` |
+| Hover surface | `--surface-hover` | `#eeeeee` |
+| Inverse surface | `--surface-inverse` | `#111111` |
+| Primary text | `--ink` | `#111111` |
+| Muted text | `--ink-muted` | `#5f5f5f` |
+| Faint text | `--ink-faint` | `#858585` |
+| Border | `--line` | `#dddddd` |
+| Strong border | `--line-strong` | `#a8a8a8` |
+| Focus | `--focus` | `#111111` |
+| Small radius | `--radius-sm` | `3px` |
+| Default radius | `--radius-md` | `5px` |
+| Maximum radius | `--radius-lg` | `6px` |
+| Sidebar | `--sidebar-width` | `15rem` |
+| Content limit | `--content-width` | `76rem` |
 
-| Role | Hex | CSS Variable |
-|------|-----|--------------|
-| Primary | `#0F172A` | `--color-primary` |
-| Secondary | `#1E293B` | `--color-secondary` |
-| CTA/Accent | `#22C55E` | `--color-cta` |
-| Background | `#020617` | `--color-background` |
-| Text | `#F8FAFC` | `--color-text` |
+Spacing follows a 4px base through `--space-1` to `--space-12`.
 
-**Color Notes:** Dark bg + green positive indicators
+## Typography
 
-### Typography
+- UI: system sans stack from `--font-ui`.
+- Technical data: system monospace stack from `--font-mono`.
+- Page title: 1.65rem / 720 weight.
+- Section title: 0.9rem / 690 weight.
+- Control text: 0.8rem / 650 weight.
+- Labels: 0.68-0.75rem / 650 weight.
+- Letter spacing is zero. Uppercase is restricted to short navigation and technical labels.
 
-- **Heading Font:** Fira Code
-- **Body Font:** Fira Sans
-- **Mood:** dashboard, data, analytics, code, technical, precise
-- **Google Fonts:** [Fira Code + Fira Sans](https://fonts.google.com/share?selection.family=Fira+Code:wght@400;500;600;700|Fira+Sans:wght@300;400;500;600;700)
+## Layout
 
-**CSS Import:**
-```css
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
-```
+- Desktop uses a 15rem fixed sidebar and a centered 76rem content area.
+- Mobile uses a 3.5rem sticky top bar and an off-canvas navigation drawer.
+- Pages use `.page-stack` for vertical rhythm and `.page-grid` for 12-column composition.
+- Data tables collapse into labeled row blocks below 720px.
+- Sticky save bars remain above the viewport edge and stack their actions on narrow screens.
+- No section may depend on horizontal scrolling except a desktop data table as a last-resort overflow container.
 
-### Spacing Variables
+## Component Contracts
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--space-xs` | `4px` / `0.25rem` | Tight gaps |
-| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |
-| `--space-md` | `16px` / `1rem` | Standard padding |
-| `--space-lg` | `24px` / `1.5rem` | Section padding |
-| `--space-xl` | `32px` / `2rem` | Large gaps |
-| `--space-2xl` | `48px` / `3rem` | Section margins |
-| `--space-3xl` | `64px` / `4rem` | Hero padding |
+| Component | Purpose | Required states |
+|---|---|---|
+| `AppLogo` | Product mark and wordmark | Full, compact |
+| `ActionLink` | Link styled as a command | Primary, secondary, ghost, small |
+| `AuthShell` | Shared login/setup frame | Loading, form, API error |
+| `Button` | All button commands | Primary, secondary, ghost, danger, loading, disabled, icon-only |
+| `ConfirmDialog` | Destructive or discard confirmation | Open, busy, cancel, confirm |
+| `EmptyState` | Empty resource or filtered result | Icon, title, description, optional action |
+| `Field` | Label, control, hint, and validation ownership | Default, optional, hint, invalid |
+| `LoadingState` | Section or page loading feedback | Label and reduced-motion-safe spinner |
+| `Metric` | Dashboard summary value | Positive, negative, neutral |
+| `Notice` | Inline feedback | Info, success, error, dismissible |
+| `PageHeader` | Page identity and primary commands | Metadata, title, description, actions |
+| `PasswordInput` | Password entry with visibility control | Hidden, visible, disabled |
+| `SearchInput` | Resource filtering | Empty, populated, clear, disabled |
+| `Section` | Bordered functional region | Header, actions, count, flush body |
+| `SegmentedControl` | Small mutually exclusive view switch | Selected, unselected, counted |
+| `Status` | Textual operational state | Positive, negative, warning, neutral |
+| `TableFrame` | Stable table boundary and overflow | Desktop table, responsive row blocks |
+| `Toggle` | Binary setting | On, off, focused, disabled |
 
-### Shadow Depths
+## Feature Components
 
-| Level | Value | Usage |
-|-------|-------|-------|
-| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)` | Subtle lift |
-| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)` | Cards, buttons |
-| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)` | Modals, dropdowns |
-| `--shadow-xl` | `0 20px 25px rgba(0,0,0,0.15)` | Hero images, featured cards |
+| Component | Ownership |
+|---|---|
+| `RoutingRuleEditor` | Ordered rule creation, enablement, duplication, movement, target selection, and deletion |
+| `NamedEndpointEditor` | Ordered DNS upstream names and addresses |
+| `GroupDraftEditor` | Group selection, policy fields, multi-group node membership, and weights |
+| `FlowPreview` | Read-only topology verification using `@xyflow/svelte` |
 
----
+Feature components must use the UI primitives above. They do not introduce independent palettes, button styles, notices, or confirmation behavior.
 
-## Component Specs
+## Interaction Rules
 
-### Buttons
+### Async operations
 
-```css
-/* Primary Button */
-.btn-primary {
-  background: #22C55E;
-  color: white;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
-  cursor: pointer;
-}
+- Loading state is scoped to the affected control or row when possible.
+- A row refresh must not disable unrelated rows.
+- Success and failure feedback use `Notice` and remain dismissible.
+- User input is preserved after a failed request.
+- A bulk import keeps failed links in the editor for correction and retry.
 
-.btn-primary:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
+### Drafts and saving
 
-/* Secondary Button */
-.btn-secondary {
-  background: transparent;
-  color: #0F172A;
-  border: 2px solid #0F172A;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
-  cursor: pointer;
-}
-```
+- Routing, DNS, group membership, and orchestration use local drafts.
+- Dirty state is visible in both the page header context and sticky save bar.
+- Reloading a dirty document requires confirmation.
+- Browser unload protection is enabled while a draft is dirty.
+- Validation runs before persistence and before Apply.
+- Orchestration saves group drafts first, then routing, then optionally applies the runtime configuration.
 
-### Cards
+### Destructive actions
 
-```css
-.card {
-  background: #020617;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: var(--shadow-md);
-  transition: all 200ms ease;
-  cursor: pointer;
-}
+- Native `confirm()` is not used.
+- Delete and stop actions use `ConfirmDialog` with the affected resource named in the copy.
+- Deleting a referenced group assigns its rule references to an explicit replacement and leaves routing dirty for review.
 
-.card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-}
-```
+### Selection and editing
 
-### Inputs
+- Dragging is never the only way to edit.
+- Nodes can belong to multiple groups.
+- Resource tables expose row actions as icon buttons with accessible labels and tooltips.
+- Search filters locally and communicates an empty-filter result separately from an empty resource.
+- Ordered rules always provide keyboard-accessible move buttons.
 
-```css
-.input {
-  padding: 12px 16px;
-  border: 1px solid #E2E8F0;
-  border-radius: 8px;
-  font-size: 16px;
-  transition: border-color 200ms ease;
-}
+### Orchestration
 
-.input:focus {
-  border-color: #0F172A;
-  outline: none;
-  box-shadow: 0 0 0 3px #0F172A20;
-}
-```
+The workflow has three stages:
 
-### Modals
+1. Groups and members.
+2. Ordered routing rules and fallback.
+3. Validation, topology review, save, and Apply.
 
-```css
-.modal-overlay {
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-}
+The topology canvas is a read-only verification surface. It supports pan and zoom but does not imply that moving or connecting nodes persists configuration.
 
-.modal {
-  background: white;
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow-xl);
-  max-width: 500px;
-  width: 90%;
-}
-```
+## Copy
 
----
+- Use direct labels: "Save changes", "Apply configuration", "Delete node".
+- Avoid slogans, ornamental technical jargon, fake metrics, and explanatory feature copy.
+- Buttons describe commands, not destinations or benefits.
+- Errors explain what failed and retain server detail for dae operational failures.
+- English and Simplified Chinese catalogs must contain identical keys.
 
-## Style Guidelines
+## Accessibility
 
-**Style:** Dark Mode (OLED)
+- Every icon-only control has an `aria-label` and `title`.
+- Focus uses a visible 2px near-black outline.
+- Interactive targets are at least 30px high; primary controls are at least 36px high.
+- Status includes text and an icon, never color alone.
+- Modal layers support Escape and backdrop cancellation when not busy.
+- `prefers-reduced-motion` reduces animation and transition durations.
+- Contrast must meet WCAG AA for normal text.
 
-**Keywords:** Dark theme, low light, high contrast, deep black, midnight blue, eye-friendly, OLED, night mode, power efficient
+## Verification
 
-**Best For:** Night-mode apps, coding platforms, entertainment, eye-strain prevention, OLED devices, low-light
+Before handoff:
 
-**Key Effects:** Minimal glow (text-shadow: 0 0 10px), dark-to-light transitions, low white emission, high readability, visible focus
-
-### Page Pattern
-
-**Pattern Name:** Horizontal Scroll Journey
-
-- **Conversion Strategy:** Immersive product discovery. High engagement. Keep navigation visible.
-28,Bento Grid Showcase,bento,  grid,  features,  modular,  apple-style,  showcase", 1. Hero, 2. Bento Grid (Key Features), 3. Detail Cards, 4. Tech Specs, 5. CTA, Floating Action Button or Bottom of Grid, Card backgrounds: #F5F5F7 or Glass. Icons: Vibrant brand colors. Text: Dark., Hover card scale (1.02), video inside cards, tilt effect, staggered reveal, Scannable value props. High information density without clutter. Mobile stack.
-29,Interactive 3D Configurator,3d,  configurator,  customizer,  interactive,  product", 1. Hero (Configurator), 2. Feature Highlight (synced), 3. Price/Specs, 4. Purchase, Inside Configurator UI + Sticky Bottom Bar, Neutral studio background. Product: Realistic materials. UI: Minimal overlay., Real-time rendering, material swap animation, camera rotate/zoom, light reflection, Increases ownership feeling. 360 view reduces return rates. Direct add-to-cart.
-30,AI-Driven Dynamic Landing,ai,  dynamic,  personalized,  adaptive,  generative", 1. Prompt/Input Hero, 2. Generated Result Preview, 3. How it Works, 4. Value Prop, Input Field (Hero) + 'Try it' Buttons, Adaptive to user input. Dark mode for compute feel. Neon accents., Typing text effects, shimmering generation loaders, morphing layouts, Immediate value demonstration. 'Show, don't tell'. Low friction start.
-- **CTA Placement:** Floating Sticky CTA or End of Horizontal Track
-- **Section Order:** 1. Intro (Vertical), 2. The Journey (Horizontal Track), 3. Detail Reveal, 4. Vertical Footer
-
----
-
-## Anti-Patterns (Do NOT Use)
-
-- ❌ Light mode default
-- ❌ Slow rendering
-
-### Additional Forbidden Patterns
-
-- ❌ **Emojis as icons** — Use SVG icons (Heroicons, Lucide, Simple Icons)
-- ❌ **Missing cursor:pointer** — All clickable elements must have cursor:pointer
-- ❌ **Layout-shifting hovers** — Avoid scale transforms that shift layout
-- ❌ **Low contrast text** — Maintain 4.5:1 minimum contrast ratio
-- ❌ **Instant state changes** — Always use transitions (150-300ms)
-- ❌ **Invisible focus states** — Focus states must be visible for a11y
-
----
-
-## Pre-Delivery Checklist
-
-Before delivering any UI code, verify:
-
-- [ ] No emojis as icons (use SVG: Heroicons/Lucide)
-- [ ] cursor-pointer on all clickable elements
-- [ ] Hover states with smooth transitions (150-300ms)
-- [ ] Light mode: text contrast 4.5:1 minimum
-- [ ] Focus states visible for keyboard nav
-- [ ] prefers-reduced-motion respected
-- [ ] Responsive: 375px, 768px, 1024px, 1440px
-- [ ] No content hidden behind fixed navbars
-- [ ] No horizontal scroll on mobile
+- Run `pnpm --dir apps/web check`.
+- Run `pnpm --dir apps/web build`.
+- Verify 1440px, 1024px, 768px, and 375px viewports.
+- Exercise login/setup, resource import, row refresh/test, delete confirmation, draft discard, orchestration save, and save-and-apply.
+- Check for untranslated keys, horizontal overflow, clipped labels, and controls that resize during loading.
+- Scan source colors: only neutral grayscale values are allowed.

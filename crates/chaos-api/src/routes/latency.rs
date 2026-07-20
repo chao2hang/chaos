@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use chaos_core::latency::{probe_batch, resolve_probe_target};
 use chaos_store::{
-    list_latency_results, list_nodes, upsert_latency_result, LatencyResult, Node, now_rfc3339,
+    list_latency_results, list_nodes, now_rfc3339, upsert_latency_result, LatencyResult, Node,
 };
 
 use crate::auth::AuthUser;
@@ -53,6 +53,8 @@ pub struct TestLatencyRequest {
 
 #[derive(Debug, Serialize)]
 pub struct TestLatencyResponse {
+    /// `"proxy"` when chaos-prober was used, `"tcp"` for TCP connect fallback.
+    pub method: String,
     pub results: Vec<LatencyDto>,
 }
 
@@ -78,19 +80,58 @@ async fn test_latency(
     Json(body): Json<TestLatencyRequest>,
 ) -> Result<Json<TestLatencyResponse>, ApiError> {
     let nodes = select_nodes(&state, body.ids.as_ref()).await?;
+    let tested_at = now_rfc3339();
 
+    // Try real proxy probe via chaos-prober first.
+    if let Some(ref prober_bin) = state.prober_bin {
+        let targets: Vec<(String, String)> = nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.link.clone()))
+            .collect();
+
+        match chaos_core::latency::probe_via_prober(prober_bin, targets, PROBE_TIMEOUT, &tested_at)
+            .await
+        {
+            Ok(samples) => {
+                let mut results = Vec::with_capacity(samples.len());
+                for sample in samples {
+                    upsert_latency_result(
+                        &state.pool,
+                        &sample.node_id,
+                        sample.latency_ms.map(i64::from),
+                        sample.alive,
+                        &sample.tested_at,
+                        sample.message.as_deref(),
+                    )
+                    .await?;
+                    results.push(LatencyDto {
+                        id: sample.node_id,
+                        latency_ms: sample.latency_ms,
+                        alive: sample.alive,
+                        tested_at: sample.tested_at,
+                        message: sample.message,
+                    });
+                }
+                return Ok(Json(TestLatencyResponse {
+                    method: "proxy".into(),
+                    results,
+                }));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "prober failed, falling back to TCP probe");
+            }
+        }
+    }
+
+    // Fallback: TCP connect probe.
     let mut targets = Vec::new();
     let mut skipped = Vec::new();
-    let tested_at = now_rfc3339();
 
     for node in nodes {
         match resolve_probe_target(node.address.as_deref(), &node.link) {
             Some(addr) => targets.push((node.id, addr)),
             None => {
-                skipped.push((
-                    node.id,
-                    "no host:port address for TCP probe".to_string(),
-                ));
+                skipped.push((node.id, "no host:port address for TCP probe".to_string()));
             }
         }
     }
@@ -103,7 +144,7 @@ async fn test_latency(
         upsert_latency_result(
             &state.pool,
             &sample.node_id,
-            sample.latency_ms.map(|ms| i64::from(ms)),
+            sample.latency_ms.map(i64::from),
             sample.alive,
             &sample.tested_at,
             sample.message.as_deref(),
@@ -139,20 +180,23 @@ async fn test_latency(
         });
     }
 
-    Ok(Json(TestLatencyResponse { results }))
+    Ok(Json(TestLatencyResponse {
+        method: "tcp".into(),
+        results,
+    }))
 }
 
-async fn select_nodes(
-    state: &AppState,
-    ids: Option<&Vec<String>>,
-) -> Result<Vec<Node>, ApiError> {
+async fn select_nodes(state: &AppState, ids: Option<&Vec<String>>) -> Result<Vec<Node>, ApiError> {
     let all = list_nodes(&state.pool).await?;
     match ids {
         None => Ok(all),
         Some(ids) if ids.is_empty() => Ok(Vec::new()),
         Some(ids) => {
             let set: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-            Ok(all.into_iter().filter(|n| set.contains(n.id.as_str())).collect())
+            Ok(all
+                .into_iter()
+                .filter(|n| set.contains(n.id.as_str()))
+                .collect())
         }
     }
 }
@@ -171,6 +215,17 @@ mod tests {
     async fn test_app() -> (Router, AppState) {
         let pool = connect("sqlite::memory:").await.unwrap();
         migrate(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("u1")
+        .bind("admin")
+        .bind("test-hash")
+        .bind("now")
+        .bind("admin")
+        .execute(&pool)
+        .await
+        .unwrap();
         let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
         let app = Router::new()
             .nest("/api/v1/auth", auth_router())

@@ -1,140 +1,128 @@
 <script lang="ts">
+	import { Boxes, Layers3, RadioTower, Server } from '@lucide/svelte';
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
+	import type { OrchestrationNodeGroupData } from '$lib/api';
+	import { t } from '$lib/i18n.svelte';
 
-	let { data }: NodeProps = $props();
-	const d = $derived(
-		data as {
-			name?: string;
-			policy?: string;
-			members?: { node_id: string; name?: string | null; weight: number }[];
-			onWeight?: (nodeId: string, weight: number) => void;
-			onRemove?: (nodeId: string) => void;
-		}
+	let { data, selected = false }: NodeProps = $props();
+	const details = $derived(data as unknown as OrchestrationNodeGroupData);
+	const nodeCount = $derived(details.sources?.filter((source) => source.kind === 'node').length ?? 0);
+	const subscriptionCount = $derived(
+		details.sources?.filter((source) => source.kind === 'subscription').length ?? 0
 	);
+	const groupCount = $derived(details.sources?.filter((source) => source.kind === 'group').length ?? 0);
 </script>
 
-<div class="fn group">
+<div class="group-node" class:selected>
 	<Handle type="target" position={Position.Left} id="in" />
-	<div class="head">
-		<span class="tag">GROUP</span>
-		<strong>{d.name ?? 'group'}</strong>
-		<span class="policy">{d.policy ?? 'fixed'}</span>
+	<header>
+		<div class="node-type"><Boxes size={14} strokeWidth={1.8} aria-hidden="true" /><span>NODE GROUP</span></div>
+		<small>{t('flow.ruleCount', { count: details.route_count ?? 0 })}</small>
+	</header>
+	<strong>{details.name || t('flow.node.unnamedGroup')}</strong>
+	<div class="source-counts">
+		<span title={t('flow.source.nodes')}><Server size={12} strokeWidth={1.8} />{nodeCount}</span>
+		<span title={t('flow.source.subscriptions')}><RadioTower size={12} strokeWidth={1.8} />{subscriptionCount}</span>
+		<span title={t('flow.source.groups')}><Layers3 size={12} strokeWidth={1.8} />{groupCount}</span>
 	</div>
-	{#if d.members?.length}
-		<ul>
-			{#each d.members as m (m.node_id)}
-				<li>
-					<span class="mn">{m.name ?? m.node_id.slice(0, 6)}</span>
-					<input
-						type="number"
-						min="1"
-						max="99"
-						value={m.weight}
-						onclick={(e) => e.stopPropagation()}
-						onpointerdown={(e) => e.stopPropagation()}
-						onchange={(e) =>
-							d.onWeight?.(
-								m.node_id,
-								Number((e.currentTarget as HTMLInputElement).value)
-							)}
-					/>
-					<button
-						type="button"
-						class="x"
-						onclick={(e) => {
-							e.stopPropagation();
-							d.onRemove?.(m.node_id);
-						}}
-						onpointerdown={(e) => e.stopPropagation()}>×</button
-					>
-				</li>
-			{/each}
-		</ul>
-	{:else}
-		<p class="hint">Connect proxies → here</p>
-	{/if}
-	<Handle type="source" position={Position.Right} id="out" />
+	<footer>{details.policy || 'min_moving_avg'}</footer>
 </div>
 
 <style>
-	.fn {
-		min-width: 12.5rem;
-		padding: 0.65rem 0.75rem;
-		border-radius: 12px;
-		border: 1px solid rgba(34, 197, 94, 0.35);
-		background: linear-gradient(160deg, #0f172a 0%, #052e16 120%);
-		box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.12), var(--shadow-md);
+	.group-node {
+		width: 13.5rem;
+		height: 7.25rem;
+		padding: 0.7rem 0.8rem;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-md);
+		background: var(--surface);
 		color: var(--ink);
+		box-shadow: 0 0 0 0 transparent;
+		transition:
+			border-color 120ms ease,
+			box-shadow 120ms ease;
 	}
-	.head {
-		display: grid;
-		gap: 0.1rem;
-		margin-bottom: 0.45rem;
+
+	.group-node:hover,
+	.group-node.selected {
+		border-color: var(--ink);
 	}
-	.tag {
-		font-family: var(--font-mono);
-		font-size: 0.6rem;
-		letter-spacing: 0.08em;
-		color: var(--signal);
+
+	.group-node.selected {
+		box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.14);
 	}
-	strong {
-		font-family: var(--font-mono);
-		font-size: 0.95rem;
-	}
-	.policy {
-		font-family: var(--font-mono);
-		font-size: 0.68rem;
-		color: var(--ink-dim);
-	}
-	ul {
-		list-style: none;
-		margin: 0;
-		padding: 0;
+
+	header {
 		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-		max-height: 9rem;
-		overflow: auto;
-	}
-	li {
-		display: grid;
-		grid-template-columns: 1fr 3rem auto;
-		gap: 0.25rem;
 		align-items: center;
-		padding: 0.25rem 0.35rem;
-		background: rgba(2, 6, 23, 0.55);
-		border: 1px solid var(--line);
-		border-radius: 6px;
+		justify-content: space-between;
+		gap: var(--space-2);
+		padding-bottom: 0.45rem;
+		border-bottom: 1px solid var(--line);
 	}
-	.mn {
-		font-size: 0.75rem;
+
+	.node-type,
+	.source-counts,
+	.source-counts span {
+		display: flex;
+		align-items: center;
+	}
+
+	.node-type {
+		gap: 0.35rem;
+		color: var(--ink-muted);
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		font-weight: 700;
+	}
+
+	small {
+		color: var(--ink-faint);
+		font-family: var(--font-mono);
+		font-size: 0.52rem;
+		font-weight: 700;
+	}
+
+	strong {
+		display: block;
 		overflow: hidden;
+		margin-top: 0.55rem;
+		font-size: 0.82rem;
+		font-weight: 680;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	input {
-		width: 100%;
-		padding: 0.15rem 0.25rem;
-		font-size: 0.72rem;
-		font-family: var(--font-mono);
-		background: var(--bg-input);
+
+	.source-counts {
+		gap: 0.35rem;
+		margin-top: 0.5rem;
+	}
+
+	.source-counts span {
+		gap: 0.22rem;
+		min-width: 2.2rem;
+		padding: 0.18rem 0.35rem;
 		border: 1px solid var(--line);
-		border-radius: 4px;
-		color: var(--ink);
-	}
-	.x {
-		padding: 0 0.35rem;
-		font-size: 0.85rem;
-		line-height: 1.2;
-		background: transparent;
-		border: none;
-		color: var(--bad);
-		cursor: pointer;
-	}
-	.hint {
-		margin: 0;
-		font-size: 0.72rem;
-		color: var(--ink-dim);
+		border-radius: var(--radius-sm);
+		color: var(--ink-muted);
 		font-family: var(--font-mono);
+		font-size: 0.58rem;
+	}
+
+	footer {
+		overflow: hidden;
+		margin-top: 0.45rem;
+		color: var(--ink-faint);
+		font-family: var(--font-mono);
+		font-size: 0.56rem;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.group-node :global(.svelte-flow__handle) {
+		width: 0.62rem;
+		height: 0.62rem;
+		border: 2px solid var(--surface);
+		background: var(--ink);
 	}
 </style>

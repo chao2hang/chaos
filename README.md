@@ -97,7 +97,22 @@ They can run side by side. chaos does **not** use dae-wing GraphQL.
 - By default **sudo is disabled** so the API never hangs on a password prompt. Options:
   - run `chaos-api` as root, or
   - set `CHAOS_DAE_ALLOW_SUDO=1` with **passwordless** sudo for the dae binary, or
-  - use `CHAOS_DAE_BIN=crates/chaos-dae/tests/fixtures/fake-dae.sh` for UI-only apply tests.
+- use `CHAOS_DAE_BIN=crates/chaos-dae/tests/fixtures/fake-dae.sh` for UI-only apply tests.
+
+### Platform boundaries
+
+The bundled `dae` data plane is Linux-only. Windows builds keep the control
+plane and orchestration editor available, but runtime apply reports
+`windows_data_plane_unavailable` until the independent Wintun + sing-box/mihomo
+backend is installed. See [docs/platform/windows-data-plane.md](docs/platform/windows-data-plane.md)
+for the implementation boundary and native verification requirements.
+
+V2 combined groups are member selection, not serial forwarding. Ordered
+multi-hop source hiding is tracked as the separate
+[Orchestration V3 hop-chain design](docs/platform/orchestration-v3-hops.md).
+
+GeoIP lookups send node addresses to a third-party service and are disabled by
+default. Set `CHAOS_GEOIP_ENABLED=1` only when that is acceptable.
 - Inspect last run: `data/dae/dae.log`.
 
 ## i18n

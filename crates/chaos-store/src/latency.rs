@@ -85,9 +85,16 @@ mod tests {
         .await
         .unwrap();
 
-        upsert_latency_result(&pool, &node.id, Some(42), true, "2026-01-01T00:00:00Z", None)
-            .await
-            .unwrap();
+        upsert_latency_result(
+            &pool,
+            &node.id,
+            Some(42),
+            true,
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .await
+        .unwrap();
 
         let listed = list_latency_results(&pool).await.unwrap();
         assert_eq!(listed.len(), 1);

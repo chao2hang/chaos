@@ -14,6 +14,8 @@ pub struct HealthResponse {
     pub api_version: &'static str,
     pub dae_binary: Option<String>,
     pub dae_binary_ok: bool,
+    pub data_plane: &'static str,
+    pub data_plane_ready: bool,
 }
 
 pub fn health_router() -> Router<AppState> {
@@ -21,18 +23,25 @@ pub fn health_router() -> Router<AppState> {
 }
 
 async fn health() -> Json<HealthResponse> {
-    let dae_path = chaos_dae::resolve_dae_bin();
+    let dae_path = if cfg!(windows) {
+        None
+    } else {
+        chaos_dae::resolve_dae_bin()
+    };
     let dae_binary_ok = dae_path
         .as_ref()
         .map(|p| chaos_dae::dae_bin_ok(p))
         .unwrap_or(false);
     let dae_binary = dae_path.map(|p| p.display().to_string());
+    let data_plane = chaos_dae::platform_backend().status();
 
     Json(HealthResponse {
         ok: true,
         api_version: API_VERSION,
         dae_binary,
         dae_binary_ok,
+        data_plane: data_plane.kind,
+        data_plane_ready: data_plane.ready,
     })
 }
 
@@ -73,6 +82,9 @@ mod tests {
         assert_eq!(body["ok"], true);
         assert_eq!(body["api_version"], "0.1.0");
         assert!(body.get("dae_binary").is_some());
-        assert!(body.get("dae_binary_ok").and_then(|v| v.as_bool()).is_some());
+        assert!(body
+            .get("dae_binary_ok")
+            .and_then(|v| v.as_bool())
+            .is_some());
     }
 }

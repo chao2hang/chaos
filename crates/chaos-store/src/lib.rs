@@ -1,30 +1,41 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
-mod models;
 pub mod config_plane;
 pub mod latency;
+mod models;
 pub mod nodes;
 pub mod subscriptions;
 pub mod users;
 
 pub use config_plane::{
-    add_group_member, delete_group, ensure_config_defaults, get_meta, insert_group,
-    list_all_group_members, list_dns_rules, list_dns_upstreams, list_group_members, list_groups,
-    list_routing_rules, remove_group_member, replace_dns, replace_group_members,
-    replace_routing_rules, set_member_weight, set_meta, update_group, META_DNS_FALLBACK,
+    add_group_member, clear_groups, delete_group, delete_meta, ensure_config_defaults, get_meta,
+    insert_group, list_all_group_members, list_dns_rules, list_dns_upstreams, list_group_members,
+    list_groups, list_routing_rules, publish_orchestration_v2, remove_group_member, replace_dns,
+    replace_group_members, replace_routing_rules, restore_orchestration_publication,
+    set_member_weight, set_meta, snapshot_orchestration_publication, update_group,
+    OrchestrationPublicationSnapshot, PublishedGroup, PublishedOrchestration,
+    PublishedOrchestrationPlan, PublishedRoutingRule, META_DNS_FALLBACK, META_ORCHESTRATION_DRAFT,
+    META_ORCHESTRATION_FLOW, META_ORCHESTRATION_FLOW_LEGACY, META_ORCHESTRATION_NEEDS_REPUBLISH,
+    META_ORCHESTRATION_PENDING, META_ORCHESTRATION_PLAN, META_ORCHESTRATION_V2_INITIALIZED,
     META_ROUTING_FALLBACK,
 };
 pub use latency::{list_latency_results, list_latency_results_for_ids, upsert_latency_result};
 pub use models::{
-    DnsRule, DnsUpstream, Group, GroupMember, LatencyResult, Node, RoutingRule, Subscription, User,
-    now_rfc3339, parse_rfc3339,
+    now_rfc3339, parse_rfc3339, DnsRule, DnsUpstream, Group, GroupMember, LatencyResult, Node,
+    RoutingRule, Subscription, User,
 };
-pub use nodes::{delete_node, get_node, insert_node, insert_node_with_id, list_nodes};
+pub use nodes::{
+    delete_node, get_node, insert_node, insert_node_with_id, list_nodes, update_node_country_code,
+    NewNode,
+};
 pub use subscriptions::{
     delete_subscription, get_subscription, insert_subscription, list_subscriptions,
     replace_subscription_nodes, update_subscription_meta, NewSubscriptionNode,
 };
-pub use users::{count_users, create_admin_user, create_user, find_user_by_username};
+pub use users::{
+    count_users, create_admin_user, create_first_admin_user, create_user, find_user_by_id,
+    find_user_by_username,
+};
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -47,7 +58,29 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool> {
         .await
         .with_context(|| format!("failed to connect to database: {database_url}"))?;
 
+    if let Some(path) = sqlite_file_path(database_url) {
+        secure_database_paths(path)?;
+    }
+
     Ok(pool)
+}
+
+fn secure_database_paths(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for candidate in [
+            path.to_path_buf(),
+            Path::new(&format!("{}-wal", path.display())).to_path_buf(),
+            Path::new(&format!("{}-shm", path.display())).to_path_buf(),
+        ] {
+            if candidate.exists() {
+                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600))
+                    .with_context(|| format!("chmod database file {}", candidate.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Run embedded migrations from `./migrations` (relative to this crate).
@@ -71,8 +104,9 @@ fn ensure_parent_dir(database_url: &str) -> Result<()> {
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create database directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create database directory: {}", parent.display())
+            })?;
         }
     }
 
@@ -127,7 +161,10 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap_or_else(|e| panic!("table {table} missing: {e}"));
-            if matches!(table, "users" | "subscriptions" | "nodes" | "latency_results") {
+            if matches!(
+                table,
+                "users" | "subscriptions" | "nodes" | "latency_results"
+            ) {
                 assert_eq!(n.0, 0, "expected empty {table}");
             }
         }

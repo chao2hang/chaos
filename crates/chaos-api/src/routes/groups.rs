@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
+use crate::routes::orchestration::{
+    mark_republish_if_published_source_changed, orchestration_references_source,
+};
 use crate::state::AppState;
+
+const GROUP_POLICIES: [&str; 4] = ["min_moving_avg", "min", "random", "fixed"];
 
 #[derive(Debug, Serialize)]
 pub struct GroupMemberDto {
@@ -64,6 +69,56 @@ pub struct MemberBody {
 
 fn default_weight() -> i64 {
     1
+}
+
+fn normalized_group_name(name: &str, locale: chaos_i18n::Locale) -> Result<String, ApiError> {
+    let normalized = chaos_core::config_render::normalized_dae_identifier(name)
+        .ok_or_else(|| ApiError::bad_request("invalid_request", locale))?;
+    if chaos_core::config_render::is_reserved_dae_identifier(&normalized) {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    Ok(normalized)
+}
+
+fn validate_group_fields(
+    name: &str,
+    policy: &str,
+    filter_tag: Option<&str>,
+    locale: chaos_i18n::Locale,
+) -> Result<String, ApiError> {
+    let normalized = normalized_group_name(name, locale)?;
+    if !GROUP_POLICIES.contains(&policy) {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    if filter_tag.is_some_and(|tag| {
+        tag.len() > 128
+            || tag
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n' | '(' | ')' | ','))
+    }) {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    Ok(normalized)
+}
+
+async fn ensure_unique_group_name(
+    state: &AppState,
+    normalized_name: &str,
+    exclude_id: Option<&str>,
+    locale: chaos_i18n::Locale,
+) -> Result<(), ApiError> {
+    let collision = chaos_store::list_groups(&state.pool)
+        .await?
+        .into_iter()
+        .any(|group| {
+            exclude_id != Some(group.id.as_str())
+                && chaos_core::config_render::normalized_dae_identifier(&group.name)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(normalized_name))
+        });
+    if collision {
+        return Err(ApiError::conflict("invalid_request", locale));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,19 +197,16 @@ async fn create_group(
     RequestLocale(locale): RequestLocale,
     Json(body): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupDto>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let name = body.name.trim();
-    if name.is_empty() {
-        return Err(ApiError::bad_request("invalid_request", locale));
-    }
     let policy = body.policy.trim();
-    if policy.is_empty() {
-        return Err(ApiError::bad_request("invalid_request", locale));
-    }
     let tag = body
         .filter_tag
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty());
+    let normalized = validate_group_fields(name, policy, tag, locale)?;
+    ensure_unique_group_name(&state, &normalized, None, locale).await?;
     let g = chaos_store::insert_group(&state.pool, name, policy, tag, body.sort_order)
         .await
         .map_err(|e| {
@@ -175,17 +227,26 @@ async fn update_group(
     Path(id): Path<String>,
     Json(body): Json<UpdateGroupRequest>,
 ) -> Result<Json<GroupDto>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let name = body.name.trim();
     let policy = body.policy.trim();
-    if name.is_empty() || policy.is_empty() {
-        return Err(ApiError::bad_request("invalid_request", locale));
-    }
     let tag = body
         .filter_tag
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty());
-    let ok = chaos_store::update_group(&state.pool, &id, name, policy, tag, body.sort_order).await?;
+    let normalized = validate_group_fields(name, policy, tag, locale)?;
+    ensure_unique_group_name(&state, &normalized, Some(&id), locale).await?;
+    let ok = chaos_store::update_group(&state.pool, &id, name, policy, tag, body.sort_order)
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("UNIQUE") || message.contains("unique") {
+                ApiError::conflict("invalid_request", locale)
+            } else {
+                ApiError::from(error)
+            }
+        })?;
     if !ok {
         return Err(ApiError::not_found("not_found", locale));
     }
@@ -194,6 +255,7 @@ async fn update_group(
         .into_iter()
         .find(|g| g.id == id)
         .ok_or_else(|| ApiError::not_found("not_found", locale))?;
+    let _ = mark_republish_if_published_source_changed(&state, "group", &id).await?;
     Ok(Json(enrich_group(&state, g).await?))
 }
 
@@ -203,6 +265,10 @@ async fn delete_group(
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    if orchestration_references_source(&state, "group", &id).await? {
+        return Err(ApiError::conflict("resource_in_use", locale));
+    }
     let deleted = chaos_store::delete_group(&state.pool, &id).await?;
     if !deleted {
         return Err(ApiError::not_found("not_found", locale));
@@ -232,19 +298,31 @@ async fn replace_members(
     Path(id): Path<String>,
     Json(body): Json<ReplaceMembersBody>,
 ) -> Result<Json<GroupDto>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let groups = chaos_store::list_groups(&state.pool).await?;
     let g = groups
         .into_iter()
         .find(|g| g.id == id)
         .ok_or_else(|| ApiError::not_found("not_found", locale))?;
-    let rows: Vec<(String, i64, i64)> = body
-        .members
-        .iter()
-        .enumerate()
-        .map(|(i, m)| (m.node_id.trim().to_string(), m.weight.max(1), i as i64))
-        .filter(|(nid, _, _)| !nid.is_empty())
+    let known_nodes: std::collections::HashSet<String> = chaos_store::list_nodes(&state.pool)
+        .await?
+        .into_iter()
+        .map(|node| node.id)
         .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = Vec::with_capacity(body.members.len());
+    for (index, member) in body.members.iter().enumerate() {
+        let node_id = member.node_id.trim();
+        if node_id.is_empty() || !known_nodes.contains(node_id) {
+            return Err(ApiError::not_found("not_found", locale));
+        }
+        if !(1..=99).contains(&member.weight) || !seen.insert(node_id.to_string()) {
+            return Err(ApiError::bad_request("invalid_request", locale));
+        }
+        rows.push((node_id.to_string(), member.weight, index as i64));
+    }
     chaos_store::replace_group_members(&state.pool, &id, &rows).await?;
+    let _ = mark_republish_if_published_source_changed(&state, "group", &id).await?;
     Ok(Json(enrich_group(&state, g).await?))
 }
 
@@ -255,8 +333,12 @@ async fn add_member(
     Path(id): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> Result<Json<GroupDto>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let node_id = body.node_id.trim();
     if node_id.is_empty() {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    if !(1..=99).contains(&body.weight) {
         return Err(ApiError::bad_request("invalid_request", locale));
     }
     let groups = chaos_store::list_groups(&state.pool).await?;
@@ -268,6 +350,7 @@ async fn add_member(
         return Err(ApiError::not_found("not_found", locale));
     }
     chaos_store::add_group_member(&state.pool, &id, node_id, body.weight).await?;
+    let _ = mark_republish_if_published_source_changed(&state, "group", &id).await?;
     Ok(Json(enrich_group(&state, g).await?))
 }
 
@@ -277,10 +360,12 @@ async fn remove_member(
     RequestLocale(locale): RequestLocale,
     Path((id, node_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
     let deleted = chaos_store::remove_group_member(&state.pool, &id, &node_id).await?;
     if !deleted {
         return Err(ApiError::not_found("not_found", locale));
     }
+    let _ = mark_republish_if_published_source_changed(&state, "group", &id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -291,12 +376,17 @@ async fn patch_weight(
     Path((id, node_id)): Path<(String, String)>,
     Json(body): Json<WeightBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    if !(1..=99).contains(&body.weight) {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
     let ok = chaos_store::set_member_weight(&state.pool, &id, &node_id, body.weight).await?;
     if !ok {
         return Err(ApiError::not_found("not_found", locale));
     }
+    let _ = mark_republish_if_published_source_changed(&state, "group", &id).await?;
     Ok(Json(serde_json::json!({
         "node_id": node_id,
-        "weight": body.weight.max(1),
+        "weight": body.weight,
     })))
 }

@@ -1,60 +1,59 @@
 <script lang="ts">
+	import { Languages } from '@lucide/svelte';
 	import { SUPPORTED_LOCALES, i18n, setLocale, t, type LocaleId } from '$lib/i18n.svelte';
 
-	function onChange(e: Event) {
-		const v = (e.currentTarget as HTMLSelectElement).value;
-		if (v === 'en' || v === 'zh-CN') setLocale(v as LocaleId);
+	function onChange(event: Event) {
+		const value = (event.currentTarget as HTMLSelectElement).value;
+		if (value === 'en' || value === 'zh-CN') setLocale(value as LocaleId);
 	}
 </script>
 
-<label class="lang">
-	<span class="sr">{t('common.language')}</span>
+<label class="language">
+	<span class="sr-only">{t('common.language')}</span>
+	<Languages size={15} strokeWidth={1.8} aria-hidden="true" />
 	<select value={i18n.locale} onchange={onChange} aria-label={t('common.language')}>
-		{#each SUPPORTED_LOCALES as opt (opt.id)}
-			<option value={opt.id}>{opt.label}</option>
+		{#each SUPPORTED_LOCALES as option (option.id)}
+			<option value={option.id}>{option.label}</option>
 		{/each}
 	</select>
 </label>
 
 <style>
-	.lang {
-		display: block;
+	.language {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: center;
+		gap: var(--space-2);
 		width: 100%;
-	}
-	.sr {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
-	select {
-		width: 100%;
-		font: inherit;
-		font-size: 0.8rem;
-		font-family: var(--font-mono);
-		padding: 0.45rem 0.55rem;
+		min-height: 2.25rem;
+		padding: 0 0.55rem;
 		border: 1px solid var(--line);
-		border-radius: var(--r-md);
-		background: var(--bg-input);
+		border-radius: var(--radius-md);
+		background: var(--surface);
 		color: var(--ink-muted);
-		cursor: pointer;
 	}
-	select:hover {
+
+	.language:hover,
+	.language:focus-within {
 		border-color: var(--line-strong);
 		color: var(--ink);
 	}
-	select:focus {
-		outline: none;
-		border-color: var(--signal);
-		box-shadow: var(--shadow-focus);
+
+	select {
+		width: 100%;
+		min-height: 2.1rem;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		box-shadow: none;
+		color: inherit;
+		font-size: 0.75rem;
+		font-weight: 590;
 	}
-	option {
-		background: var(--bg-panel);
-		color: var(--ink);
+
+	select:hover,
+	select:focus {
+		border: 0;
+		box-shadow: none;
 	}
 </style>

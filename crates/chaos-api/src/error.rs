@@ -11,6 +11,7 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    pub draft_saved: bool,
 }
 
 impl ApiError {
@@ -19,6 +20,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            draft_saved: false,
         }
     }
 
@@ -28,7 +30,13 @@ impl ApiError {
             status,
             code,
             message: error_message(locale, code),
+            draft_saved: false,
         }
+    }
+
+    pub fn with_draft_saved(mut self) -> Self {
+        self.draft_saved = true;
+        self
     }
 
     pub fn bad_request(code: &'static str, locale: Locale) -> Self {
@@ -68,6 +76,8 @@ struct ErrorBody<'a> {
 struct ErrorDetail<'a> {
     code: &'a str,
     message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    draft_saved: Option<bool>,
 }
 
 impl IntoResponse for ApiError {
@@ -76,6 +86,7 @@ impl IntoResponse for ApiError {
             error: ErrorDetail {
                 code: self.code,
                 message: &self.message,
+                draft_saved: self.draft_saved.then_some(true),
             },
         };
         (self.status, Json(body)).into_response()

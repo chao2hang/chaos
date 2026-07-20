@@ -1,9 +1,11 @@
-//! TCP connect latency probe (MVP — not full proxy path).
+//! Latency probes: real proxy (via chaos-prober) with TCP connect fallback.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -77,13 +79,150 @@ fn looks_like_hostport(s: &str) -> bool {
         return true;
     }
     // host:port (last colon; skip bare IPv6 without brackets)
-    match s.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok() => true,
-        _ => false,
-    }
+    matches!(
+        s.rsplit_once(':'),
+        Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok()
+    )
 }
 
 const DEFAULT_CONCURRENCY: usize = 20;
+const DEFAULT_CHECK_URL: &str = "http://cp.cloudflare.com";
+
+/// JSON request sent to chaos-prober stdin.
+#[derive(Debug, Serialize)]
+struct ProberRequest {
+    links: Vec<String>,
+    url: String,
+    timeout_ms: u64,
+    concurrency: usize,
+}
+
+/// JSON response read from chaos-prober stdout.
+#[derive(Debug, Deserialize)]
+struct ProberResponse {
+    results: Vec<ProberResult>,
+}
+
+/// Single result from chaos-prober.
+#[derive(Debug, Deserialize)]
+struct ProberResult {
+    link: String,
+    latency_ms: Option<i64>,
+    alive: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Probe method reported in LatencySample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeMethod {
+    /// Real proxy latency via chaos-prober (HTTP HEAD through proxy).
+    Proxy,
+    /// TCP connect only (fallback when prober unavailable).
+    Tcp,
+}
+
+impl ProbeMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeMethod::Proxy => "proxy",
+            ProbeMethod::Tcp => "tcp",
+        }
+    }
+}
+
+/// Probe nodes via chaos-prober subprocess for real proxy latency.
+///
+/// `targets`: vec of `(node_id, link)`.
+/// Returns samples with `ProbeMethod::Proxy`.
+pub async fn probe_via_prober(
+    prober_bin: &Path,
+    targets: Vec<(String, String)>,
+    connect_timeout: Duration,
+    tested_at: &str,
+) -> Result<Vec<LatencySample>, String> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let links: Vec<String> = targets.iter().map(|(_, link)| link.clone()).collect();
+    let req = ProberRequest {
+        links: links.clone(),
+        url: DEFAULT_CHECK_URL.to_string(),
+        timeout_ms: connect_timeout.as_millis() as u64,
+        concurrency: DEFAULT_CONCURRENCY,
+    };
+
+    let input = serde_json::to_string(&req).map_err(|e| format!("serialize request: {e}"))?;
+
+    let output = tokio::process::Command::new(prober_bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("spawn prober: {e}"))?;
+
+    // Write to stdin and collect stdout.
+    use tokio::io::AsyncWriteExt;
+    let mut child = output;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(|e| format!("write stdin: {e}"))?;
+        drop(stdin); // Close stdin so prober sees EOF.
+    }
+
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("wait prober: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("prober exited {}: {}", out.status, stderr.trim()));
+    }
+
+    let resp: ProberResponse =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("parse prober output: {e}"))?;
+
+    // A subscription may contain the same link more than once. Preserve every
+    // node id in request order rather than collapsing duplicates into one map entry.
+    let mut link_to_nodes: std::collections::HashMap<String, std::collections::VecDeque<String>> =
+        std::collections::HashMap::new();
+    for (node_id, link) in &targets {
+        link_to_nodes
+            .entry(link.clone())
+            .or_default()
+            .push_back(node_id.clone());
+    }
+
+    let mut samples = Vec::with_capacity(resp.results.len());
+    for r in resp.results {
+        let node_id = link_to_nodes
+            .get_mut(&r.link)
+            .and_then(std::collections::VecDeque::pop_front)
+            .ok_or_else(|| format!("prober returned an unexpected result for link {}", r.link))?;
+        samples.push(LatencySample {
+            node_id,
+            latency_ms: r.latency_ms.and_then(|v| u32::try_from(v).ok()),
+            alive: r.alive,
+            tested_at: tested_at.to_string(),
+            message: r.error,
+        });
+    }
+
+    let missing = link_to_nodes
+        .values()
+        .map(std::collections::VecDeque::len)
+        .sum::<usize>();
+    if missing > 0 {
+        return Err(format!("prober omitted {missing} requested result(s)"));
+    }
+
+    Ok(samples)
+}
 
 /// Probe many targets concurrently (max 20 in flight). `timeout` per connect.
 pub async fn probe_batch(
@@ -141,9 +280,12 @@ mod tests {
     #[tokio::test]
     async fn probe_tcp_timeout_unreachable() {
         // NXDOMAIN / unresolvable host — must fail (TEST-NET can be hijacked by local proxies).
-        let err = probe_tcp("this-host-should-not-exist.invalid:1", Duration::from_millis(400))
-            .await
-            .unwrap_err();
+        let err = probe_tcp(
+            "this-host-should-not-exist.invalid:1",
+            Duration::from_millis(400),
+        )
+        .await
+        .unwrap_err();
         assert!(!err.is_empty());
     }
 

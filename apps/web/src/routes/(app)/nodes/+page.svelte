@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { Gauge, Import, Plus, RefreshCw, Server, Trash2, X } from '@lucide/svelte';
 	import {
 		listNodes,
 		importNodes,
@@ -12,31 +13,51 @@
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
+	import { countryFlag } from '$lib/utils';
+	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import Notice from '$lib/components/ui/Notice.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import SearchInput from '$lib/components/ui/SearchInput.svelte';
+	import Section from '$lib/components/ui/Section.svelte';
+	import TableFrame from '$lib/components/ui/TableFrame.svelte';
 
 	let nodes = $state<NodeDto[]>([]);
 	let latencyById = $state<Record<string, LatencyDto>>({});
 	let importText = $state('');
+	let query = $state('');
+	let selectedIds = $state<string[]>([]);
 	let error = $state('');
 	let message = $state('');
-	let busy = $state(false);
-	let testingId = $state<string | null>(null);
+	let loaded = $state(false);
+	let importOpen = $state(false);
+	let importing = $state(false);
+	let testing = $state<string | null>(null);
+	let deleting = $state(false);
+	let deleteTarget = $state<NodeDto | null>(null);
 
 	function mergeLatency(results: LatencyDto[]) {
 		const next = { ...latencyById };
-		for (const r of results) next[r.id] = r;
+		for (const result of results) next[result.id] = result;
 		latencyById = next;
 	}
 
 	async function load() {
 		error = '';
 		try {
-			const [n, lat] = await Promise.all([listNodes(), listLatency()]);
-			nodes = n.nodes;
+			const [nodeResult, latencyResult] = await Promise.all([listNodes(), listLatency()]);
+			nodes = nodeResult.nodes;
 			const map: Record<string, LatencyDto> = {};
-			for (const r of lat.results) map[r.id] = r;
+			for (const result of latencyResult.results) map[result.id] = result;
 			latencyById = map;
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.loadFailed');
+			selectedIds = selectedIds.filter((id) => nodes.some((node) => node.id === id));
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.loadFailed');
+		} finally {
+			loaded = true;
 		}
 	}
 
@@ -47,164 +68,418 @@
 	async function onImport() {
 		error = '';
 		message = '';
-		const lines = importText
+		const links = importText
 			.split(/\r?\n/)
-			.map((l) => l.trim())
+			.map((line) => line.trim())
 			.filter(Boolean);
-		if (!lines.length) {
+		if (!links.length) {
 			error = t('nodes.importEmpty');
 			return;
 		}
-		busy = true;
+
+		importing = true;
 		try {
-			const res = await importNodes(lines.map((link) => ({ link })));
-			const ok = res.results.filter((r) => r.ok).length;
-			const fail = res.results.length - ok;
-			const failSuffix = fail ? t('nodes.importedFailSuffix', { fail }) : '';
-			message = t('nodes.imported', { ok, failSuffix });
-			if (fail) {
-				const errs = res.results
-					.filter((r): r is Extract<typeof r, { ok: false }> => !r.ok)
-					.map((r) => apiErrorText(r.error))
-					.slice(0, 3);
-				if (errs.length) error = errs.join('; ');
+			const response = await importNodes(links.map((link) => ({ link })));
+			const successful = response.results.filter((result) => result.ok).length;
+			const failedResults = response.results.filter(
+				(result): result is Extract<typeof result, { ok: false }> => !result.ok
+			);
+			const failSuffix = failedResults.length
+				? t('nodes.importedFailSuffix', { fail: failedResults.length })
+				: '';
+			message = t('nodes.imported', { ok: successful, failSuffix });
+			importText = failedResults.map((result) => result.link).join('\n');
+			if (failedResults.length) {
+				error = failedResults
+					.slice(0, 3)
+					.map((result) => apiErrorText(result.error))
+					.join('; ');
+			} else {
+				importOpen = false;
 			}
-			importText = '';
 			await load();
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.importFailed');
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.importFailed');
 		} finally {
-			busy = false;
+			importing = false;
 		}
 	}
 
-	async function onTestOne(id: string) {
-		testingId = id;
+	async function runLatency(ids: string[] | null, marker: string) {
+		testing = marker;
 		error = '';
+		message = '';
 		try {
-			const res = await testLatency([id]);
-			mergeLatency(res.results);
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.latencyFailed');
+			const response = await testLatency(ids);
+			mergeLatency(response.results);
+			const alive = response.results.filter((result) => result.alive).length;
+			message = t('dashboard.latencyFinished', { alive, total: response.results.length });
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.latencyFailed');
 		} finally {
-			testingId = null;
+			testing = null;
 		}
 	}
 
-	async function onDelete(id: string) {
-		if (!confirm(t('nodes.deleteConfirm'))) return;
+	function toggleSelected(id: string) {
+		selectedIds = selectedIds.includes(id)
+			? selectedIds.filter((selected) => selected !== id)
+			: [...selectedIds, id];
+	}
+
+	function toggleAllVisible() {
+		const visibleIds = filteredNodes.map((node) => node.id);
+		const everyVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+		selectedIds = everyVisibleSelected
+			? selectedIds.filter((id) => !visibleIds.includes(id))
+			: Array.from(new Set([...selectedIds, ...visibleIds]));
+	}
+
+	async function confirmDelete() {
+		if (!deleteTarget) return;
+		deleting = true;
 		error = '';
 		try {
+			const id = deleteTarget.id;
 			await deleteNode(id);
-			nodes = nodes.filter((n) => n.id !== id);
-			const { [id]: _, ...rest } = latencyById;
+			nodes = nodes.filter((node) => node.id !== id);
+			selectedIds = selectedIds.filter((selected) => selected !== id);
+			const { [id]: _removed, ...rest } = latencyById;
 			latencyById = rest;
-		} catch (e) {
-			error = e instanceof ApiClientError ? apiErrorText(e) : t('nodes.deleteFailed');
+			deleteTarget = null;
+			message = t('nodes.deleted');
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.deleteFailed');
+		} finally {
+			deleting = false;
 		}
 	}
+
+	const filteredNodes = $derived.by(() => {
+		const normalized = query.trim().toLowerCase();
+		if (!normalized) return nodes;
+		return nodes.filter((node) =>
+			[node.name, node.tag, node.protocol, node.address]
+				.filter(Boolean)
+				.some((value) => String(value).toLowerCase().includes(normalized))
+		);
+	});
+
+	const allVisibleSelected = $derived(
+		filteredNodes.length > 0 && filteredNodes.every((node) => selectedIds.includes(node.id))
+	);
 </script>
 
-<span class="eyebrow">inventory · endpoints</span>
-<h1 class="page-title">{t('nodes.title')}</h1>
-<p class="page-sub">{t('nodes.subtitle')}</p>
+<div class="page-stack">
+	<PageHeader title={t('nodes.title')} description={t('nodes.subtitle')} meta="inventory / nodes">
+		{#snippet actions()}
+			<Button icon={Gauge} disabled={!!testing || !nodes.length} onclick={() => runLatency(selectedIds.length ? selectedIds : null, 'bulk')}>
+				{selectedIds.length
+					? t('nodes.testSelected', { count: selectedIds.length })
+					: t('dashboard.testAll')}
+			</Button>
+			<Button variant="primary" icon={importOpen ? X : Plus} onclick={() => (importOpen = !importOpen)}>
+				{importOpen ? t('common.close') : t('nodes.importAction')}
+			</Button>
+		{/snippet}
+	</PageHeader>
 
-{#if error}
-	<p class="error" role="alert">{error}</p>
-{/if}
-{#if message}
-	<p class="ok" role="status">{message}</p>
-{/if}
+	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
+	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
 
-<section class="import">
-	<label for="links">{t('nodes.linksLabel')}</label>
-	<textarea
-		id="links"
-		rows="5"
-		placeholder={t('nodes.linksPlaceholder')}
-		bind:value={importText}
-		disabled={busy}
-	></textarea>
-	<button type="button" class="primary" disabled={busy} onclick={onImport}>
-		{busy ? t('common.importing') : t('common.import')}
-	</button>
-</section>
+	{#if importOpen}
+		<Section title={t('nodes.importTitle')} description={t('nodes.importDescription')}>
+			<form class="import-form" onsubmit={(event) => { event.preventDefault(); void onImport(); }}>
+				<Field label={t('nodes.linksLabel')} forId="links" hint={t('nodes.importHint')}>
+					<textarea
+						id="links"
+						rows="6"
+						placeholder={t('nodes.linksPlaceholder')}
+						bind:value={importText}
+						disabled={importing}
+					></textarea>
+				</Field>
+				<div class="import-footer">
+					<span>{t('nodes.detectedLinks', { count: importText.split(/\r?\n/).filter((line) => line.trim()).length })}</span>
+					<Button type="submit" variant="primary" icon={Import} loading={importing}>
+						{importing ? t('common.importing') : t('common.import')}
+					</Button>
+				</div>
+			</form>
+		</Section>
+	{/if}
 
-<section class="table-wrap">
-	<table>
-		<thead>
-			<tr>
-				<th>{t('nodes.col.name')}</th>
-				<th>{t('nodes.col.protocol')}</th>
-				<th>{t('nodes.col.address')}</th>
-				<th>{t('nodes.col.latency')}</th>
-				<th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{#if !nodes.length}
-				<tr>
-					<td colspan="5" class="muted">{t('nodes.empty')}</td>
-				</tr>
-			{:else}
-				{#each nodes as n (n.id)}
-					{@const lat = latencyById[n.id]}
-					{@const tone = lat ? latencyTone(lat.latency_ms, lat.alive) : 'unknown'}
-					<tr>
-						<td>
-							<div class="name">{n.name}</div>
-							{#if n.tag}<span class="tag">{n.tag}</span>{/if}
-						</td>
-						<td class="mono-cell">{n.protocol ?? t('common.emDash')}</td>
-						<td class="addr">{n.address ?? t('common.emDash')}</td>
-						<td class={latencyClass(tone)}>
-							{lat ? formatLatencyMs(lat.latency_ms, lat.alive) : t('common.emDash')}
-							{#if lat?.message && !lat.alive}
-								<span class="msg" title={lat.message}>!</span>
-							{/if}
-						</td>
-						<td class="row-actions">
-							<button
-								type="button"
-								disabled={testingId === n.id}
-								onclick={() => onTestOne(n.id)}
-							>
-								{testingId === n.id ? '…' : t('common.test')}
-							</button>
-							<button type="button" class="danger" onclick={() => onDelete(n.id)}
-								>{t('common.delete')}</button
-							>
-						</td>
-					</tr>
-				{/each}
-			{/if}
-		</tbody>
-	</table>
-</section>
+	{#if !loaded}
+		<LoadingState label={t('common.loading')} />
+	{:else}
+		<div class="resource-toolbar">
+			<SearchInput bind:value={query} placeholder={t('nodes.searchPlaceholder')} label={t('nodes.searchPlaceholder')} />
+			<div class="toolbar-meta">
+				{#if selectedIds.length}<span>{t('common.selectedCount', { count: selectedIds.length })}</span>{/if}
+				<Button
+					variant="ghost"
+					size="icon"
+					icon={RefreshCw}
+					aria-label={t('common.refresh')}
+					title={t('common.refresh')}
+					onclick={load}
+				/>
+			</div>
+		</div>
+
+		{#if filteredNodes.length}
+			<TableFrame>
+				<table>
+					<thead>
+						<tr>
+							<th class="select-col">
+								<input
+									type="checkbox"
+									checked={allVisibleSelected}
+									aria-label={t('common.selectAll')}
+									onchange={toggleAllVisible}
+								/>
+							</th>
+							<th>{t('nodes.col.name')}</th>
+							<th>{t('nodes.col.protocol')}</th>
+							<th>{t('nodes.col.address')}</th>
+							<th>{t('nodes.col.latency')}</th>
+							<th class="actions-col">{t('common.actions')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each filteredNodes as node (node.id)}
+							{@const latency = latencyById[node.id]}
+							{@const tone = latency ? latencyTone(latency.latency_ms, latency.alive) : 'unknown'}
+							<tr class:selected={selectedIds.includes(node.id)}>
+								<td class="select-col">
+									<input
+										type="checkbox"
+										checked={selectedIds.includes(node.id)}
+										aria-label={t('nodes.selectNode', { name: node.name })}
+										onchange={() => toggleSelected(node.id)}
+									/>
+								</td>
+								<td data-label={t('nodes.col.name')}>
+									{#if node.country_code}<span class="flag" title={node.country_code}>{countryFlag(node.country_code)}</span>{/if}<strong>{node.name}</strong>
+									{#if node.tag}<span class="tag">{node.tag}</span>{/if}
+								</td>
+								<td data-label={t('nodes.col.protocol')} class="data-meta">{node.protocol ?? t('common.emDash')}</td>
+								<td data-label={t('nodes.col.address')} class="data-meta address">{node.address ?? t('common.emDash')}</td>
+								<td data-label={t('nodes.col.latency')} class={latencyClass(tone)} title={latency?.message ?? ''}>
+									{latency ? formatLatencyMs(latency.latency_ms, latency.alive) : t('common.emDash')}
+								</td>
+								<td data-label={t('common.actions')}>
+									<div class="row-actions">
+										<Button
+											variant="ghost"
+											size="icon"
+											icon={Gauge}
+											loading={testing === node.id}
+											disabled={!!testing}
+											aria-label={t('nodes.testNode', { name: node.name })}
+											title={t('common.test')}
+											onclick={() => runLatency([node.id], node.id)}
+										/>
+										<Button
+											variant="ghost"
+											size="icon"
+											icon={Trash2}
+											aria-label={t('nodes.deleteNode', { name: node.name })}
+											title={t('common.delete')}
+											onclick={() => (deleteTarget = node)}
+										/>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</TableFrame>
+		{:else}
+			<Section flush>
+				<EmptyState
+					icon={Server}
+					title={query ? t('common.noSearchResults') : t('nodes.empty')}
+					description={query ? t('common.tryDifferentSearch') : t('nodes.emptyDescription')}
+				>
+					{#snippet actions()}
+						{#if !query}
+							<Button icon={Plus} onclick={() => (importOpen = true)}>{t('nodes.importAction')}</Button>
+						{/if}
+					{/snippet}
+				</EmptyState>
+			</Section>
+		{/if}
+	{/if}
+</div>
+
+<ConfirmDialog
+	open={!!deleteTarget}
+	title={t('nodes.deleteTitle')}
+	description={t('nodes.deleteDescription', { name: deleteTarget?.name ?? '' })}
+	confirmLabel={t('common.delete')}
+	cancelLabel={t('common.cancel')}
+	busy={deleting}
+	danger
+	onconfirm={confirmDelete}
+	oncancel={() => (deleteTarget = null)}
+/>
 
 <style>
-	.name {
-		font-weight: 600;
+	.import-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
 	}
+
+	.import-form textarea {
+		font-family: var(--font-mono);
+		font-size: 0.76rem;
+	}
+
+	.import-footer,
+	.resource-toolbar,
+	.toolbar-meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+	}
+
+	.import-footer > span,
+	.toolbar-meta > span {
+		color: var(--ink-muted);
+		font-size: 0.72rem;
+	}
+
+	.select-col {
+		width: 2.75rem;
+		text-align: center;
+	}
+
+	.actions-col {
+		text-align: right;
+	}
+
+	tbody tr.selected {
+		background: var(--surface-subtle);
+	}
+
+	td strong {
+		display: block;
+		font-size: 0.82rem;
+	}
+
+	.flag {
+		margin-right: 0.35rem;
+		font-size: 1.1em;
+		vertical-align: -0.05em;
+	}
+
 	.tag {
 		display: inline-block;
-		margin-top: 0.15rem;
-		font-size: 0.72rem;
-		font-family: var(--font-mono);
-		color: var(--signal);
-		background: var(--signal-soft);
-		padding: 0.1rem 0.4rem;
-		border-radius: 4px;
-	}
-	.addr,
-	.mono-cell {
-		font-family: var(--font-mono);
-		font-size: 0.82rem;
+		margin-top: 0.18rem;
 		color: var(--ink-muted);
+		font-family: var(--font-mono);
+		font-size: 0.66rem;
+		text-decoration: underline;
+		text-decoration-color: var(--line-strong);
+		text-underline-offset: 0.2em;
 	}
-	.msg {
-		margin-left: 0.25rem;
-		cursor: help;
-		color: var(--bad);
+
+	.address {
+		max-width: 18rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	@media (max-width: 720px) {
+		.resource-toolbar {
+			align-items: stretch;
+			flex-direction: column;
+		}
+
+		.toolbar-meta {
+			justify-content: flex-end;
+		}
+
+		:global(.table-frame) {
+			overflow: visible;
+			border: 0;
+		}
+
+		table,
+		tbody,
+		tr,
+		td {
+			display: block;
+			width: 100%;
+		}
+
+		thead {
+			display: none;
+		}
+
+		tbody {
+			display: flex;
+			flex-direction: column;
+			gap: var(--space-3);
+		}
+
+		tr {
+			position: relative;
+			padding: var(--space-3);
+			border: 1px solid var(--line);
+			border-radius: var(--radius-lg);
+		}
+
+		td {
+			display: grid;
+			grid-template-columns: 6.5rem minmax(0, 1fr);
+			gap: var(--space-3);
+			padding: 0.38rem 0;
+			border: 0;
+			text-align: right;
+		}
+
+		td::before {
+			content: attr(data-label);
+			color: var(--ink-faint);
+			font-size: 0.7rem;
+			font-weight: 600;
+			text-align: left;
+		}
+
+		td.select-col {
+			position: absolute;
+			right: var(--space-3);
+			top: var(--space-3);
+			display: block;
+			width: auto;
+			padding: 0;
+		}
+
+		td.select-col::before {
+			display: none;
+		}
+
+		td:first-of-type + td {
+			padding-right: 2rem;
+		}
+
+		td strong,
+		.tag {
+			justify-self: end;
+		}
+
+		.address {
+			max-width: none;
+		}
+
+		.row-actions {
+			justify-content: flex-end;
+		}
 	}
 </style>

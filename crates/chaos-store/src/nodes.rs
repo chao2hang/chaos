@@ -5,10 +5,20 @@ use uuid::Uuid;
 
 use crate::models::{now_rfc3339, Node};
 
+#[derive(Debug, Clone, Copy)]
+pub struct NewNode<'a> {
+    pub name: &'a str,
+    pub tag: Option<&'a str>,
+    pub link: &'a str,
+    pub protocol: Option<&'a str>,
+    pub address: Option<&'a str>,
+    pub subscription_id: Option<&'a str>,
+}
+
 pub async fn list_nodes(pool: &SqlitePool) -> Result<Vec<Node>, sqlx::Error> {
     sqlx::query_as::<_, Node>(
         r#"
-        SELECT id, name, tag, link, protocol, address, subscription_id, created_at
+        SELECT id, name, tag, link, protocol, address, subscription_id, created_at, country_code
         FROM nodes
         ORDER BY created_at DESC, id ASC
         "#,
@@ -20,7 +30,7 @@ pub async fn list_nodes(pool: &SqlitePool) -> Result<Vec<Node>, sqlx::Error> {
 pub async fn get_node(pool: &SqlitePool, id: &str) -> Result<Option<Node>, sqlx::Error> {
     sqlx::query_as::<_, Node>(
         r#"
-        SELECT id, name, tag, link, protocol, address, subscription_id, created_at
+        SELECT id, name, tag, link, protocol, address, subscription_id, created_at, country_code
         FROM nodes
         WHERE id = ?1
         "#,
@@ -44,12 +54,14 @@ pub async fn insert_node(
     insert_node_with_id(
         pool,
         None,
-        name,
-        tag,
-        link,
-        protocol,
-        address,
-        subscription_id,
+        NewNode {
+            name,
+            tag,
+            link,
+            protocol,
+            address,
+            subscription_id,
+        },
     )
     .await
 }
@@ -58,13 +70,16 @@ pub async fn insert_node(
 pub async fn insert_node_with_id(
     pool: &SqlitePool,
     id: Option<String>,
-    name: &str,
-    tag: Option<&str>,
-    link: &str,
-    protocol: Option<&str>,
-    address: Option<&str>,
-    subscription_id: Option<&str>,
+    input: NewNode<'_>,
 ) -> Result<Node, sqlx::Error> {
+    let NewNode {
+        name,
+        tag,
+        link,
+        protocol,
+        address,
+        subscription_id,
+    } = input;
     let node = Node {
         id: id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         name: name.to_string(),
@@ -74,12 +89,13 @@ pub async fn insert_node_with_id(
         address: address.map(|a| a.to_string()),
         subscription_id: subscription_id.map(|s| s.to_string()),
         created_at: now_rfc3339(),
+        country_code: None, // Populated asynchronously via GeoIP lookup.
     };
 
     sqlx::query(
         r#"
-        INSERT INTO nodes (id, name, tag, link, protocol, address, subscription_id, created_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        INSERT INTO nodes (id, name, tag, link, protocol, address, subscription_id, created_at, country_code)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         "#,
     )
     .bind(&node.id)
@@ -90,6 +106,7 @@ pub async fn insert_node_with_id(
     .bind(&node.address)
     .bind(&node.subscription_id)
     .bind(&node.created_at)
+    .bind(&node.country_code)
     .execute(pool)
     .await?;
 
@@ -103,6 +120,20 @@ pub async fn delete_node(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Erro
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Update country_code for a single node.
+pub async fn update_node_country_code(
+    pool: &SqlitePool,
+    id: &str,
+    country_code: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE nodes SET country_code = ?1 WHERE id = ?2")
+        .bind(country_code)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

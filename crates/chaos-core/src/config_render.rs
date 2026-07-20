@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+pub const MAX_DAE_IDENTIFIER_LENGTH: usize = 128;
+
 /// Node fields needed to render a dae `node { ... }` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeForConfig {
@@ -108,10 +110,9 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
     );
 
     for u in &plane.dns_upstreams {
-        let name = sanitize_ident(&u.name);
-        if name.is_empty() {
+        let Some(name) = normalized_dae_identifier(&u.name) else {
             continue;
-        }
+        };
         out.push_str("    ");
         out.push_str(&name);
         out.push_str(": '");
@@ -131,11 +132,19 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
         out.push_str("      ");
         out.push_str(r.expression.trim());
         out.push_str(" -> ");
-        out.push_str(r.upstream.trim());
+        out.push_str(
+            normalized_dae_identifier(&r.upstream)
+                .as_deref()
+                .unwrap_or("__chaos_invalid_dns__"),
+        );
         out.push('\n');
     }
     out.push_str("      fallback: ");
-    out.push_str(plane.dns_fallback.trim());
+    out.push_str(
+        normalized_dae_identifier(&plane.dns_fallback)
+            .as_deref()
+            .unwrap_or("__chaos_invalid_dns__"),
+    );
     out.push_str(
         "\n\
          \x20\x20\x20\x20}\n\
@@ -169,16 +178,10 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
     }
 
     out.push_str("}\n\ngroup {\n");
-    let groups = if plane.groups.is_empty() {
-        ConfigPlane::default().groups
-    } else {
-        plane.groups.clone()
-    };
-    for g in &groups {
-        let gname = sanitize_ident(&g.name);
-        if gname.is_empty() {
+    for g in &plane.groups {
+        let Some(gname) = normalized_dae_identifier(&g.name) else {
             continue;
-        }
+        };
         out.push_str("  ");
         out.push_str(&gname);
         out.push_str(" {\n");
@@ -227,9 +230,19 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
                 out.push('\n');
             }
         } else {
-            if let Some(tag) = g.filter_tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            if !g.members.is_empty() {
+                // Explicit groups must fail closed. Missing member ids must never
+                // degrade into an unfiltered group that can select every node.
+                out.push_str("    filter: name(__chaos_missing_member__)\n");
+            }
+            if let Some(tag) = g
+                .filter_tag
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
                 out.push_str("    filter: subtag(");
-                out.push_str(tag);
+                out.push_str(&sanitize_ident(tag));
                 out.push_str(")\n");
             }
             out.push_str("    policy: ");
@@ -246,11 +259,19 @@ pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String
         out.push_str("  ");
         out.push_str(r.expression.trim());
         out.push_str(" -> ");
-        out.push_str(r.outbound.trim());
+        out.push_str(
+            normalized_dae_identifier(&r.outbound)
+                .as_deref()
+                .unwrap_or("direct"),
+        );
         out.push('\n');
     }
     out.push_str("  fallback: ");
-    out.push_str(plane.routing_fallback.trim());
+    out.push_str(
+        normalized_dae_identifier(&plane.routing_fallback)
+            .as_deref()
+            .unwrap_or("direct"),
+    );
     out.push_str("\n}\n");
 
     out
@@ -302,6 +323,34 @@ fn sanitize_node_name(name: &str, id: &str) -> String {
     "node".to_string()
 }
 
+/// Render a dae identifier consistently for group definitions and routing targets.
+///
+/// The renderer keeps ASCII letters and digits and folds every other character
+/// into a single underscore. Callers that need a stable outbound name should use
+/// this helper rather than reproducing the transformation.
+pub fn dae_identifier(s: &str) -> String {
+    sanitize_ident(s)
+}
+
+/// Return the stable dae identifier for a user-provided name when it is safe
+/// to use as a config key. The caller may still preserve the original label for
+/// display, but runtime references should use this normalized value.
+pub fn normalized_dae_identifier(s: &str) -> Option<String> {
+    let identifier = dae_identifier(s);
+    if identifier.is_empty() || identifier.len() > MAX_DAE_IDENTIFIER_LENGTH {
+        None
+    } else {
+        Some(identifier)
+    }
+}
+
+pub fn is_reserved_dae_identifier(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "direct" | "must_direct" | "block"
+    )
+}
+
 fn sanitize_ident(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_us = false;
@@ -309,11 +358,9 @@ fn sanitize_ident(s: &str) -> String {
         if c.is_ascii_alphanumeric() {
             out.push(c);
             last_us = false;
-        } else if c == '_' || !last_us {
-            if !last_us {
-                out.push('_');
-                last_us = true;
-            }
+        } else if !last_us {
+            out.push('_');
+            last_us = true;
         }
     }
     while out.starts_with('_') {
@@ -322,11 +369,14 @@ fn sanitize_ident(s: &str) -> String {
     while out.ends_with('_') {
         out.pop();
     }
+    if out.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        out.insert_str(0, "id_");
+    }
     out
 }
 
 fn escape_single_quotes(s: &str) -> String {
-    s.replace('\'', "%27")
+    s.replace(['\r', '\n'], " ").replace('\'', "%27")
 }
 
 #[cfg(test)]
@@ -422,5 +472,43 @@ mod tests {
         assert!(s.contains("fallback: direct"));
         assert!(s.contains("cloudflare: 'udp://1.1.1.1:53'"));
         assert!(s.contains("qname(geosite:cn) -> cloudflare"));
+    }
+
+    #[test]
+    fn normalizes_and_limits_runtime_identifiers() {
+        assert_eq!(
+            normalized_dae_identifier("123 proxy"),
+            Some("id_123_proxy".into())
+        );
+        assert_eq!(
+            normalized_dae_identifier("proxy-name"),
+            Some("proxy_name".into())
+        );
+        assert_eq!(normalized_dae_identifier("\u{8282}\u{70b9}"), None);
+        assert_eq!(normalized_dae_identifier(&"a".repeat(129)), None);
+        assert!(is_reserved_dae_identifier("DIRECT"));
+    }
+
+    #[test]
+    fn normalizes_dns_references_and_removes_address_newlines() {
+        let plane = ConfigPlane {
+            groups: vec![],
+            routing_rules: vec![],
+            routing_fallback: "direct".into(),
+            dns_upstreams: vec![DnsUpstreamForConfig {
+                name: "cloud-flare".into(),
+                address: "udp://1.1.1.1:53\ninjected".into(),
+            }],
+            dns_rules: vec![DnsRuleForConfig {
+                expression: "qname(example.com)".into(),
+                upstream: "cloud-flare".into(),
+                enabled: true,
+            }],
+            dns_fallback: "cloud-flare".into(),
+        };
+        let rendered = render_dae_config(&[], &plane);
+        assert!(rendered.contains("cloud_flare: 'udp://1.1.1.1:53 injected'"));
+        assert!(rendered.contains("qname(example.com) -> cloud_flare"));
+        assert!(rendered.contains("fallback: cloud_flare"));
     }
 }

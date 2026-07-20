@@ -1,21 +1,21 @@
 //! Auth routes, password hashing, JWT helpers, and AuthUser extractor.
 
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::extract::State;
 use axum::http::request::Parts;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chaos_i18n::Locale;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
-use chaos_i18n::Locale;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use chaos_store::{count_users, create_admin_user, find_user_by_username};
+use chaos_store::{count_users, create_first_admin_user, find_user_by_id, find_user_by_username};
 
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
@@ -23,6 +23,9 @@ use crate::state::AppState;
 
 const JWT_TTL_HOURS: i64 = 24;
 const MIN_PASSWORD_LEN: usize = 8;
+const MAX_PASSWORD_LEN: usize = 256;
+const MAX_USERNAME_LEN: usize = 128;
+const MIN_JWT_SECRET_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -82,26 +85,46 @@ pub fn auth_router() -> Router<AppState> {
 pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
     if let Ok(secret) = std::env::var("CHAOS_JWT_SECRET") {
         let secret = secret.trim().to_string();
-        if !secret.is_empty() {
+        if secret.len() >= MIN_JWT_SECRET_BYTES {
             return Ok(secret);
         }
+        anyhow::bail!("CHAOS_JWT_SECRET must contain at least {MIN_JWT_SECRET_BYTES} bytes");
     }
 
     let path = Path::new("./data/jwt.secret");
     if path.exists() {
         let secret = fs::read_to_string(path)?.trim().to_string();
-        if secret.is_empty() {
-            anyhow::bail!("JWT secret file is empty: {}", path.display());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        if secret.len() < MIN_JWT_SECRET_BYTES {
+            anyhow::bail!(
+                "JWT secret file must contain at least {MIN_JWT_SECRET_BYTES} bytes: {}",
+                path.display()
+            );
         }
         return Ok(secret);
     }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
     }
 
     let secret = random_hex_secret(32);
     fs::write(path, &secret)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
     Ok(secret)
 }
 
@@ -187,10 +210,10 @@ fn decode_token_locale(token: &str, secret: &str, locale: Locale) -> Result<Clai
 
 fn validate_credentials(body: &Credentials, locale: Locale) -> Result<(), ApiError> {
     let username = body.username.trim();
-    if username.is_empty() {
+    if username.is_empty() || username.len() > MAX_USERNAME_LEN {
         return Err(ApiError::bad_request("invalid_request", locale));
     }
-    if body.password.len() < MIN_PASSWORD_LEN {
+    if body.password.len() < MIN_PASSWORD_LEN || body.password.len() > MAX_PASSWORD_LEN {
         return Err(ApiError::bad_request("invalid_password", locale));
     }
     Ok(())
@@ -205,14 +228,10 @@ async fn setup(
 ) -> Result<Json<TokenResponse>, ApiError> {
     validate_credentials(&body, locale)?;
 
-    let n = count_users(&state.pool).await?;
-    if n > 0 {
-        return Err(ApiError::conflict("already_initialized", locale));
-    }
-
     let hash = hash_password_locale(&body.password, locale)?;
-    // First account on a fresh install is the system administrator.
-    let user = create_admin_user(&state.pool, body.username.trim(), &hash).await?;
+    let user = create_first_admin_user(&state.pool, body.username.trim(), &hash)
+        .await?
+        .ok_or_else(|| ApiError::conflict("already_initialized", locale))?;
     debug_assert!(user.is_admin());
     let token = issue_token_with_role(
         &user.id,
@@ -251,9 +270,7 @@ async fn login(
 
 async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, ApiError> {
     let n = count_users(&state.pool).await?;
-    Ok(Json(StatusResponse {
-        initialized: n > 0,
-    }))
+    Ok(Json(StatusResponse { initialized: n > 0 }))
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -282,10 +299,13 @@ impl FromRequestParts<AppState> for AuthUser {
             .ok_or_else(|| ApiError::unauthorized("unauthorized", locale))?;
 
         let claims = decode_token_locale(token, &state.jwt_secret, locale)?;
+        let user = find_user_by_id(&state.pool, &claims.sub)
+            .await?
+            .ok_or_else(|| ApiError::unauthorized("invalid_token", locale))?;
         Ok(AuthUser {
-            user_id: claims.sub,
-            username: claims.username,
-            role: claims.role,
+            user_id: user.id,
+            username: user.username,
+            role: user.role,
         })
     }
 }
@@ -325,9 +345,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/auth/setup")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"password1"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"password1"}"#))
                     .unwrap(),
             )
             .await
@@ -355,6 +373,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_setup_creates_exactly_one_admin() {
+        let (app, state) = test_app().await;
+        let request = |username: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"username":"{username}","password":"password1"}}"#
+                )))
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request("first")),
+            app.oneshot(request("second"))
+        );
+        let mut statuses = [first.unwrap().status(), second.unwrap().status()];
+        statuses.sort();
+        assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+        assert_eq!(count_users(&state.pool).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn login_and_status() {
         let (app, _) = test_app().await;
 
@@ -379,9 +420,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/auth/setup")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"password1"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"password1"}"#))
                     .unwrap(),
             )
             .await
@@ -394,9 +433,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/auth/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"password1"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"password1"}"#))
                     .unwrap(),
             )
             .await
@@ -411,15 +448,16 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/auth/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"wrongpass"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"wrongpass"}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(login_bad.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(json_body(login_bad).await["error"]["code"], "invalid_credentials");
+        assert_eq!(
+            json_body(login_bad).await["error"]["code"],
+            "invalid_credentials"
+        );
 
         let status1 = app
             .oneshot(
@@ -444,9 +482,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/auth/setup")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"password1"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"password1"}"#))
                     .unwrap(),
             )
             .await
@@ -459,9 +495,7 @@ mod tests {
                     .uri("/api/v1/auth/login")
                     .header("content-type", "application/json")
                     .header("accept-language", "zh-CN")
-                    .body(Body::from(
-                        r#"{"username":"admin","password":"wrongpass"}"#,
-                    ))
+                    .body(Body::from(r#"{"username":"admin","password":"wrongpass"}"#))
                     .unwrap(),
             )
             .await
