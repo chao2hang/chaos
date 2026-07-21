@@ -140,6 +140,8 @@
   "nodes.empty": "暂无节点",
   "nodes.emptyDescription": "导入分享链接后即可测试延迟和加入策略组。",
   "nodes.testSelected": "测试已选 {count} 项",
+  "nodes.testVisible": "测试可见节点",
+  "nodes.testVisibleCount": "测试可见 {count} 项",
   "nodes.selectNode": "选择节点 {name}",
   "nodes.testNode": "测试节点 {name}",
   "nodes.deleteNode": "删除节点 {name}",

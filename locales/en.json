@@ -140,6 +140,8 @@
   "nodes.empty": "No nodes yet",
   "nodes.emptyDescription": "Import share links to test latency and assign nodes to groups.",
   "nodes.testSelected": "Test {count} selected",
+  "nodes.testVisible": "Test visible",
+  "nodes.testVisibleCount": "Test {count} visible",
   "nodes.selectNode": "Select node {name}",
   "nodes.testNode": "Test node {name}",
   "nodes.deleteNode": "Delete node {name}",
