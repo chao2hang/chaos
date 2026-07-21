@@ -3,7 +3,6 @@
 		Background,
 		BackgroundVariant,
 		Controls,
-		MiniMap,
 		SvelteFlow,
 		type Connection,
 		type Edge,
@@ -22,6 +21,7 @@
 	import BuiltinNode from '$lib/flow/BuiltinNode.svelte';
 	import StartNode from '$lib/flow/StartNode.svelte';
 	import EndNode from '$lib/flow/EndNode.svelte';
+	import OrchestrationMiniMap from '$lib/components/features/OrchestrationMiniMap.svelte';
 
 	let {
 		nodes = $bindable(),
@@ -58,27 +58,6 @@
 		node_group: GroupNode,
 		builtin: BuiltinNode
 	};
-
-	function minimapNodeColor(node: Node): string {
-		switch (node.type) {
-			case 'start':
-				return '#111111';
-			case 'end':
-				return '#4a4a4a';
-			case 'rule':
-				return '#f0f0f0';
-			case 'node_group':
-				return '#ffffff';
-			case 'builtin':
-				return '#d0d0d0';
-			default:
-				return '#e8e8e8';
-		}
-	}
-
-	function minimapNodeStroke(node: Node): string {
-		return node.selected ? '#111111' : '#8a8a8a';
-	}
 
 	function onBeforeConnect(connection: Connection) {
 		if (!onconnectrequest) return connection;
@@ -171,23 +150,7 @@
 	>
 		<Background variant={BackgroundVariant.Dots} gap={20} size={1} patternColor="#d4d4d4" />
 		<Controls position="bottom-left" showLock={false} />
-		<MiniMap
-			position="bottom-right"
-			width={168}
-			height={112}
-			pannable
-			zoomable={false}
-			inversePan={false}
-			ariaLabel={t('flow.canvas.minimap')}
-			nodeColor={minimapNodeColor}
-			nodeStrokeColor={minimapNodeStroke}
-			nodeStrokeWidth={2}
-			nodeBorderRadius={2}
-			maskColor="rgba(17, 17, 17, 0.1)"
-			maskStrokeColor="#111111"
-			maskStrokeWidth={1.25}
-			bgColor="#f7f7f7"
-		/>
+		<OrchestrationMiniMap />
 	</SvelteFlow>
 </div>
 
