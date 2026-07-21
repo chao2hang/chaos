@@ -30,3 +30,4 @@ logs
 !.vscode/extensions.json
 .superpowers/
 .zcode/
+.worktrees/
