@@ -1,0 +1,29 @@
+[Unit]
+Description=chaos — control plane for dae
+Documentation=https://github.com/chao2hang/chaos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/chaos/bin/chaos-api
+EnvironmentFile=/etc/chaos/chaos.env
+Restart=on-failure
+RestartSec=5
+
+# Data plane needs elevated privileges for eBPF
+# Option A: run as root (simplest)
+User=root
+
+# Option B (more secure): run as dedicated user with capabilities
+# User=chaos
+# AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_SYS_ADMIN
+# CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_SYS_ADMIN
+
+# Hardening
+NoNewPrivileges=false
+ProtectHome=read-only
+ReadWritePaths=/var/lib/chaos
+
+[Install]
+WantedBy=multi-user.target
