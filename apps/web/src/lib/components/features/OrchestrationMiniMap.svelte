@@ -37,7 +37,7 @@
 		const dx = event.clientX - pointerDown.x;
 		const dy = event.clientY - pointerDown.y;
 		pointerDown = null;
-		// Treat small movement as a click-to-jump; larger movement is a pan drag.
+		// Small movement = click-to-jump; larger movement keeps native minimap pan.
 		if (Math.hypot(dx, dy) > 4) return;
 
 		const target = event.currentTarget as HTMLElement;
@@ -60,39 +60,31 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-	class="minimap-shell"
+<MiniMap
+	position="bottom-right"
+	width={168}
+	height={112}
+	class="orchestration-minimap"
+	pannable
+	zoomable={false}
+	inversePan={false}
+	ariaLabel={t('flow.canvas.minimap')}
+	nodeColor={minimapNodeColor}
+	nodeStrokeColor={minimapNodeStroke}
+	nodeStrokeWidth={2}
+	nodeBorderRadius={2}
+	maskColor="rgba(17, 17, 17, 0.1)"
+	maskStrokeColor="#111111"
+	maskStrokeWidth={1.25}
+	bgColor="#f7f7f7"
 	onpointerdown={onPointerDown}
 	onpointerup={onPointerUp}
 	onpointercancel={onPointerCancel}
 	onpointerleave={onPointerCancel}
->
-	<MiniMap
-		position="bottom-right"
-		width={168}
-		height={112}
-		pannable
-		zoomable={false}
-		inversePan={false}
-		ariaLabel={t('flow.canvas.minimap')}
-		nodeColor={minimapNodeColor}
-		nodeStrokeColor={minimapNodeStroke}
-		nodeStrokeWidth={2}
-		nodeBorderRadius={2}
-		maskColor="rgba(17, 17, 17, 0.1)"
-		maskStrokeColor="#111111"
-		maskStrokeWidth={1.25}
-		bgColor="#f7f7f7"
-	/>
-</div>
+/>
 
 <style>
-	.minimap-shell {
-		display: contents;
-	}
-
-	.minimap-shell :global(.svelte-flow__minimap) {
+	:global(.svelte-flow__minimap.orchestration-minimap) {
 		cursor: crosshair;
 	}
 </style>
