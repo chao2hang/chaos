@@ -360,6 +360,8 @@ async fn load_published_or_legacy_routing(
         serde_json::from_str(&plan.document).map_err(|error| {
             ApiError::internal_logged(locale, format!("invalid published graph: {error}"))
         })?;
+    let document =
+        chaos_core::orchestration::migrate_orchestration_document(document);
     let compiled = document.compile().map_err(|report| {
         tracing::error!(issues = ?report.issues, "published orchestration no longer compiles");
         ApiError::bad_request("orchestration_invalid", locale)
@@ -452,6 +454,8 @@ async fn recover_legacy_v2_plan(
     let document: OrchestrationDocument = serde_json::from_str(raw_document).map_err(|error| {
         ApiError::internal_logged(locale, format!("invalid published graph: {error}"))
     })?;
+    let document =
+        chaos_core::orchestration::migrate_orchestration_document(document);
     let compiled = document
         .compile()
         .map_err(|_| ApiError::bad_request("orchestration_invalid", locale))?;
