@@ -160,23 +160,30 @@
 		deleteKey={['Backspace', 'Delete']}
 		selectionKey="Shift"
 		multiSelectionKey="Control"
-		panOnScroll
-		zoomOnScroll={false}
+		panOnDrag={true}
+		panOnScroll={false}
+		zoomOnScroll={true}
+		zoomOnPinch={true}
 		zoomOnDoubleClick={false}
+		preventScrolling={true}
 		oninit={onready}
 		fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1 }}
 	>
 		<Background variant={BackgroundVariant.Dots} gap={20} size={1} patternColor="#d4d4d4" />
-		<Controls showLock={false} />
+		<Controls position="bottom-left" showLock={false} />
 		<MiniMap
+			position="bottom-right"
+			width={168}
+			height={112}
 			pannable
-			zoomable
+			zoomable={false}
+			inversePan={false}
 			ariaLabel={t('flow.canvas.minimap')}
 			nodeColor={minimapNodeColor}
 			nodeStrokeColor={minimapNodeStroke}
 			nodeStrokeWidth={2}
 			nodeBorderRadius={2}
-			maskColor="rgba(17, 17, 17, 0.08)"
+			maskColor="rgba(17, 17, 17, 0.1)"
 			maskStrokeColor="#111111"
 			maskStrokeWidth={1.25}
 			bgColor="#f7f7f7"
@@ -191,6 +198,8 @@
 		height: 100%;
 		min-height: 34rem;
 		background: #fafafa;
+		/* Keep wheel events inside the canvas so the page does not scroll. */
+		overscroll-behavior: contain;
 	}
 
 	.flow-canvas :global(.svelte-flow) {
@@ -221,8 +230,7 @@
 	}
 
 	.flow-canvas :global(.svelte-flow__controls) {
-		left: 0.75rem;
-		bottom: 0.75rem;
+		margin: 0.75rem;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
 		box-shadow: none;
@@ -240,10 +248,7 @@
 	}
 
 	.flow-canvas :global(.svelte-flow__minimap) {
-		right: 0.75rem;
-		bottom: 0.75rem;
-		width: 10.5rem;
-		height: 7rem;
+		margin: 0.75rem;
 		overflow: hidden;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
@@ -252,7 +257,7 @@
 	}
 
 	.flow-canvas :global(.svelte-flow__minimap-mask) {
-		fill: rgba(17, 17, 17, 0.08);
+		fill: rgba(17, 17, 17, 0.1);
 		stroke: #111111;
 	}
 
@@ -269,11 +274,9 @@
 			height: 34rem;
 		}
 
-		/* Keep a compact overview on small screens instead of removing it. */
 		.flow-canvas :global(.svelte-flow__minimap) {
-			width: 7.5rem;
-			height: 5rem;
-			opacity: 0.96;
+			width: 7.5rem !important;
+			height: 5rem !important;
 		}
 	}
 </style>
