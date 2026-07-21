@@ -100,11 +100,19 @@ systemctl disable chaos.service 2>/dev/null || true
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/prerm"
 
-# --- Step 4: Build .deb ---
-echo "==> Building .deb..."
-dpkg-deb --build --root-owner-group "$PKG_DIR" "$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-
-echo ""
-echo "==> Done: $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-echo "    Install: sudo dpkg -i $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-echo "    Start:   sudo systemctl enable --now chaos"
+# --- Step 4: Build package ---
+if command -v dpkg-deb &>/dev/null; then
+    echo "==> Building .deb..."
+    dpkg-deb --build --root-owner-group "$PKG_DIR" "$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+    echo ""
+    echo "==> Done: $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+    echo "    Install: sudo dpkg -i $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+    echo "    Start:   sudo systemctl enable --now chaos"
+else
+    echo "==> dpkg-deb not found, building tar.gz..."
+    tar -czf "$DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz" -C "$PKG_ROOT" "${PKG_NAME}_${VERSION}_${ARCH}"
+    echo ""
+    echo "==> Done: $DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz"
+    echo "    Extract: sudo tar -xzf $DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz -C /"
+    echo "    Start:   sudo /usr/lib/chaos/bin/chaos-api"
+fi
