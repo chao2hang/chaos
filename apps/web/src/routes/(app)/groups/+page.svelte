@@ -26,6 +26,7 @@
 	import SearchInput from '$lib/components/ui/SearchInput.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
+	import NodePickList from '$lib/components/features/NodePickList.svelte';
 
 	const policies = ['min_moving_avg', 'fixed', 'random', 'min'];
 
@@ -42,7 +43,6 @@
 	let policy = $state('min_moving_avg');
 	let filterTag = $state('');
 	let deleteTarget = $state<GroupDto | null>(null);
-	let memberQuery = $state('');
 	let members = $state<GroupMemberDto[]>([]);
 	let formSnapshot = $state('');
 
@@ -91,7 +91,6 @@
 		policy = 'min_moving_avg';
 		filterTag = '';
 		members = [];
-		memberQuery = '';
 		formOpen = true;
 		formSnapshot = currentFormSnapshot();
 		error = '';
@@ -103,7 +102,6 @@
 		policy = group.policy;
 		filterTag = group.filter_tag ?? '';
 		members = (group.members ?? []).map((member) => ({ ...member }));
-		memberQuery = '';
 		formOpen = true;
 		formSnapshot = currentFormSnapshot();
 		error = '';
@@ -221,15 +219,6 @@
 				.some((value) => String(value).toLowerCase().includes(normalized))
 		);
 	});
-	const filteredNodes = $derived.by(() => {
-		const normalized = memberQuery.trim().toLowerCase();
-		if (!normalized) return nodes;
-		return nodes.filter((node) =>
-			[node.name, node.tag, node.protocol, node.address]
-				.filter(Boolean)
-				.some((value) => String(value).toLowerCase().includes(normalized))
-		);
-	});
 	const formDirty = $derived(formOpen && currentFormSnapshot() !== formSnapshot);
 </script>
 
@@ -272,52 +261,23 @@
 						/>
 					</Field>
 				</div>
-				<div class="member-editor">
-					<div class="member-editor-header">
-						<div>
-							<strong>{t('groups.members')}</strong>
-							<span>{t('groups.memberCount', { count: members.length })}</span>
-						</div>
-						<SearchInput bind:value={memberQuery} placeholder={t('flow.searchNodes')} />
-					</div>
-					<div class="member-list">
-						{#each filteredNodes as node (node.id)}
-							{@const member = members.find((item) => item.node_id === node.id)}
-							<div class:active={!!member} class="member-row">
-								<label>
-									<input
-										type="checkbox"
-										checked={!!member}
-										disabled={busy}
-										onchange={(event) =>
-											toggleMember(node, (event.currentTarget as HTMLInputElement).checked)}
-									/>
-									<span>
-										<strong>{node.name}</strong>
-										<small>{[node.protocol, node.address].filter(Boolean).join(' / ') || t('common.unknown')}</small>
-									</span>
-								</label>
-								{#if member}
-									<label class="member-weight">
-										<span>{t('flow.weight')}</span>
-										<input
-											type="number"
-											min="1"
-											max="99"
-											value={member.weight}
-											disabled={busy}
-											onchange={(event) =>
-												setMemberWeight(node.id, Number((event.currentTarget as HTMLInputElement).value))}
-										/>
-									</label>
-								{/if}
+<div class="member-editor">
+						<div class="member-editor-header">
+							<div>
+								<strong>{t('groups.members')}</strong>
+								<span>{t('groups.memberCount', { count: members.length })}</span>
 							</div>
-						{/each}
-						{#if !filteredNodes.length}
-							<div class="member-empty">{nodes.length ? t('common.noSearchResults') : t('flow.emptyPool')}</div>
-						{/if}
+						</div>
+						<NodePickList
+							{nodes}
+							{busy}
+							isChecked={(node) => members.some((item) => item.node_id === node.id)}
+							onToggle={toggleMember}
+							showWeight={true}
+							getWeight={(node) => members.find((item) => item.node_id === node.id)?.weight ?? 1}
+							onWeight={(node, weight) => setMemberWeight(node.id, weight)}
+						/>
 					</div>
-				</div>
 				<div class="form-actions">
 					<Button type="button" variant="ghost" disabled={busy} onclick={closeForm}>{t('common.cancel')}</Button>
 					<Button type="submit" variant="primary" loading={busy}>
@@ -463,40 +423,13 @@
 		gap: 0.1rem;
 	}
 
-	.member-editor-header strong { font-size: 0.78rem; }
-	.member-editor-header span { color: var(--ink-muted); font-size: 0.68rem; }
-	.member-editor-header :global(.search-field) { width: min(20rem, 50%); }
+.member-editor-header strong { font-size: 0.78rem; }
+		.member-editor-header span { color: var(--ink-muted); font-size: 0.68rem; }
+		.member-editor :global(.node-pick-list) {
+			padding: var(--space-3);
+		}
 
-	.member-list {
-		display: flex;
-		max-height: 24rem;
-		flex-direction: column;
-		overflow-y: auto;
-	}
-
-	.member-row {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--space-3);
-		min-height: 3.2rem;
-		padding: 0.45rem var(--space-3);
-		border-bottom: 1px solid var(--line);
-	}
-
-	.member-row:last-child { border-bottom: 0; }
-	.member-row.active { background: var(--surface-subtle); }
-	.member-row > label:first-child { display: flex; min-width: 0; align-items: center; gap: var(--space-3); }
-	.member-row > label:first-child > span { display: flex; min-width: 0; flex-direction: column; }
-	.member-row strong, .member-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.member-row strong { font-size: 0.75rem; }
-	.member-row small { color: var(--ink-muted); font-family: var(--font-mono); font-size: 0.62rem; }
-	.member-weight { display: grid; grid-template-columns: auto 3.5rem; align-items: center; gap: var(--space-2); }
-	.member-weight span { color: var(--ink-muted); font-size: 0.65rem; }
-	.member-weight input { min-height: 2rem; padding: 0.25rem 0.4rem; }
-	.member-empty { padding: var(--space-6); color: var(--ink-muted); font-size: 0.75rem; text-align: center; }
-
-	.toolbar-meta > span,
+		.toolbar-meta > span,
 	.member-count {
 		color: var(--ink-muted);
 		font-size: 0.72rem;
