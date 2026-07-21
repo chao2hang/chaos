@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Boxes, Plus, Trash2, Users, X } from '@lucide/svelte';
+	import { Boxes, Plus, Trash2, X } from '@lucide/svelte';
 	import type { GroupDto, GroupMemberDto, NodeDto } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
@@ -7,6 +7,7 @@
 	import Field from '$lib/components/ui/Field.svelte';
 	import SearchInput from '$lib/components/ui/SearchInput.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
+	import NodePickList from '$lib/components/features/NodePickList.svelte';
 
 	const policies = ['min_moving_avg', 'fixed', 'random', 'min'];
 
@@ -31,7 +32,6 @@
 	} = $props();
 
 	let groupQuery = $state('');
-	let nodeQuery = $state('');
 
 	function patchGroup(id: string, patch: Partial<GroupDto>) {
 		const current = groups.find((group) => group.id === id);
@@ -80,7 +80,8 @@
 	function selectAllFiltered() {
 		if (!selectedGroup) return;
 		const memberMap = new Map((selectedGroup.members ?? []).map((member) => [member.node_id, member]));
-		for (const node of filteredNodes) {
+		// Search lives inside NodePickList; select-all applies to the full node pool.
+		for (const node of nodes) {
 			if (!memberMap.has(node.id)) memberMap.set(node.id, memberFromNode(node));
 		}
 		patchGroup(selectedGroup.id, { members: Array.from(memberMap.values()) });
@@ -95,16 +96,6 @@
 		if (!normalized) return groups;
 		return groups.filter((group) =>
 			[group.name, group.policy, group.filter_tag]
-				.filter(Boolean)
-				.some((value) => String(value).toLowerCase().includes(normalized))
-		);
-	});
-
-	const filteredNodes = $derived.by(() => {
-		const normalized = nodeQuery.trim().toLowerCase();
-		if (!normalized) return nodes;
-		return nodes.filter((node) =>
-			[node.name, node.tag, node.protocol, node.address]
 				.filter(Boolean)
 				.some((value) => String(value).toLowerCase().includes(normalized))
 		);
@@ -225,72 +216,32 @@
 				description={t('flow.membersDescription')}
 				count={selectedGroup.members?.length ?? 0}
 			>
-				{#snippet actions()}
-					<Button size="sm" disabled={busy || !filteredNodes.length} onclick={selectAllFiltered}>
-						{t('common.selectVisible')}
-					</Button>
-					<Button
-						variant="ghost"
-						size="sm"
-						icon={X}
-						disabled={busy || !(selectedGroup.members?.length)}
-						onclick={clearMembers}
-					>
-						{t('common.clear')}
-					</Button>
-				{/snippet}
+{#snippet actions()}
+						<Button size="sm" disabled={busy || !nodes.length} onclick={selectAllFiltered}>
+							{t('common.selectVisible')}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							icon={X}
+							disabled={busy || !(selectedGroup.members?.length)}
+							onclick={clearMembers}
+						>
+							{t('common.clear')}
+						</Button>
+					{/snippet}
 
-				<SearchInput bind:value={nodeQuery} placeholder={t('flow.searchNodes')} />
-				<div class="node-list">
-					{#each filteredNodes as node (node.id)}
-						{@const member = selectedGroup.members?.find((item) => item.node_id === node.id)}
-						<div class:member={!!member} class="node-row">
-							<label class="node-check">
-								<input
-									type="checkbox"
-									checked={!!member}
-									disabled={busy}
-									onchange={(event) =>
-										toggleMember(
-											selectedGroup.id,
-											node,
-											(event.currentTarget as HTMLInputElement).checked
-										)}
-								/>
-								<span>
-									<strong>{node.name}</strong>
-									<small>{node.protocol ?? t('common.unknown')} / {node.address ?? t('common.unknown')}</small>
-								</span>
-							</label>
-							{#if member}
-								<label class="weight-field">
-									<span>{t('flow.weight')}</span>
-									<input
-										type="number"
-										min="1"
-										max="99"
-										value={member.weight}
-										disabled={busy}
-										onchange={(event) =>
-											setWeight(
-												selectedGroup.id,
-												node.id,
-												Number((event.currentTarget as HTMLInputElement).value)
-											)}
-									/>
-								</label>
-							{/if}
-						</div>
-					{/each}
-					{#if !filteredNodes.length}
-						<EmptyState
-							icon={Users}
-							title={nodes.length ? t('common.noSearchResults') : t('flow.emptyPool')}
-							description={nodes.length ? t('common.tryDifferentSearch') : t('flow.emptyPoolDescription')}
-						/>
-					{/if}
-				</div>
-			</Section>
+					<NodePickList
+						{nodes}
+						{busy}
+						isChecked={(node) => !!(selectedGroup.members?.some((m) => m.node_id === node.id))}
+						onToggle={(node, checked) => toggleMember(selectedGroup.id, node, checked)}
+						showWeight={true}
+						getWeight={(node) =>
+							selectedGroup.members?.find((m) => m.node_id === node.id)?.weight ?? 1}
+						onWeight={(node, weight) => setWeight(selectedGroup.id, node.id, weight)}
+					/>
+				</Section>
 		{:else}
 			<Section flush>
 				<EmptyState icon={Boxes} title={t('flow.selectGroup')} description={t('flow.selectGroupDescription')}>
@@ -390,104 +341,25 @@
 		gap: var(--space-4);
 	}
 
-	.group-fields {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: var(--space-4);
-	}
-
-	.node-list {
-		display: flex;
-		max-height: 32rem;
-		flex-direction: column;
-		margin-top: var(--space-3);
-		border: 1px solid var(--line);
-		border-radius: var(--radius-md);
-		overflow-y: auto;
-	}
-
-	.node-row {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--space-4);
-		min-height: 3.4rem;
-		padding: 0.55rem var(--space-3);
-		border-bottom: 1px solid var(--line);
-	}
-
-	.node-row:last-child {
-		border-bottom: 0;
-	}
-
-	.node-row.member {
-		background: var(--surface-subtle);
-	}
-
-	.node-check {
-		display: flex;
-		min-width: 0;
-		align-items: center;
-		gap: var(--space-3);
-		cursor: pointer;
-	}
-
-	.node-check > span {
-		display: flex;
-		min-width: 0;
-		flex-direction: column;
-	}
-
-	.node-check strong {
-		overflow: hidden;
-		font-size: 0.78rem;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.node-check small {
-		overflow: hidden;
-		color: var(--ink-muted);
-		font-family: var(--font-mono);
-		font-size: 0.66rem;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.weight-field {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		color: var(--ink-muted);
-		font-size: 0.68rem;
-	}
-
-	.weight-field input {
-		width: 3.8rem;
-		min-height: 2rem;
-		padding: 0.35rem;
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		text-align: center;
-	}
-
-	@media (max-width: 900px) {
-		.group-workspace {
-			grid-template-columns: 1fr;
+.group-fields {
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: var(--space-4);
 		}
 
-		.group-list {
-			max-height: 16rem;
-		}
-	}
+		@media (max-width: 900px) {
+			.group-workspace {
+				grid-template-columns: 1fr;
+			}
 
-	@media (max-width: 640px) {
-		.group-fields {
-			grid-template-columns: 1fr;
+			.group-list {
+				max-height: 16rem;
+			}
 		}
 
-		.node-row {
-			gap: var(--space-2);
+		@media (max-width: 640px) {
+			.group-fields {
+				grid-template-columns: 1fr;
+			}
 		}
-	}
-</style>
+	</style>
