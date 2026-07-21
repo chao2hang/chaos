@@ -52,9 +52,11 @@
 		validateLocal
 	} from '$lib/orchestration';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import Notice from '$lib/components/ui/Notice.svelte';
+	import { toast } from '$lib/toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
 	import OrchestrationCanvas from '$lib/components/features/OrchestrationCanvas.svelte';
@@ -85,6 +87,7 @@
 	let mobilePanel = $state<'canvas' | 'inspector'>('canvas');
 	let canvasSettled = $state(false);
 	let needsRepublish = $state(false);
+	let validationToastSignature = '';
 
 	function currentDocument(): OrchestrationDocument {
 		return sanitizeDocument(flowNodes, flowEdges, viewport);
@@ -376,6 +379,27 @@
 		}
 	}
 
+	function focusIssue() {
+		const issue = validation.issues.find((item) => item.node_id || item.edge_id);
+		if (!issue) return;
+		if (issue.node_id) selectNode(issue.node_id);
+		else if (issue.edge_id) {
+			selectedNodeId = null;
+			selectedEdgeId = issue.edge_id;
+		}
+	}
+
+	function showValidationToast() {
+		if (!validation.issues.length) return;
+		toast.warning({
+			id: 'flow-validation',
+			title: t('flow.issueCount', { count: validation.issues.length }),
+			description: t('flow.issueTrayHint'),
+			duration: 8000,
+			action: { label: t('flow.viewIssue'), onclick: focusIssue }
+		});
+	}
+
 	function addConnection(connection: Connection) {
 		if (!connection.source || !connection.target) return;
 		if (connection.source === 'end') updateEndTarget(connection.target);
@@ -473,7 +497,7 @@
 
 <svelte:window onbeforeunload={onBeforeUnload} />
 
-<div class="flow-editor-page">
+<AppPage variant="editor">
 	<PageHeader title={t('flow.title')} meta="FLOW / V4">
 		{#snippet actions()}
 			<div class="runtime-state" class:blocked={!validation.dae_compatible}>
@@ -518,31 +542,6 @@
 	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
 	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
 	{#if needsRepublish}<Notice message={t('flow.needsRepublish')} />{/if}
-	{#if loaded && validation.issues.length}
-		<section class="issue-tray" aria-label={t('flow.issueCount', { count: validation.issues.length })}>
-			<div class="issue-tray-heading">
-				<strong>{t('flow.issueCount', { count: validation.issues.length })}</strong>
-				<span>{t('flow.issueTrayHint')}</span>
-			</div>
-			<div class="issue-tray-list">
-				{#each validation.issues.slice(0, 8) as issue (`${issue.scope}:${issue.code}:${issue.node_id ?? ''}:${issue.edge_id ?? ''}`)}
-					<button
-						type="button"
-						onclick={() => {
-							if (issue.node_id) selectNode(issue.node_id);
-							else if (issue.edge_id) {
-								selectedNodeId = null;
-								selectedEdgeId = issue.edge_id;
-							}
-						}}
-					>
-						<span>{issue.scope === 'runtime' ? 'R' : 'G'}</span>
-						<strong>{t(`flow.validation.${issue.code}`)}</strong>
-					</button>
-				{/each}
-			</div>
-		</section>
-	{/if}
 
 	{#if !loaded}
 		<LoadingState label={t('common.loading')} />
@@ -684,7 +683,7 @@
 			/>
 		</div>
 	{/if}
-</div>
+</AppPage>
 
 <ConfirmDialog
 	bind:open={confirmReload}
@@ -697,27 +696,7 @@
 />
 
 <style>
-	.flow-editor-page {
-		display: flex;
-		min-width: 0;
-		flex-direction: column;
-		gap: var(--space-4);
-	}
 
-	.issue-tray {
-		padding: var(--space-3) var(--space-4);
-		border-block: 1px solid var(--line-strong);
-		background: var(--danger-surface);
-	}
-
-	.issue-tray-heading { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-2); }
-	.issue-tray-heading strong { font-size: 0.75rem; }
-	.issue-tray-heading span { color: var(--ink-muted); font-size: 0.68rem; }
-	.issue-tray-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-	.issue-tray-list button { display: inline-flex; min-width: 0; align-items: center; gap: 0.35rem; padding: 0.35rem 0.5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); text-align: left; }
-	.issue-tray-list button:hover { border-color: var(--ink); }
-	.issue-tray-list button > span { font-family: var(--font-mono); font-size: 0.58rem; }
-	.issue-tray-list button > strong { max-width: 22rem; overflow: hidden; font-size: 0.66rem; text-overflow: ellipsis; white-space: nowrap; }
 
 	.runtime-state {
 		display: inline-flex;

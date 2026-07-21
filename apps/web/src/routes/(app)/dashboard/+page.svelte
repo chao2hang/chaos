@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Activity, Gauge, Play, Power, RefreshCw, Square } from '@lucide/svelte';
+	import { Activity, Download, Gauge, Play, Power, RefreshCw, Square } from '@lucide/svelte';
 	import {
 		health,
 		getRuntime,
 		testLatency,
 		applyRuntime,
 		stopRuntime,
+		updateGeoIpData,
 		listLatency,
 		ApiClientError,
 		type HealthResponse,
@@ -14,8 +15,10 @@
 		type LatencyDto
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
+	import { sortByLatency } from '$lib/latencySessionCore';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
@@ -30,7 +33,7 @@
 	let latency = $state<LatencyDto[]>([]);
 	let error = $state('');
 	let message = $state('');
-	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | ''>('');
+	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | 'geoip' | ''>('');
 	let loaded = $state(false);
 	let confirmStop = $state(false);
 
@@ -108,6 +111,26 @@
 		}
 	}
 
+	async function onUpdateGeoIp() {
+		busy = 'geoip';
+		error = '';
+		message = '';
+		try {
+			const result = await updateGeoIpData();
+			if (runtime) runtime = { ...runtime, geoip_data: result };
+			message = t('dashboard.geoipUpdated');
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.geoipUpdateFailed');
+		} finally {
+			busy = '';
+		}
+	}
+
+	function formatBytes(value: number): string {
+		if (value < 1024) return `${value} B`;
+		return `${(value / 1024 / 1024).toFixed(1)} MB`;
+	}
+
 	const latencySummary = $derived.by(() => {
 		const total = latency.length;
 		const alive = latency.filter((result) => result.alive).length;
@@ -115,9 +138,11 @@
 		for (const result of latency) tones[latencyTone(result.latency_ms, result.alive)]++;
 		return { total, alive, ...tones };
 	});
+
+	const sortedLatency = $derived(sortByLatency(latency, (result) => result));
 </script>
 
-<div class="page-stack">
+<AppPage>
 	<PageHeader title={t('dashboard.title')} description={t('dashboard.subtitle')} meta="chaos / overview">
 		{#snippet actions()}
 			<Button icon={Gauge} loading={busy === 'latency'} disabled={!!busy} onclick={runAllLatency}>
@@ -178,7 +203,7 @@
 							label={runtime?.running ? t('common.running') : t('common.stopped')}
 							tone={runtime?.running ? 'positive' : 'neutral'}
 						/>
-						<div class="inline-actions">
+					<div class="inline-actions">
 							<Button variant="primary" icon={Play} loading={busy === 'apply'} disabled={!!busy || !!runtime?.needs_republish} onclick={onApply}>
 								{busy === 'apply' ? t('dashboard.applying') : t('dashboard.apply')}
 							</Button>
@@ -190,6 +215,20 @@
 								{t('dashboard.stop')}
 							</Button>
 						</div>
+					</div>
+					<div class="runtime-row geoip-row">
+						<div>
+							<strong>{t('dashboard.geoip')}</strong>
+							<p>{t('dashboard.geoipDescription')}</p>
+						</div>
+						<Button
+							icon={Download}
+							loading={busy === 'geoip'}
+							disabled={!!busy}
+							onclick={onUpdateGeoIp}
+						>
+							{t('dashboard.updateGeoip')}
+						</Button>
 					</div>
 					<dl class="details">
 						<div>
@@ -203,6 +242,10 @@
 						<div>
 							<dt>{t('dashboard.field.dataPlane')}</dt>
 							<dd><code>{runtime?.data_plane ?? t('common.unknown')}</code></dd>
+						</div>
+						<div>
+							<dt>{t('dashboard.field.geoipData')}</dt>
+							<dd>{runtime?.geoip_data.exists ? formatBytes(runtime.geoip_data.bytes) : t('common.missing')}</dd>
 						</div>
 					</dl>
 				</Section>
@@ -232,7 +275,7 @@
 				>
 					{#if latency.length}
 						<ul class="latency-list">
-							{#each latency.slice(0, 12) as result (result.id)}
+							{#each sortedLatency.slice(0, 12) as result (result.id)}
 								<li>
 									<code>{result.id.slice(0, 12)}</code>
 									<span class={latencyClass(latencyTone(result.latency_ms, result.alive))}>
@@ -256,7 +299,7 @@
 			</div>
 		</div>
 	{/if}
-</div>
+</AppPage>
 
 <ConfirmDialog
 	bind:open={confirmStop}
@@ -285,6 +328,26 @@
 		justify-content: space-between;
 		gap: var(--space-4);
 		padding-bottom: var(--space-5);
+	}
+
+	.geoip-row {
+		padding-top: var(--space-4);
+		border-top: 1px solid var(--line);
+	}
+
+	.geoip-row strong,
+	.geoip-row p {
+		display: block;
+	}
+
+	.geoip-row strong {
+		font-size: 0.82rem;
+	}
+
+	.geoip-row p {
+		margin: var(--space-1) 0 0;
+		color: var(--ink-muted);
+		font-size: 0.75rem;
 	}
 
 	.details {

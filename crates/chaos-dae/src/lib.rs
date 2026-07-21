@@ -147,6 +147,45 @@ impl DaeManager {
         self.work_dir.join("dae.pid")
     }
 
+    /// dae searches the config directory for GeoIP data before global paths.
+    pub fn geoip_path(&self) -> PathBuf {
+        self.work_dir.join("geoip.dat")
+    }
+
+    /// Atomically replace the GeoIP dataset used by dae routing rules.
+    pub async fn write_geoip_data(&self, content: &[u8]) -> Result<PathBuf> {
+        if content.len() < 1024 {
+            bail!("geoip dataset is unexpectedly small");
+        }
+        tokio::fs::create_dir_all(&self.work_dir)
+            .await
+            .with_context(|| format!("create work_dir {}", self.work_dir.display()))?;
+        secure_work_dir(&self.work_dir)?;
+        let path = self.geoip_path();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp = self.work_dir.join(format!("geoip.dat.tmp-{nonce}"));
+        tokio::fs::write(&temp, content)
+            .await
+            .with_context(|| format!("write geoip data {}", temp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644))
+                .with_context(|| format!("chmod 0644 {}", temp.display()))?;
+        }
+        #[cfg(windows)]
+        if path.exists() {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        tokio::fs::rename(&temp, &path)
+            .await
+            .with_context(|| format!("replace geoip data {}", path.display()))?;
+        Ok(path)
+    }
+
     /// Write `content` to `{work_dir}/config.dae`, creating `work_dir` if needed.
     ///
     /// Mode is forced to `0600`: dae rejects configs that are group/world

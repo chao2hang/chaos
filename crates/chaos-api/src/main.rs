@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let jwt_secret = load_or_create_jwt_secret()?;
     let state = AppState::new(pool, jwt_secret);
     routes::orchestration::recover_pending_publication(&state).await?;
+    routes::runtime::restore_persisted_runtime().await;
 
     let app = Router::new()
         .nest("/api/v1/auth", auth_router())

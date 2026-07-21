@@ -4,6 +4,7 @@
 	import type { NodeDto } from '$lib/api';
 	import { createLatencySession } from '$lib/latencySession.svelte';
 	import { formatLatencyMs, latencyClass, latencyTone } from '$lib/latency';
+	import { sortByLatency } from '$lib/latencySessionCore';
 	import { t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Notice from '$lib/components/ui/Notice.svelte';
@@ -15,6 +16,7 @@
 		isChecked,
 		onToggle,
 		showWeight = false,
+		compact = false,
 		getWeight,
 		onWeight,
 		emptyLabel,
@@ -25,6 +27,7 @@
 		isChecked: (node: NodeDto) => boolean;
 		onToggle: (node: NodeDto, checked: boolean) => void;
 		showWeight?: boolean;
+		compact?: boolean;
 		getWeight?: (node: NodeDto) => number;
 		onWeight?: (node: NodeDto, weight: number) => void;
 		emptyLabel?: string;
@@ -36,12 +39,16 @@
 
 	const filteredNodes = $derived.by(() => {
 		const normalized = query.trim().toLowerCase();
-		if (!normalized) return nodes;
-		return nodes.filter((node) =>
-			[node.name, node.tag, node.protocol, node.address]
-				.filter(Boolean)
-				.some((value) => String(value).toLowerCase().includes(normalized))
-		);
+		// Depend on the full latency map so reordering reacts after tests finish.
+		const latencyMap = session.latencyById;
+		const matchingNodes = normalized
+			? nodes.filter((node) =>
+					[node.name, node.tag, node.protocol, node.address]
+						.filter(Boolean)
+						.some((value) => String(value).toLowerCase().includes(normalized))
+				)
+			: nodes;
+		return sortByLatency(matchingNodes, (node) => latencyMap[node.id]);
 	});
 
 	onMount(() => {
@@ -54,7 +61,7 @@
 	}
 </script>
 
-<div class="node-pick-list">
+<div class="node-pick-list" class:compact>
 	{#if session.error}
 		<Notice tone="error" message={session.error} ondismiss={() => session.clearNotices()} />
 	{/if}
@@ -221,5 +228,40 @@
 		color: var(--muted, #888);
 		text-align: center;
 		font-size: 0.9em;
+	}
+
+	.node-pick-list.compact {
+		gap: var(--space-2);
+	}
+
+	.compact .node-pick-toolbar {
+		gap: 0.4rem;
+	}
+
+	.compact .node-pick-actions {
+		gap: 0.4rem;
+	}
+
+	.compact .node-pick-rows {
+		max-height: 18rem;
+		gap: 0.25rem;
+	}
+
+	.compact .node-pick-row {
+		gap: 0.4rem;
+		padding: 0.4rem 0.45rem;
+	}
+
+	.compact .node-pick-check {
+		gap: 0.4rem;
+	}
+
+	.compact .node-pick-check strong {
+		font-size: 0.76rem;
+	}
+
+	.compact .node-pick-check small,
+	.compact .node-pick-latency {
+		font-size: 0.68rem;
 	}
 </style>

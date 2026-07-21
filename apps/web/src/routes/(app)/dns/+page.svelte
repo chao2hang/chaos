@@ -11,6 +11,7 @@
 	} from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
@@ -158,7 +159,7 @@
 
 <svelte:window onbeforeunload={onBeforeUnload} />
 
-<div class="page-stack">
+<AppPage>
 	<PageHeader title={t('dns.title')} description={t('dns.subtitle')} meta="network / dns">
 		{#snippet actions()}
 			<Button
@@ -222,7 +223,7 @@
 			</div>
 		{/if}
 	{/if}
-</div>
+</AppPage>
 
 <ConfirmDialog
 	bind:open={confirmReload}

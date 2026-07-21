@@ -7,7 +7,7 @@ use chaos_core::config_render::{
     render_dae_config, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig, GroupForConfig,
     GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
 };
-use chaos_core::orchestration::OrchestrationDocument;
+use chaos_core::orchestration::{migrate_orchestration_document, OrchestrationDocument};
 use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager};
 use chaos_i18n::Locale;
 use serde::Serialize;
@@ -27,7 +27,18 @@ pub struct RuntimeStatus {
     pub needs_republish: bool,
     pub data_plane: &'static str,
     pub data_plane_ready: bool,
+    pub geoip_data: GeoIpDataStatus,
 }
+
+#[derive(Debug, Serialize)]
+pub struct GeoIpDataStatus {
+    pub path: String,
+    pub exists: bool,
+    pub bytes: u64,
+}
+
+const GEOIP_DATA_URL: &str = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat";
+const MAX_GEOIP_DATA_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct ApplyResponse {
@@ -43,6 +54,50 @@ fn dae_work_dir() -> std::path::PathBuf {
     std::env::var("CHAOS_DAE_WORK_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("./data/dae"))
+}
+
+/// Start the last successfully rendered dae configuration after a service
+/// restart. This is opt-in so development runs never unexpectedly alter host
+/// networking; the packaged systemd unit enables it explicitly.
+pub async fn restore_persisted_runtime() {
+    if !env_flag("CHAOS_AUTOSTART_DAE") {
+        return;
+    }
+    let backend = chaos_dae::platform_backend().status();
+    if backend.kind != "linux-dae" || !backend.ready {
+        tracing::warn!(reason = backend.reason, "dae autostart skipped");
+        return;
+    }
+
+    let manager = manager_for_status_or_stop();
+    if manager.is_running() {
+        tracing::info!("dae is already running; keeping existing runtime");
+        return;
+    }
+    if !manager.config_path().is_file() {
+        tracing::info!("no saved dae configuration to restore");
+        return;
+    }
+
+    if let Err(error) = manager.validate_config().await {
+        tracing::error!(error = %error, "saved dae configuration is invalid; autostart skipped");
+        return;
+    }
+    match manager.reload().await {
+        Ok(()) => tracing::info!("restored dae runtime from saved configuration"),
+        Err(error) => tracing::error!(error = %error, "failed to restore dae runtime"),
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn manager_or_missing(locale: Locale) -> Result<DaeManager, ApiError> {
@@ -93,6 +148,7 @@ async fn get_runtime(
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);
     let running = data_plane.kind == "linux-dae" && manager_for_status_or_stop().is_running();
     let config_exists = work_dir.join("config.dae").is_file();
+    let geoip_data = geoip_status(&work_dir);
     let needs_republish = orchestration_needs_republish(&state).await?;
     Ok(Json(RuntimeStatus {
         running,
@@ -103,7 +159,56 @@ async fn get_runtime(
         needs_republish,
         data_plane: data_plane.kind,
         data_plane_ready: data_plane.ready,
+        geoip_data,
     }))
+}
+
+fn geoip_status(work_dir: &std::path::Path) -> GeoIpDataStatus {
+    let path = work_dir.join("geoip.dat");
+    let metadata = std::fs::metadata(&path).ok();
+    GeoIpDataStatus {
+        path: path.display().to_string(),
+        exists: metadata.is_some(),
+        bytes: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
+    }
+}
+
+async fn update_geoip_data(
+    _user: AuthUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<GeoIpDataStatus>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    let manager = manager_for_status_or_stop();
+    let response = reqwest::Client::new()
+        .get(GEOIP_DATA_URL)
+        .send()
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("download geoip data: {error}"))
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("download geoip status: {error}"))
+        })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_GEOIP_DATA_BYTES)
+    {
+        return Err(ApiError::bad_request("geoip_data_too_large", locale));
+    }
+    let data = response
+        .bytes()
+        .await
+        .map_err(|error| ApiError::internal_logged(locale, format!("read geoip data: {error}")))?;
+    if u64::try_from(data.len()).unwrap_or(u64::MAX) > MAX_GEOIP_DATA_BYTES {
+        return Err(ApiError::bad_request("geoip_data_too_large", locale));
+    }
+    manager
+        .write_geoip_data(&data)
+        .await
+        .map_err(|error| ApiError::internal_logged(locale, format!("write geoip data: {error}")))?;
+    Ok(Json(geoip_status(&manager.work_dir)))
 }
 
 async fn apply_runtime(
@@ -210,6 +315,7 @@ async fn stop_runtime(
         needs_republish,
         data_plane: data_plane.kind,
         data_plane_ready: data_plane.ready,
+        geoip_data: geoip_status(&work_dir),
     }))
 }
 
@@ -360,8 +466,7 @@ async fn load_published_or_legacy_routing(
         serde_json::from_str(&plan.document).map_err(|error| {
             ApiError::internal_logged(locale, format!("invalid published graph: {error}"))
         })?;
-    let document =
-        chaos_core::orchestration::migrate_orchestration_document(document);
+    let document = migrate_orchestration_document(document);
     let compiled = document.compile().map_err(|report| {
         tracing::error!(issues = ?report.issues, "published orchestration no longer compiles");
         ApiError::bad_request("orchestration_invalid", locale)
@@ -454,8 +559,7 @@ async fn recover_legacy_v2_plan(
     let document: OrchestrationDocument = serde_json::from_str(raw_document).map_err(|error| {
         ApiError::internal_logged(locale, format!("invalid published graph: {error}"))
     })?;
-    let document =
-        chaos_core::orchestration::migrate_orchestration_document(document);
+    let document = migrate_orchestration_document(document);
     let compiled = document
         .compile()
         .map_err(|_| ApiError::bad_request("orchestration_invalid", locale))?;
@@ -540,6 +644,7 @@ pub fn runtime_router() -> Router<AppState> {
     Router::new()
         .route("/runtime", get(get_runtime))
         .route("/runtime/apply", post(apply_runtime))
+        .route("/runtime/geoip/update", post(update_geoip_data))
         .route("/runtime/stop", post(stop_runtime))
 }
 

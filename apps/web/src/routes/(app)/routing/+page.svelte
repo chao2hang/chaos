@@ -4,6 +4,7 @@
 	import { ApiClientError, getRouting, type RoutingRuleDto } from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ActionLink from '$lib/components/ui/ActionLink.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
@@ -37,7 +38,7 @@
 	});
 </script>
 
-<div class="page-stack">
+<AppPage>
 	<PageHeader title={t('routing.title')} description={t('routing.readOnlyDescription')} meta="generated / routing">
 		{#snippet actions()}
 			<Button
@@ -87,7 +88,7 @@
 			{/if}
 		</Section>
 	{/if}
-</div>
+</AppPage>
 
 <style>
 	.fallback-value {

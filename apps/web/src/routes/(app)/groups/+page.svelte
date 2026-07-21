@@ -17,6 +17,7 @@
 	} from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
@@ -222,7 +223,7 @@
 	const formDirty = $derived(formOpen && currentFormSnapshot() !== formSnapshot);
 </script>
 
-<div class="page-stack">
+<AppPage>
 	<PageHeader title={t('groups.title')} description={t('groups.subtitle')} meta="policy / groups">
 		{#snippet actions()}
 			<Button variant="primary" icon={formOpen ? X : Plus} onclick={formOpen ? closeForm : openCreate}>
@@ -354,7 +355,7 @@
 			</Section>
 		{/if}
 	{/if}
-</div>
+</AppPage>
 
 <ConfirmDialog
 	open={!!deleteTarget}

@@ -24,3 +24,27 @@ export function normalizeTestIds(ids: string[] | null | undefined): string[] | n
 	if (ids === null || ids === undefined) return null;
 	return ids;
 }
+
+/**
+ * Place successfully measured nodes first, ordered by their fastest latency.
+ * Untested and unavailable nodes remain after them in their existing order.
+ */
+export function sortByLatency<T>(
+	items: readonly T[],
+	getLatency: (item: T) => Pick<LatencyLike, 'alive' | 'latency_ms'> | undefined
+): T[] {
+	return items
+		.map((item, index) => ({ item, index, latency: getLatency(item) }))
+		.sort((left, right) => {
+			const leftMeasured = left.latency?.alive && Number.isFinite(left.latency.latency_ms);
+			const rightMeasured = right.latency?.alive && Number.isFinite(right.latency.latency_ms);
+
+			if (leftMeasured && rightMeasured) {
+				return left.latency!.latency_ms! - right.latency!.latency_ms! || left.index - right.index;
+			}
+			if (leftMeasured) return -1;
+			if (rightMeasured) return 1;
+			return left.index - right.index;
+		})
+		.map(({ item }) => item);
+}

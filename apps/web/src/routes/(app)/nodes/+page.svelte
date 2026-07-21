@@ -12,9 +12,11 @@
 		type LatencyDto
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
+	import { sortByLatency } from '$lib/latencySessionCore';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import { countryFlag } from '$lib/utils';
 	import Button from '$lib/components/ui/Button.svelte';
+	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
@@ -157,12 +159,15 @@
 
 	const filteredNodes = $derived.by(() => {
 		const normalized = query.trim().toLowerCase();
-		if (!normalized) return nodes;
-		return nodes.filter((node) =>
-			[node.name, node.tag, node.protocol, node.address]
-				.filter(Boolean)
-				.some((value) => String(value).toLowerCase().includes(normalized))
-		);
+		const latencyMap = latencyById;
+		const matchingNodes = normalized
+			? nodes.filter((node) =>
+					[node.name, node.tag, node.protocol, node.address]
+						.filter(Boolean)
+						.some((value) => String(value).toLowerCase().includes(normalized))
+				)
+			: nodes;
+		return sortByLatency(matchingNodes, (node) => latencyMap[node.id]);
 	});
 
 	const allVisibleSelected = $derived(
@@ -170,7 +175,7 @@
 	);
 </script>
 
-<div class="page-stack">
+<AppPage>
 	<PageHeader title={t('nodes.title')} description={t('nodes.subtitle')} meta="inventory / nodes">
 		{#snippet actions()}
 			<Button icon={Gauge} disabled={!!testing || !nodes.length} onclick={() => runLatency(selectedIds.length ? selectedIds : null, 'bulk')}>
@@ -305,7 +310,7 @@
 			</Section>
 		{/if}
 	{/if}
-</div>
+</AppPage>
 
 <ConfirmDialog
 	open={!!deleteTarget}

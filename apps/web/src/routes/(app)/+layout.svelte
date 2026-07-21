@@ -264,8 +264,6 @@
 
 	.content {
 		width: 100%;
-		max-width: var(--content-width);
-		margin: 0 auto;
 		padding: var(--space-8) var(--space-8) var(--space-12);
 	}
 

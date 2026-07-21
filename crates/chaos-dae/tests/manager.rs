@@ -134,6 +134,29 @@ async fn stop_without_pid_is_ok() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+#[tokio::test]
+async fn geoip_data_replaces_existing_file_atomically() {
+    let _guard = TEST_LOCK.lock().await;
+    let work_dir = temp_work_dir();
+    let mgr = DaeManager::new(fixture_bin(), work_dir.clone());
+    let first = vec![1_u8; 1024];
+    let second = vec![2_u8; 2048];
+
+    assert_eq!(
+        mgr.write_geoip_data(&first).await.unwrap(),
+        mgr.geoip_path()
+    );
+    assert_eq!(std::fs::read(mgr.geoip_path()).unwrap(), first);
+    assert_eq!(
+        mgr.write_geoip_data(&second).await.unwrap(),
+        mgr.geoip_path()
+    );
+    assert_eq!(std::fs::read(mgr.geoip_path()).unwrap(), second);
+    assert!(mgr.write_geoip_data(&[0; 16]).await.is_err());
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stop_still_works_after_binary_is_deleted() {

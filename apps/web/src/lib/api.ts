@@ -208,6 +208,12 @@ export type LatencyDto = {
 	message: string | null;
 };
 
+export type GeoIpDataStatus = {
+	path: string;
+	exists: boolean;
+	bytes: number;
+};
+
 export type RuntimeStatus = {
 	running: boolean;
 	dae_binary: string | null;
@@ -217,6 +223,7 @@ export type RuntimeStatus = {
 	needs_republish: boolean;
 	data_plane: string;
 	data_plane_ready: boolean;
+	geoip_data: GeoIpDataStatus;
 };
 
 export type ApplyResponse = {
@@ -427,6 +434,10 @@ export function testLatency(ids?: string[] | null) {
 
 export function getRuntime() {
 	return api<RuntimeStatus>('/api/v1/runtime');
+}
+
+export function updateGeoIpData() {
+	return api<GeoIpDataStatus>('/api/v1/runtime/geoip/update', { method: 'POST' });
 }
 
 export function applyRuntime() {

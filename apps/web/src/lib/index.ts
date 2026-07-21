@@ -17,3 +17,5 @@ export { default as SegmentedControl } from './components/ui/SegmentedControl.sv
 export { default as Status } from './components/ui/Status.svelte';
 export { default as TableFrame } from './components/ui/TableFrame.svelte';
 export { default as Toggle } from './components/ui/Toggle.svelte';
+export { default as ToastViewport } from './components/ui/ToastViewport.svelte';
+export { toast } from './toast.svelte';

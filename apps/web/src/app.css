@@ -45,7 +45,9 @@
 
 	--sidebar-width: 15rem;
 	--topbar-height: 3.5rem;
-	--content-width: 76rem;
+	--page-max-width: 88rem;
+	--editor-max-width: 110rem;
+	--page-gap: var(--space-6);
 
 	/* Compatibility aliases used by latency helpers and legacy API states. */
 	--bg-void: var(--canvas);

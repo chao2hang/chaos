@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
 	mergeLatencyMap,
 	shouldAcceptGeneration,
-	normalizeTestIds
+	normalizeTestIds,
+	sortByLatency
 } from './latencySessionCore.ts';
 
 type LatencyDto = {
@@ -45,5 +46,30 @@ describe('normalizeTestIds', () => {
 	});
 	it('returns non-empty list as-is', () => {
 		assert.deepEqual(normalizeTestIds(['x', 'y']), ['x', 'y']);
+	});
+});
+
+describe('sortByLatency', () => {
+	it('orders measured available nodes by latency and leaves the rest stable at the end', () => {
+		const items = [
+			{ id: 'unmeasured' },
+			{ id: 'slow' },
+			{ id: 'failed' },
+			{ id: 'fast' },
+			{ id: 'missing' },
+			{ id: 'same-as-fast' }
+		];
+		const results = {
+			slow: sample('slow', 80),
+			failed: sample('failed', null, false),
+			fast: sample('fast', 15),
+			missing: sample('missing', null),
+			'same-as-fast': sample('same-as-fast', 15)
+		};
+
+		assert.deepEqual(
+			sortByLatency(items, (item) => results[item.id as keyof typeof results]),
+			[items[3], items[5], items[1], items[0], items[2], items[4]]
+		);
 	});
 });

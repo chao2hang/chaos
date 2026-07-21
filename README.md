@@ -137,6 +137,24 @@ pnpm --dir apps/web check
 pnpm --dir apps/web build
 ```
 
+## Debian / Ubuntu package
+
+Build a self-contained Linux package (the pinned `dae` binary must be fetched
+first):
+
+```bash
+./scripts/fetch-dae.sh
+./packaging/debian/build.sh
+sudo dpkg -i dist/chaos_0.1.0_amd64.deb
+sudo systemctl enable --now chaos
+```
+
+The service exposes the console and API only on `http://127.0.0.1:2030`.
+Persistent state lives in `/var/lib/chaos`; package configuration overrides
+are in `/etc/chaos/chaos.env`. On boot it restores the last successfully
+rendered `dae` configuration. Inspect it with `systemctl status chaos` and
+`journalctl -u chaos -f`.
+
 ## License
 
 TBD before public release (coordinate with dae AGPL components in packaging).
