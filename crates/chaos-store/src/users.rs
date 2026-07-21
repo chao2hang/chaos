@@ -71,7 +71,7 @@ pub async fn find_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>
     .await
 }
 
-async fn create_user_with_role(
+pub async fn create_user_with_role(
     pool: &SqlitePool,
     username: &str,
     password_hash: &str,
@@ -108,6 +108,28 @@ pub async fn find_user_by_username(
     .bind(username)
     .fetch_optional(pool)
     .await
+}
+
+/// List all users.
+pub async fn list_users(pool: &SqlitePool) -> Result<Vec<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        r#"
+        SELECT id, username, password_hash, created_at, role
+        FROM users
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Delete a user by id. Returns true if a row was deleted.
+pub async fn delete_user(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM users WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 #[cfg(test)]

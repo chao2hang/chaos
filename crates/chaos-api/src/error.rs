@@ -55,6 +55,10 @@ impl ApiError {
         Self::coded(StatusCode::NOT_FOUND, code, locale)
     }
 
+    pub fn forbidden(code: &'static str, locale: Locale) -> Self {
+        Self::coded(StatusCode::FORBIDDEN, code, locale)
+    }
+
     /// Client-facing internal error (generic localized message). Details go to logs.
     pub fn internal(locale: Locale) -> Self {
         Self::coded(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", locale)

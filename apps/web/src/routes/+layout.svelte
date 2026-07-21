@@ -3,12 +3,14 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import ToastViewport from '$lib/components/ui/ToastViewport.svelte';
 	import { initLocale } from '$lib/i18n.svelte';
+	import { initTheme } from '$lib/theme.svelte';
 	import '../app.css';
 
 	let { children } = $props();
 
 	onMount(() => {
 		initLocale();
+		initTheme();
 	});
 </script>
 

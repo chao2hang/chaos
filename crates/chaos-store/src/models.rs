@@ -21,6 +21,13 @@ pub struct Subscription {
     pub url: String,
     pub updated_at: String,
     pub status: String,
+    /// Auto-refresh interval in hours (0 = disabled).
+    #[serde(default)]
+    pub refresh_interval_hours: i64,
+    /// Last successful refresh timestamp (RFC 3339).
+    pub last_refreshed_at: Option<String>,
+    /// Next scheduled refresh timestamp (RFC 3339).
+    pub next_refresh_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

@@ -188,6 +188,9 @@ impl Default for FlowNodeData {
 pub struct RuleMatcher {
     pub kind: RuleMatcherKind,
     pub pattern: String,
+    /// When true, the compiled expression is prefixed with `!` (invert match).
+    #[serde(default)]
+    pub invert: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -195,6 +198,28 @@ pub struct RuleMatcher {
 pub enum RuleMatcherKind {
     DomainSuffix,
     DestinationCidr,
+    /// domain(keyword: xxx)
+    DomainKeyword,
+    /// domain(full: xxx)
+    DomainFull,
+    /// domain(geosite:cn)
+    Geosite,
+    /// dip(geoip:cn)
+    Geoip,
+    /// sip(x.x.x.x/n)
+    SourceCidr,
+    /// sport(port) or sport(port1, port2)
+    SourcePort,
+    /// dport(port) or dport(port1, port2)
+    DestPort,
+    /// ipversion(4) or ipversion(6)
+    IpVersion,
+    /// pname(process_name)
+    ProcessName,
+    /// mac(xx:xx:xx:xx:xx:xx)
+    MacAddress,
+    /// l4proto(tcp) or l4proto(udp)
+    Protocol,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -655,6 +680,17 @@ fn validate_rule(node: &FlowNode, outputs: &[&FlowEdge], issues: &mut Vec<Valida
     let valid = match matcher.kind {
         RuleMatcherKind::DomainSuffix => valid_domain_suffix(pattern),
         RuleMatcherKind::DestinationCidr => valid_cidr(pattern),
+        RuleMatcherKind::DomainKeyword => !pattern.is_empty() && pattern.len() <= 253,
+        RuleMatcherKind::DomainFull => valid_domain_suffix(pattern),
+        RuleMatcherKind::Geosite => valid_geosite(pattern),
+        RuleMatcherKind::Geoip => valid_geoip(pattern),
+        RuleMatcherKind::SourceCidr => valid_cidr(pattern),
+        RuleMatcherKind::SourcePort => valid_ports(pattern),
+        RuleMatcherKind::DestPort => valid_ports(pattern),
+        RuleMatcherKind::IpVersion => matches!(pattern, "4" | "6"),
+        RuleMatcherKind::ProcessName => valid_process_name(pattern),
+        RuleMatcherKind::MacAddress => valid_mac(pattern),
+        RuleMatcherKind::Protocol => matches!(pattern.to_ascii_lowercase().as_str(), "tcp" | "udp"),
     };
     if !valid {
         graph(issues, "invalid_rule_pattern", Some(&node.id), None);
@@ -712,8 +748,13 @@ fn validate_unique_rules(document: &OrchestrationDocument, issues: &mut Vec<Vali
         }
         if let Some(matcher) = &node.data.matcher {
             let pattern = match matcher.kind {
-                RuleMatcherKind::DomainSuffix => normalize_domain(&matcher.pattern),
-                RuleMatcherKind::DestinationCidr => matcher.pattern.trim().to_ascii_lowercase(),
+                RuleMatcherKind::DomainSuffix | RuleMatcherKind::DomainFull => {
+                    normalize_domain(&matcher.pattern)
+                }
+                RuleMatcherKind::MacAddress | RuleMatcherKind::Protocol => {
+                    matcher.pattern.trim().to_ascii_lowercase()
+                }
+                _ => matcher.pattern.trim().to_ascii_lowercase(),
             };
             if !matchers.insert((matcher.kind, pattern)) {
                 graph(issues, "duplicate_rule_matcher", Some(&node.id), None);
@@ -779,20 +820,47 @@ fn validate_group_source_cycles(
 }
 
 fn compile_matcher(matcher: &RuleMatcher) -> String {
-    match matcher.kind {
+    let pattern = matcher.pattern.trim();
+    let expr = match matcher.kind {
         RuleMatcherKind::DomainSuffix => {
-            format!("domain(suffix: {})", normalize_domain(&matcher.pattern))
+            format!("domain(suffix: {})", normalize_domain(pattern))
         }
-        RuleMatcherKind::DestinationCidr => format!("dip({})", matcher.pattern.trim()),
+        RuleMatcherKind::DestinationCidr => format!("dip({})", pattern),
+        RuleMatcherKind::DomainKeyword => {
+            format!("domain(keyword: {})", pattern.to_ascii_lowercase())
+        }
+        RuleMatcherKind::DomainFull => {
+            format!("domain(full: {})", normalize_domain(pattern))
+        }
+        RuleMatcherKind::Geosite => format!("domain(geosite:{})", pattern),
+        RuleMatcherKind::Geoip => format!("dip(geoip:{})", pattern),
+        RuleMatcherKind::SourceCidr => format!("sip({})", pattern),
+        RuleMatcherKind::SourcePort => format!("sport({})", pattern),
+        RuleMatcherKind::DestPort => format!("dport({})", pattern),
+        RuleMatcherKind::IpVersion => format!("ipversion({})", pattern),
+        RuleMatcherKind::ProcessName => format!("pname({})", pattern),
+        RuleMatcherKind::MacAddress => format!("mac({})", pattern.to_ascii_lowercase()),
+        RuleMatcherKind::Protocol => format!("l4proto({})", pattern.to_ascii_lowercase()),
+    };
+    if matcher.invert {
+        format!("!{}", expr)
+    } else {
+        expr
     }
 }
 fn normalized_matcher(matcher: &RuleMatcher) -> RuleMatcher {
     RuleMatcher {
         kind: matcher.kind,
         pattern: match matcher.kind {
-            RuleMatcherKind::DomainSuffix => normalize_domain(&matcher.pattern),
-            RuleMatcherKind::DestinationCidr => matcher.pattern.trim().to_string(),
+            RuleMatcherKind::DomainSuffix | RuleMatcherKind::DomainFull => {
+                normalize_domain(&matcher.pattern)
+            }
+            RuleMatcherKind::MacAddress | RuleMatcherKind::Protocol => {
+                matcher.pattern.trim().to_ascii_lowercase()
+            }
+            _ => matcher.pattern.trim().to_string(),
         },
+        invert: matcher.invert,
     }
 }
 fn outbound(node: &FlowNode) -> String {
@@ -840,6 +908,65 @@ fn valid_cidr(value: &str) -> bool {
         Ok(std::net::IpAddr::V6(_)) => prefix <= 128,
         Err(_) => false,
     }
+}
+
+/// Validate a geosite identifier like `cn`, `geolocation-!cn`, `category-ads`.
+fn valid_geosite(value: &str) -> bool {
+    let v = value.trim();
+    !v.is_empty()
+        && v.len() <= 128
+        && v.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'!' || b == b'@'
+        })
+}
+
+/// Validate a geoip identifier like `cn`, `us`, `private`.
+fn valid_geoip(value: &str) -> bool {
+    let v = value.trim();
+    !v.is_empty()
+        && v.len() <= 64
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Validate port list: single port `443`, range `8000-9000`, or comma-separated `80, 443`.
+fn valid_ports(value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() {
+        return false;
+    }
+    v.split(',').all(|part| {
+        let part = part.trim();
+        if let Some((start, end)) = part.split_once('-') {
+            let (Ok(s), Ok(e)) = (start.trim().parse::<u16>(), end.trim().parse::<u16>()) else {
+                return false;
+            };
+            s <= e
+        } else {
+            part.parse::<u16>().is_ok()
+        }
+    })
+}
+
+/// Validate a process name (alphanumeric, dash, underscore, dot).
+fn valid_process_name(value: &str) -> bool {
+    let v = value.trim();
+    !v.is_empty()
+        && v.len() <= 256
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+/// Validate a MAC address like `aa:bb:cc:dd:ee:ff`.
+fn valid_mac(value: &str) -> bool {
+    let v = value.trim().to_ascii_lowercase();
+    let parts: Vec<&str> = v.split(':').collect();
+    if parts.len() != 6 {
+        return false;
+    }
+    parts.iter().all(|p| {
+        p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit())
+    })
 }
 fn start_node() -> FlowNode {
     FlowNode {
@@ -945,6 +1072,7 @@ mod tests {
                 matcher: Some(RuleMatcher {
                     kind,
                     pattern: pattern.into(),
+                    invert: false,
                 }),
                 priority,
                 ..FlowNodeData::default()
@@ -1254,7 +1382,8 @@ mod tests {
                     CompiledRoute {
                         matcher: RuleMatcher {
                             kind: RuleMatcherKind::DestinationCidr,
-                            pattern: "10.0.0.0/8".into()
+                            pattern: "10.0.0.0/8".into(),
+                            invert: false,
                         },
                         priority: 1,
                         condition: "dip(10.0.0.0/8)".into(),
@@ -1263,7 +1392,8 @@ mod tests {
                     CompiledRoute {
                         matcher: RuleMatcher {
                             kind: RuleMatcherKind::DomainSuffix,
-                            pattern: "example.com".into()
+                            pattern: "example.com".into(),
+                            invert: false,
                         },
                         priority: 2,
                         condition: "domain(suffix: example.com)".into(),

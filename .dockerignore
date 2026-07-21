@@ -1,0 +1,37 @@
+# Build artifacts
+target/
+dist/
+apps/web/build/
+apps/web/.svelte-kit/
+apps/web/node_modules/
+node_modules/
+
+# Data (mounted as volume)
+data/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Worktrees
+.worktrees/
+
+# Documentation (not needed in image)
+docs/
+.superpowers/
+.zcode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

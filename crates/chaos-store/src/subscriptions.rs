@@ -8,7 +8,8 @@ use crate::models::{now_rfc3339, Node, Subscription};
 pub async fn list_subscriptions(pool: &SqlitePool) -> Result<Vec<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         r#"
-        SELECT id, tag, url, updated_at, status
+        SELECT id, tag, url, updated_at, status,
+               refresh_interval_hours, last_refreshed_at, next_refresh_at
         FROM subscriptions
         ORDER BY updated_at DESC, id ASC
         "#,
@@ -23,7 +24,8 @@ pub async fn get_subscription(
 ) -> Result<Option<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         r#"
-        SELECT id, tag, url, updated_at, status
+        SELECT id, tag, url, updated_at, status,
+               refresh_interval_hours, last_refreshed_at, next_refresh_at
         FROM subscriptions
         WHERE id = ?1
         "#,
@@ -45,6 +47,9 @@ pub async fn insert_subscription(
         url: url.to_string(),
         updated_at: now_rfc3339(),
         status: status.to_string(),
+        refresh_interval_hours: 0,
+        last_refreshed_at: None,
+        next_refresh_at: None,
     };
 
     sqlx::query(
@@ -178,6 +183,94 @@ pub async fn delete_subscription(pool: &SqlitePool, id: &str) -> Result<bool, sq
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Update the auto-refresh schedule for a subscription.
+///
+/// `interval_hours = 0` disables auto-refresh.
+pub async fn set_subscription_refresh_schedule(
+    pool: &SqlitePool,
+    id: &str,
+    interval_hours: i64,
+) -> Result<Option<Subscription>, sqlx::Error> {
+    let next_refresh_at = if interval_hours > 0 {
+        let next = chrono::Utc::now() + chrono::Duration::hours(interval_hours);
+        Some(next.to_rfc3339())
+    } else {
+        None
+    };
+
+    let result = sqlx::query(
+        r#"
+        UPDATE subscriptions
+        SET refresh_interval_hours = ?1, next_refresh_at = ?2
+        WHERE id = ?3
+        "#,
+    )
+    .bind(interval_hours)
+    .bind(&next_refresh_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_subscription(pool, id).await
+}
+
+/// Mark a subscription as refreshed and schedule the next refresh.
+pub async fn mark_subscription_refreshed(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = now_rfc3339();
+    // Get the interval to compute next refresh
+    let sub = get_subscription(pool, id).await?;
+    let next_refresh_at = sub.and_then(|s| {
+        if s.refresh_interval_hours > 0 {
+            let next = chrono::Utc::now() + chrono::Duration::hours(s.refresh_interval_hours);
+            Some(next.to_rfc3339())
+        } else {
+            None
+        }
+    });
+
+    sqlx::query(
+        r#"
+        UPDATE subscriptions
+        SET last_refreshed_at = ?1, next_refresh_at = ?2, updated_at = ?1
+        WHERE id = ?3
+        "#,
+    )
+    .bind(&now)
+    .bind(&next_refresh_at)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// List subscriptions that are due for auto-refresh.
+pub async fn list_subscriptions_due_for_refresh(
+    pool: &SqlitePool,
+) -> Result<Vec<Subscription>, sqlx::Error> {
+    let now = now_rfc3339();
+    sqlx::query_as::<_, Subscription>(
+        r#"
+        SELECT id, tag, url, updated_at, status,
+               refresh_interval_hours, last_refreshed_at, next_refresh_at
+        FROM subscriptions
+        WHERE refresh_interval_hours > 0
+          AND next_refresh_at IS NOT NULL
+          AND next_refresh_at <= ?1
+        ORDER BY next_refresh_at ASC
+        "#,
+    )
+    .bind(&now)
+    .fetch_all(pool)
+    .await
 }
 
 #[cfg(test)]

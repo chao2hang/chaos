@@ -1,0 +1,35 @@
+# docker-compose.yml for chaos
+#
+# Usage:
+#   1. Fetch dae binary first: ./scripts/fetch-dae.sh
+#   2. Build and run: docker compose up -d
+#   3. Access dashboard: http://localhost:2030
+#
+# Note: --privileged is required for dae's eBPF data plane.
+# For tighter security, replace with specific capabilities:
+#   cap_add:
+#     - NET_ADMIN
+#     - BPF
+#     - SYS_ADMIN
+#   security_opt:
+#     - apparmor:unconfined
+
+services:
+  chaos:
+    build: .
+    container_name: chaos
+    privileged: true
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - /sys:/sys
+      - chaos-data:/var/lib/chaos
+    environment:
+      - CHAOS_AUTOSTART_DAE=1
+      - CHAOS_BIND=0.0.0.0:2030
+      # Uncomment to enable GeoIP lookups (sends node addresses to third-party):
+      # - CHAOS_GEOIP_ENABLED=1
+
+volumes:
+  chaos-data:

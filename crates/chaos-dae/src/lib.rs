@@ -131,6 +131,17 @@ pub struct DaeManager {
     pub work_dir: PathBuf,
 }
 
+/// Result of a hot-reload attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReloadOutcome {
+    /// Config reloaded without interrupting connections.
+    Hot,
+    /// dae was not running; cold-started instead.
+    ColdStart,
+    /// Hot reload failed; fell back to kill+restart.
+    ColdFallback,
+}
+
 impl DaeManager {
     pub fn new(bin: impl Into<PathBuf>, work_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -294,6 +305,75 @@ impl DaeManager {
             let _ = tokio::fs::remove_file(self.pid_path()).await;
         }
         Ok(())
+    }
+
+    /// Attempt a zero-downtime config reload via `dae reload <pid>`.
+    ///
+    /// If dae is running, sends SIGUSR1 through the dae CLI reload protocol.
+    /// If dae is not running, falls back to a cold start.
+    /// Returns the outcome so callers can report the method used.
+    pub async fn hot_reload(&self) -> Result<ReloadOutcome> {
+        if !self.bin.is_file() {
+            bail!("dae binary missing or not a file: {}", self.bin.display());
+        }
+        let config = self.config_path();
+        if !config.is_file() {
+            bail!("config file missing: {}", config.display());
+        }
+
+        // If dae is not running, cold-start it.
+        if !self.is_running() {
+            tokio::fs::create_dir_all(&self.work_dir)
+                .await
+                .with_context(|| format!("create work_dir {}", self.work_dir.display()))?;
+            secure_work_dir(&self.work_dir)?;
+            let _ = tokio::fs::remove_file(self.pid_path()).await;
+            self.spawn_run().await?;
+            return Ok(ReloadOutcome::ColdStart);
+        }
+
+        let pid = match self.read_pid() {
+            Some(pid) => pid,
+            None => {
+                // Stale state: no pid but is_running() was true (shouldn't happen).
+                self.reload().await?;
+                return Ok(ReloadOutcome::ColdFallback);
+            }
+        };
+
+        let bin = std::fs::canonicalize(&self.bin)
+            .with_context(|| format!("canonicalize dae bin {}", self.bin.display()))?;
+
+        // Execute `dae reload <pid>` which handles the SIGUSR1 + progress file protocol.
+        let output = tokio::process::Command::new(&bin)
+            .arg("reload")
+            .arg(pid.to_string())
+            .output()
+            .await
+            .with_context(|| format!("run `{} reload {}`", bin.display(), pid))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        if output.status.success() {
+            tracing::info!(pid, "dae hot reload succeeded");
+            return Ok(ReloadOutcome::Hot);
+        }
+
+        // Reload failed — check if it's a "busy" condition or a hard error.
+        let detail = if stderr.is_empty() { &stdout } else { &stderr };
+        tracing::warn!(
+            pid,
+            status = %output.status,
+            detail,
+            "dae hot reload failed; falling back to cold restart"
+        );
+
+        // Fallback: kill + restart.
+        self.reload().await.with_context(|| {
+            format!("cold restart after hot reload failure: {detail}")
+        })?;
+        Ok(ReloadOutcome::ColdFallback)
     }
 
     /// Ensure dae is running with the current config.

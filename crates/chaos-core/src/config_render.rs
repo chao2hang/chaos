@@ -4,6 +4,17 @@ use std::collections::HashSet;
 
 pub const MAX_DAE_IDENTIFIER_LENGTH: usize = 128;
 
+/// LAN gateway mode configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LanConfig {
+    /// Enable LAN gateway mode (allow LAN devices to use this proxy).
+    pub enabled: bool,
+    /// LAN interface name (e.g., "eth0", "br-lan").
+    pub lan_interface: Option<String>,
+    /// Disable SNAT (for advanced routing setups).
+    pub disable_snat: bool,
+}
+
 /// Node fields needed to render a dae `node { ... }` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeForConfig {
@@ -93,21 +104,41 @@ impl Default for ConfigPlane {
 
 /// Render a full dae config from nodes + config plane.
 pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String {
+    render_dae_config_with_lan(nodes, plane, None)
+}
+
+/// Render a full dae config with optional LAN gateway mode.
+pub fn render_dae_config_with_lan(
+    nodes: &[NodeForConfig],
+    plane: &ConfigPlane,
+    lan_config: Option<&LanConfig>,
+) -> String {
     let mut out = String::with_capacity(1024 + nodes.len() * 64);
     let mut used_keys: HashSet<String> = HashSet::new();
 
-    out.push_str(
-        "global {\n\
-         \x20\x20log_level: info\n\
-         \x20\x20tproxy_port: 12345\n\
-         \x20\x20allow_insecure: false\n\
-         \x20\x20wan_interface: auto\n\
-         \x20\x20auto_config_kernel_parameter: true\n\
-         }\n\
-         \n\
-         dns {\n\
-         \x20\x20upstream {\n",
-    );
+    // Global section
+    out.push_str("global {\n");
+    out.push_str("  log_level: info\n");
+    out.push_str("  tproxy_port: 12345\n");
+    out.push_str("  allow_insecure: false\n");
+    out.push_str("  wan_interface: auto\n");
+    out.push_str("  auto_config_kernel_parameter: true\n");
+
+    // LAN gateway mode configuration
+    if let Some(lan) = lan_config {
+        if lan.enabled {
+            if let Some(ref iface) = lan.lan_interface {
+                out.push_str(&format!("  lan_interface: {}\n", iface));
+            }
+            if lan.disable_snat {
+                out.push_str("  disable_snat: true\n");
+            }
+        }
+    }
+    out.push_str("}\n\n");
+
+    // DNS section
+    out.push_str("dns {\n  upstream {\n");
 
     for u in &plane.dns_upstreams {
         let Some(name) = normalized_dae_identifier(&u.name) else {

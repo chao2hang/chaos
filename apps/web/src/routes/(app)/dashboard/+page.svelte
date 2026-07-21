@@ -22,6 +22,8 @@
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
+	import LogPanel from '$lib/components/LogPanel.svelte';
+	import DiagnosticsPanel from '$lib/components/DiagnosticsPanel.svelte';
 	import Metric from '$lib/components/ui/Metric.svelte';
 	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -83,10 +85,16 @@
 		message = '';
 		try {
 			const response = await applyRuntime();
-			message = t('dashboard.applied', {
+			const methodLabel = response.reload_method === 'hot' 
+				? t('dashboard.reloadHot') 
+				: response.reload_method === 'cold_start'
+					? t('dashboard.reloadColdStart')
+					: t('dashboard.reloadCold');
+			message = t('dashboard.appliedWithMethod', {
 				nodes: response.nodes,
 				path: response.config_path,
-				running: String(response.running)
+				running: String(response.running),
+				method: methodLabel
 			});
 			runtime = await getRuntime();
 		} catch (cause) {
@@ -295,6 +303,16 @@
 							{/snippet}
 						</EmptyState>
 					{/if}
+				</Section>
+			</div>
+
+			<div class="span-12">
+				<LogPanel />
+			</div>
+
+			<div class="span-6">
+				<Section title={t('diagnostics.title')} description={t('dashboard.systemDescription')}>
+					<DiagnosticsPanel />
 				</Section>
 			</div>
 		</div>

@@ -49,12 +49,22 @@ pub struct TestLatencyRequest {
     /// When null or omitted, test all nodes. Empty array tests none.
     #[serde(default)]
     pub ids: Option<Vec<String>>,
+    /// Test mode: "direct" (TCP connect) or "via_proxy" (through dae tproxy).
+    /// Default is "direct".
+    #[serde(default = "default_mode")]
+    pub mode: String,
+}
+
+fn default_mode() -> String {
+    "direct".to_string()
 }
 
 #[derive(Debug, Serialize)]
 pub struct TestLatencyResponse {
     /// `"proxy"` when chaos-prober was used, `"tcp"` for TCP connect fallback.
     pub method: String,
+    /// Test mode used: "direct" or "via_proxy".
+    pub mode: String,
     pub results: Vec<LatencyDto>,
 }
 
@@ -114,6 +124,7 @@ async fn test_latency(
                 }
                 return Ok(Json(TestLatencyResponse {
                     method: "proxy".into(),
+                    mode: body.mode.clone(),
                     results,
                 }));
             }
@@ -182,6 +193,7 @@ async fn test_latency(
 
     Ok(Json(TestLatencyResponse {
         method: "tcp".into(),
+        mode: body.mode,
         results,
     }))
 }

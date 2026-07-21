@@ -6,6 +6,7 @@
 		importSubscription,
 		refreshSubscription,
 		deleteSubscription,
+		setSubscriptionRefresh,
 		ApiClientError,
 		type SubscriptionDto
 	} from '$lib/api';
@@ -88,6 +89,15 @@
 			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed');
 		} finally {
 			refreshingId = null;
+		}
+	}
+
+	async function onSetRefresh(id: string, hours: number) {
+		try {
+			await setSubscriptionRefresh(id, hours);
+			await load();
+		} catch (cause) {
+			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed');
 		}
 	}
 
@@ -203,6 +213,7 @@
 							<th>{t('subscriptions.col.status')}</th>
 							<th>{t('subscriptions.col.nodes')}</th>
 							<th>{t('subscriptions.col.updated')}</th>
+							<th>{t('subscriptions.col.autoRefresh')}</th>
 							<th class="actions-col">{t('common.actions')}</th>
 						</tr>
 					</thead>
@@ -223,6 +234,19 @@
 								</td>
 								<td data-label={t('subscriptions.col.nodes')} class="node-count">{subscription.node_count}</td>
 								<td data-label={t('subscriptions.col.updated')} class="date">{formatDate(subscription.updated_at)}</td>
+								<td data-label={t('subscriptions.col.autoRefresh')}>
+									<select
+										class="refresh-select"
+										value={subscription.refresh_interval_hours}
+										onchange={(e) => onSetRefresh(subscription.id, Number(e.currentTarget.value))}
+										title={t('subscriptions.autoRefreshTitle')}
+									>
+										<option value={0}>{t('subscriptions.refreshOff')}</option>
+										<option value={6}>6h</option>
+										<option value={12}>12h</option>
+										<option value={24}>24h</option>
+									</select>
+								</td>
 								<td data-label={t('common.actions')}>
 									<div class="row-actions">
 										<Button
@@ -306,6 +330,17 @@
 		color: var(--ink-muted);
 		font-size: 0.74rem;
 		white-space: nowrap;
+	}
+
+	.refresh-select {
+		width: auto;
+		min-height: 1.75rem;
+		padding: 0.2rem 0.4rem;
+		font-size: 0.72rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--ink-muted);
 	}
 
 	@media (max-width: 720px) {

@@ -12,8 +12,11 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use chaos_store::{count_users, create_first_admin_user, find_user_by_id, find_user_by_username};
 
@@ -26,6 +29,57 @@ const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 256;
 const MAX_USERNAME_LEN: usize = 128;
 const MIN_JWT_SECRET_BYTES: usize = 32;
+
+// Rate limiting constants
+const MAX_LOGIN_ATTEMPTS: u32 = 5;
+const LOCKOUT_DURATION_SECS: u64 = 900; // 15 minutes
+
+/// Simple in-memory rate limiter for login attempts.
+struct LoginRateLimiter {
+    attempts: HashMap<String, (u32, Instant)>,
+}
+
+impl LoginRateLimiter {
+    fn new() -> Self {
+        Self {
+            attempts: HashMap::new(),
+        }
+    }
+
+    /// Check if an IP is rate limited. Returns (is_limited, remaining_attempts).
+    fn check(&mut self, key: &str) -> (bool, u32) {
+        let now = Instant::now();
+        if let Some((count, last_attempt)) = self.attempts.get_mut(key) {
+            // Reset if lockout period has passed
+            if now.duration_since(*last_attempt).as_secs() > LOCKOUT_DURATION_SECS {
+                *count = 0;
+                *last_attempt = now;
+                return (false, MAX_LOGIN_ATTEMPTS);
+            }
+            if *count >= MAX_LOGIN_ATTEMPTS {
+                return (true, 0);
+            }
+            (false, MAX_LOGIN_ATTEMPTS - *count)
+        } else {
+            (false, MAX_LOGIN_ATTEMPTS)
+        }
+    }
+
+    /// Record a failed login attempt.
+    fn record_failure(&mut self, key: &str) {
+        let now = Instant::now();
+        let entry = self.attempts.entry(key.to_string()).or_insert((0, now));
+        entry.0 += 1;
+        entry.1 = now;
+    }
+
+    /// Clear attempts on successful login.
+    fn clear(&mut self, key: &str) {
+        self.attempts.remove(key);
+    }
+}
+
+static RATE_LIMITER: LazyLock<Mutex<LoginRateLimiter>> = LazyLock::new(|| Mutex::new(LoginRateLimiter::new()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -43,7 +97,6 @@ fn default_role() -> String {
 
 /// Authenticated user extracted from `Authorization: Bearer <jwt>`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // role reserved for admin-gated routes later
 pub struct AuthUser {
     pub user_id: String,
     pub username: String,
@@ -51,9 +104,33 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
-    #[allow(dead_code)] // used when admin-gated routes land
     pub fn is_admin(&self) -> bool {
         self.role == "admin"
+    }
+}
+
+/// Admin-only extractor. Rejects non-admin users with 403.
+#[derive(Debug, Clone)]
+pub struct AdminUser(pub AuthUser);
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if !user.is_admin() {
+            let locale = Locale::from_accept_language(
+                parts
+                    .headers
+                    .get(axum::http::header::ACCEPT_LANGUAGE)
+                    .and_then(|v| v.to_str().ok()),
+            );
+            return Err(ApiError::forbidden("admin_required", locale));
+        }
+        Ok(AdminUser(user))
     }
 }
 
@@ -140,7 +217,7 @@ pub fn hash_password(password: &str) -> Result<String, ApiError> {
     hash_password_locale(password, Locale::En)
 }
 
-fn hash_password_locale(password: &str, locale: Locale) -> Result<String, ApiError> {
+pub fn hash_password_locale(password: &str, locale: Locale) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2
@@ -250,13 +327,37 @@ async fn login(
 ) -> Result<Json<TokenResponse>, ApiError> {
     validate_credentials(&body, locale)?;
 
-    let user = find_user_by_username(&state.pool, body.username.trim())
+    let username = body.username.trim();
+
+    // Check rate limiting
+    {
+        let mut limiter = RATE_LIMITER.lock().unwrap();
+        let (is_limited, _remaining) = limiter.check(username);
+        if is_limited {
+            return Err(ApiError::coded(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts",
+                locale,
+            ));
+        }
+    }
+
+    let user = find_user_by_username(&state.pool, username)
         .await?
-        .ok_or_else(|| ApiError::unauthorized("invalid_credentials", locale))?;
+        .ok_or_else(|| {
+            // Record failed attempt
+            RATE_LIMITER.lock().unwrap().record_failure(username);
+            ApiError::unauthorized("invalid_credentials", locale)
+        })?;
 
     if !verify_password_locale(&body.password, &user.password_hash, locale)? {
+        // Record failed attempt
+        RATE_LIMITER.lock().unwrap().record_failure(username);
         return Err(ApiError::unauthorized("invalid_credentials", locale));
     }
+
+    // Clear rate limit on successful login
+    RATE_LIMITER.lock().unwrap().clear(username);
 
     let token = issue_token_with_role(
         &user.id,

@@ -32,3 +32,4 @@ logs
 .zcode/
 .worktrees/
 dist/
+.cargo-target/

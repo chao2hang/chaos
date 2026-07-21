@@ -1,6 +1,10 @@
-//! Runtime: dae status, apply (render+reload), stop.
+//! Runtime: dae status, apply (render+reload), stop, logs.
 
-use axum::extract::State;
+use std::convert::Infallible;
+use std::io::SeekFrom;
+
+use axum::extract::{Query, State};
+use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chaos_core::config_render::{
@@ -8,9 +12,11 @@ use chaos_core::config_render::{
     GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
 };
 use chaos_core::orchestration::{migrate_orchestration_document, OrchestrationDocument};
-use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager};
+use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager, ReloadOutcome};
 use chaos_i18n::Locale;
-use serde::Serialize;
+use futures_util::stream::Stream;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
@@ -48,6 +54,9 @@ pub struct ApplyResponse {
     pub nodes: usize,
     pub needs_republish: bool,
     pub data_plane: &'static str,
+    /// How the config was applied: "hot" (zero-downtime reload), "cold" (restart),
+    /// or "cold_start" (dae was not running).
+    pub reload_method: &'static str,
 }
 
 fn dae_work_dir() -> std::path::PathBuf {
@@ -260,19 +269,28 @@ pub(crate) async fn apply_current_config_locked(
         }
         return Err(map_dae_reload_error(locale, &error.to_string()));
     }
-    if let Err(error) = mgr.reload().await {
-        // A failed cold restart must not leave the previous daemon/config dead.
-        if let Some(previous) = previous_config {
-            if let Err(restore_error) = mgr.write_config(&previous).await {
-                tracing::error!(error = %restore_error, "failed to restore previous dae config");
-            } else if let Err(restore_error) = mgr.reload().await {
-                tracing::error!(error = %restore_error, "failed to restart dae with restored config");
+    // Prefer zero-downtime hot reload; fall back to cold restart on failure.
+    let outcome = match mgr.hot_reload().await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // A failed reload must not leave the previous daemon/config dead.
+            if let Some(previous) = previous_config {
+                if let Err(restore_error) = mgr.write_config(&previous).await {
+                    tracing::error!(error = %restore_error, "failed to restore previous dae config");
+                } else if let Err(restore_error) = mgr.reload().await {
+                    tracing::error!(error = %restore_error, "failed to restart dae with restored config");
+                }
+            } else {
+                let _ = tokio::fs::remove_file(mgr.config_path()).await;
             }
-        } else {
-            let _ = tokio::fs::remove_file(mgr.config_path()).await;
+            return Err(map_dae_reload_error(locale, &error.to_string()));
         }
-        return Err(map_dae_reload_error(locale, &error.to_string()));
-    }
+    };
+    let reload_method = match outcome {
+        ReloadOutcome::Hot => "hot",
+        ReloadOutcome::ColdStart => "cold_start",
+        ReloadOutcome::ColdFallback => "cold",
+    };
     Ok(ApplyResponse {
         ok: true,
         running: mgr.is_running(),
@@ -280,6 +298,7 @@ pub(crate) async fn apply_current_config_locked(
         nodes: for_config.len(),
         needs_republish: false,
         data_plane: chaos_dae::platform_backend().status().kind,
+        reload_method,
     })
 }
 
@@ -640,10 +659,321 @@ async fn recover_legacy_v2_plan(
     Ok(plan)
 }
 
+/// Hot-reload the running dae process without re-rendering config.
+///
+/// Useful when the config file was already written (e.g. by a profile switch)
+/// and only a reload signal is needed.
+async fn reload_runtime(
+    _user: AuthUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<ApplyResponse>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    let mgr = manager_or_missing(locale)?;
+    let config_path = mgr.config_path();
+    if !config_path.is_file() {
+        return Err(ApiError::bad_request("no_config_to_reload", locale));
+    }
+    let outcome = mgr
+        .hot_reload()
+        .await
+        .map_err(|e| map_dae_reload_error(locale, &e.to_string()))?;
+    let reload_method = match outcome {
+        ReloadOutcome::Hot => "hot",
+        ReloadOutcome::ColdStart => "cold_start",
+        ReloadOutcome::ColdFallback => "cold",
+    };
+    Ok(Json(ApplyResponse {
+        ok: true,
+        running: mgr.is_running(),
+        config_path: config_path.display().to_string(),
+        nodes: 0,
+        needs_republish: false,
+        data_plane: chaos_dae::platform_backend().status().kind,
+        reload_method,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    /// Number of trailing lines to return (default 100, max 5000).
+    #[serde(default = "default_log_lines")]
+    pub lines: usize,
+}
+
+fn default_log_lines() -> usize {
+    100
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogsResponse {
+    pub path: String,
+    pub exists: bool,
+    pub lines: Vec<String>,
+}
+
+/// Return the last N lines of dae.log (redacted).
+async fn get_logs(
+    _user: AuthUser,
+    Query(params): Query<LogsQuery>,
+) -> Result<Json<LogsResponse>, ApiError> {
+    let work_dir = dae_work_dir();
+    let log_path = work_dir.join("dae.log");
+    if !log_path.is_file() {
+        return Ok(Json(LogsResponse {
+            path: log_path.display().to_string(),
+            exists: false,
+            lines: vec![],
+        }));
+    }
+    let lines = params.lines.clamp(1, 5000);
+    let content = tokio::fs::read_to_string(&log_path)
+        .await
+        .unwrap_or_default();
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(lines);
+    let tail: Vec<String> = all_lines[start..]
+        .iter()
+        .map(|l| redact_runtime_detail(l))
+        .collect();
+    Ok(Json(LogsResponse {
+        path: log_path.display().to_string(),
+        exists: true,
+        lines: tail,
+    }))
+}
+
+/// SSE stream that tails dae.log in real time.
+async fn stream_logs(
+    _user: AuthUser,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let work_dir = dae_work_dir();
+    let log_path = work_dir.join("dae.log");
+
+    let stream = async_stream::stream! {
+        // Open the file (or wait for it to appear).
+        let file = loop {
+            match tokio::fs::File::open(&log_path).await {
+                Ok(f) => break f,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        };
+        let mut reader = BufReader::new(file);
+        // Seek to end so we only stream new lines.
+        let _ = reader.seek(SeekFrom::End(0)).await;
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            match reader.read_line(&mut line_buf).await {
+                Ok(0) => {
+                    // EOF — wait for new data.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Ok(_) => {
+                    let redacted = redact_runtime_detail(line_buf.trim_end());
+                    yield Ok(Event::default().data(redacted));
+                }
+                Err(_) => break,
+            }
+        }
+    };
+
+    Sse::new(stream)
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct DiagnosticsResponse {
+    pub kernel_version: String,
+    pub kernel_ok: bool,
+    pub ebpf_supported: bool,
+    pub cgroup2_mounted: bool,
+    pub bpf_fs_mounted: bool,
+    pub ip_forward: bool,
+    pub interfaces: Vec<String>,
+    pub dae_binary_version: Option<String>,
+    pub permissions: DiagnosticsPermissions,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiagnosticsPermissions {
+    pub root: bool,
+    pub cap_net_admin: bool,
+    pub cap_bpf: bool,
+}
+
+/// Check system environment for dae requirements.
+async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
+    let kernel_version = read_kernel_version();
+    let kernel_ok = check_kernel_version(&kernel_version);
+    let ebpf_supported = kernel_ok; // eBPF requires kernel >= 5.17
+    let cgroup2_mounted = std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists();
+    let bpf_fs_mounted = std::path::Path::new("/sys/fs/bpf").is_dir();
+    let ip_forward = read_ip_forward();
+    let interfaces = list_interfaces();
+    let dae_binary_version = read_dae_version();
+    let permissions = check_permissions();
+
+    Json(DiagnosticsResponse {
+        kernel_version,
+        kernel_ok,
+        ebpf_supported,
+        cgroup2_mounted,
+        bpf_fs_mounted,
+        ip_forward,
+        interfaces,
+        dae_binary_version,
+        permissions,
+    })
+}
+
+fn read_kernel_version() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// dae requires kernel >= 5.17 for eBPF features.
+fn check_kernel_version(version: &str) -> bool {
+    let parts: Vec<u32> = version
+        .split('.')
+        .take(2)
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    match parts.as_slice() {
+        [major, minor] => *major > 5 || (*major == 5 && *minor >= 17),
+        [major] => *major > 5,
+        _ => false,
+    }
+}
+
+fn read_ip_forward() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn list_interfaces() -> Vec<String> {
+    std::fs::read_dir("/sys/class/net")
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| name != "lo")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_dae_version() -> Option<String> {
+    let bin = resolve_dae_bin()?;
+    let output = std::process::Command::new(&bin)
+        .arg("version")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // dae version output is like "dae version v0.2.2" or just "v0.2.2"
+        stdout
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn check_permissions() -> DiagnosticsPermissions {
+    let root = unsafe { libc::geteuid() == 0 };
+    // Check capabilities by reading /proc/self/status
+    let (cap_net_admin, cap_bpf) = read_capabilities();
+    DiagnosticsPermissions {
+        root,
+        cap_net_admin: root || cap_net_admin,
+        cap_bpf: root || cap_bpf,
+    }
+}
+
+fn read_capabilities() -> (bool, bool) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let mut cap_net_admin = false;
+    let mut cap_bpf = false;
+    for line in status.lines() {
+        if let Some(caps) = line.strip_prefix("CapEff:") {
+            if let Ok(cap_hex) = u64::from_str_radix(caps.trim(), 16) {
+                // CAP_NET_ADMIN = 12, CAP_BPF = 39
+                cap_net_admin = (cap_hex >> 12) & 1 == 1;
+                cap_bpf = (cap_hex >> 39) & 1 == 1;
+            }
+            break;
+        }
+    }
+    (cap_net_admin, cap_bpf)
+}
+
+// ---------------------------------------------------------------------------
+// Connections (parsed from dae.log)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionsResponse {
+    pub connections: Vec<chaos_core::traffic::ActiveConnection>,
+}
+
+/// Return active connections parsed from recent dae.log entries.
+async fn get_connections(_user: AuthUser) -> Json<ConnectionsResponse> {
+    let work_dir = dae_work_dir();
+    let log_path = work_dir.join("dae.log");
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+
+    // Parse recent log lines for connection events
+    let mut connections: Vec<chaos_core::traffic::ActiveConnection> = Vec::new();
+    let lines: Vec<&str> = content.lines().rev().take(500).collect();
+
+    for line in lines.iter().rev() {
+        if let Some(entry) = chaos_core::traffic::parse_dae_log_line(line) {
+            if let Some(conn) = entry.connection {
+                if conn.action == chaos_core::traffic::ConnectionAction::Open {
+                    connections.push(chaos_core::traffic::ActiveConnection {
+                        id: format!("{}-{}", conn.source, conn.destination),
+                        source: conn.source,
+                        destination: conn.destination,
+                        outbound: conn.outbound,
+                        protocol: conn.protocol,
+                        started_at: entry.timestamp,
+                        duration_secs: 0,
+                        bytes_up: 0,
+                        bytes_down: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    // Limit to most recent 100
+    connections.truncate(100);
+    Json(ConnectionsResponse { connections })
+}
+
 pub fn runtime_router() -> Router<AppState> {
     Router::new()
         .route("/runtime", get(get_runtime))
         .route("/runtime/apply", post(apply_runtime))
+        .route("/runtime/reload", post(reload_runtime))
+        .route("/runtime/logs", get(get_logs))
+        .route("/runtime/logs/stream", get(stream_logs))
+        .route("/runtime/diagnostics", get(get_diagnostics))
+        .route("/runtime/connections", get(get_connections))
         .route("/runtime/geoip/update", post(update_geoip_data))
         .route("/runtime/stop", post(stop_runtime))
 }

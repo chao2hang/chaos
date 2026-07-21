@@ -4,6 +4,7 @@ members = [
   "crates/chaos-api",
   "crates/chaos-core",
   "crates/chaos-dae",
+  "crates/chaos-engine",
   "crates/chaos-i18n",
   "crates/chaos-store",
 ]
@@ -16,9 +17,12 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1"
 argon2 = "0.5"
+async-stream = "0.3"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 jsonwebtoken = "9"
+libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,6 +1,7 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
 pub mod config_plane;
+pub mod config_profiles;
 pub mod latency;
 mod models;
 pub mod nodes;
@@ -19,6 +20,10 @@ pub use config_plane::{
     META_ORCHESTRATION_PENDING, META_ORCHESTRATION_PLAN, META_ORCHESTRATION_V2_INITIALIZED,
     META_ROUTING_FALLBACK,
 };
+pub use config_profiles::{
+    activate_profile, create_profile, delete_profile, get_active_profile, get_profile,
+    list_profiles, update_profile, ConfigProfile,
+};
 pub use latency::{list_latency_results, list_latency_results_for_ids, upsert_latency_result};
 pub use models::{
     now_rfc3339, parse_rfc3339, DnsRule, DnsUpstream, Group, GroupMember, LatencyResult, Node,
@@ -30,11 +35,12 @@ pub use nodes::{
 };
 pub use subscriptions::{
     delete_subscription, get_subscription, insert_subscription, list_subscriptions,
-    replace_subscription_nodes, update_subscription_meta, NewSubscriptionNode,
+    list_subscriptions_due_for_refresh, mark_subscription_refreshed, replace_subscription_nodes,
+    set_subscription_refresh_schedule, update_subscription_meta, NewSubscriptionNode,
 };
 pub use users::{
-    count_users, create_admin_user, create_first_admin_user, create_user, find_user_by_id,
-    find_user_by_username,
+    count_users, create_admin_user, create_first_admin_user, create_user, create_user_with_role,
+    delete_user, find_user_by_id, find_user_by_username, list_users,
 };
 
 use anyhow::{Context, Result};

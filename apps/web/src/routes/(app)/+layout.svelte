@@ -11,6 +11,8 @@
 		RadioTower,
 		Route,
 		Server,
+		Settings,
+		Unplug,
 		Workflow,
 		X
 	} from '@lucide/svelte';
@@ -20,6 +22,7 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
+	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -61,7 +64,8 @@
 			label: t('nav.section.overview'),
 			links: [
 				{ href: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
-				{ href: '/orchestrate', label: t('nav.orchestrate'), icon: Workflow }
+				{ href: '/orchestrate', label: t('nav.orchestrate'), icon: Workflow },
+				{ href: '/connections', label: t('nav.connections'), icon: Unplug }
 			]
 		},
 		{
@@ -76,7 +80,8 @@
 			links: [
 				{ href: '/groups', label: t('nav.groups'), icon: Boxes },
 				{ href: '/routing', label: t('nav.routing'), icon: Route },
-				{ href: '/dns', label: t('nav.dns'), icon: Network }
+				{ href: '/dns', label: t('nav.dns'), icon: Network },
+				{ href: '/settings', label: t('nav.settings'), icon: Settings }
 			]
 		}
 	]);
@@ -118,7 +123,10 @@
 			</nav>
 
 			<footer class="side-footer">
-				<LocaleSwitcher />
+				<div class="footer-switchers">
+					<LocaleSwitcher />
+					<ThemeSwitcher />
+				</div>
 				<Button variant="ghost" icon={LogOut} full onclick={logout}>{t('nav.logout')}</Button>
 			</footer>
 		</aside>
@@ -248,6 +256,13 @@
 		gap: var(--space-2);
 		padding-top: var(--space-3);
 		border-top: 1px solid var(--line);
+	}
+
+	.footer-switchers {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
 	}
 
 	.side-footer :global(.button) {

@@ -198,6 +198,9 @@ export type SubscriptionDto = {
 	status: string;
 	node_count: number;
 	needs_republish: boolean;
+	refresh_interval_hours: number;
+	last_refreshed_at: string | null;
+	next_refresh_at: string | null;
 };
 
 export type LatencyDto = {
@@ -233,6 +236,30 @@ export type ApplyResponse = {
 	nodes: number;
 	needs_republish: boolean;
 	data_plane: string;
+	/** How the config was applied: "hot" (zero-downtime), "cold" (restart), "cold_start" (was not running). */
+	reload_method: 'hot' | 'cold' | 'cold_start';
+};
+
+export type LogsResponse = {
+	path: string;
+	exists: boolean;
+	lines: string[];
+};
+
+export type DiagnosticsResponse = {
+	kernel_version: string;
+	kernel_ok: boolean;
+	ebpf_supported: boolean;
+	cgroup2_mounted: boolean;
+	bpf_fs_mounted: boolean;
+	ip_forward: boolean;
+	interfaces: string[];
+	dae_binary_version: string | null;
+	permissions: {
+		root: boolean;
+		cap_net_admin: boolean;
+		cap_bpf: boolean;
+	};
 };
 
 export type OrchestrationNodeKind = 'start' | 'end' | 'rule' | 'node_group' | 'builtin';
@@ -243,8 +270,23 @@ export type OrchestrationSource = {
 	weight: number;
 };
 
+export type OrchestrationRuleMatcherKind =
+	| 'domain_suffix'
+	| 'destination_cidr'
+	| 'domain_keyword'
+	| 'domain_full'
+	| 'geosite'
+	| 'geoip'
+	| 'source_cidr'
+	| 'source_port'
+	| 'dest_port'
+	| 'ip_version'
+	| 'process_name'
+	| 'mac_address'
+	| 'protocol';
+
 export type OrchestrationRuleMatcher = {
-	kind: 'domain_suffix' | 'destination_cidr';
+	kind: OrchestrationRuleMatcherKind;
 	pattern: string;
 };
 
@@ -421,6 +463,37 @@ export function deleteSubscription(id: string) {
 	);
 }
 
+export function setSubscriptionRefresh(id: string, intervalHours: number) {
+	return api<{ subscription: SubscriptionDto }>(
+		`/api/v1/subscriptions/${encodeURIComponent(id)}/refresh-schedule`,
+		{ method: 'PUT', body: JSON.stringify({ refresh_interval_hours: intervalHours }) }
+	);
+}
+
+export type UserDto = {
+	id: string;
+	username: string;
+	role: string;
+	created_at: string;
+};
+
+export function listUsers() {
+	return api<{ users: UserDto[] }>('/api/v1/users');
+}
+
+export function createUser(username: string, password: string, role: string) {
+	return api<{ user: UserDto }>('/api/v1/users', {
+		method: 'POST',
+		body: JSON.stringify({ username, password, role })
+	});
+}
+
+export function deleteUser(id: string) {
+	return api<{ deleted: boolean }>(`/api/v1/users/${encodeURIComponent(id)}`, {
+		method: 'DELETE'
+	});
+}
+
 export function listLatency() {
 	return api<{ results: LatencyDto[] }>('/api/v1/latency');
 }
@@ -471,6 +544,18 @@ export function publishOrchestration(document: OrchestrationDocument) {
 
 export function stopRuntime() {
 	return api<RuntimeStatus>('/api/v1/runtime/stop', { method: 'POST' });
+}
+
+export function reloadRuntime() {
+	return api<ApplyResponse>('/api/v1/runtime/reload', { method: 'POST' });
+}
+
+export function getLogs(lines = 100) {
+	return api<LogsResponse>(`/api/v1/runtime/logs?lines=${lines}`);
+}
+
+export function getDiagnostics() {
+	return api<DiagnosticsResponse>('/api/v1/runtime/diagnostics');
 }
 
 export type GroupMemberDto = {

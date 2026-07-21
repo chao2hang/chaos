@@ -857,6 +857,7 @@ mod tests {
                 matcher: Some(RuleMatcher {
                     kind: RuleMatcherKind::DomainSuffix,
                     pattern: target_pattern.into(),
+                    invert: false,
                 }),
                 priority: Some(1),
                 ..FlowNodeData::default()

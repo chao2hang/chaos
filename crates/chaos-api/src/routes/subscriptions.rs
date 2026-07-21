@@ -115,9 +115,51 @@ pub fn subscriptions_router() -> Router<AppState> {
         )
         .route("/subscriptions/{id}/refresh", post(refresh_subscription))
         .route(
+            "/subscriptions/{id}/refresh-schedule",
+            axum::routing::put(set_refresh_schedule),
+        )
+        .route(
             "/subscriptions/{id}",
             axum::routing::delete(delete_subscription_handler),
         )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetRefreshScheduleRequest {
+    pub refresh_interval_hours: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetRefreshScheduleResponse {
+    pub subscription: SubscriptionDto,
+}
+
+async fn set_refresh_schedule(
+    _user: AuthUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+    Path(id): Path<String>,
+    Json(body): Json<SetRefreshScheduleRequest>,
+) -> Result<Json<SetRefreshScheduleResponse>, ApiError> {
+    let hours = body.refresh_interval_hours.clamp(0, 8760);
+    let sub = chaos_store::set_subscription_refresh_schedule(&state.pool, &id, hours)
+        .await?
+        .ok_or_else(|| ApiError::not_found("not_found", locale))?;
+
+    let node_count = chaos_store::list_nodes(&state.pool)
+        .await?
+        .iter()
+        .filter(|n| n.subscription_id.as_deref() == Some(id.as_str()))
+        .count();
+    let needs_republish =
+        chaos_store::get_meta(&state.pool, chaos_store::META_ORCHESTRATION_NEEDS_REPUBLISH)
+            .await?
+            .as_deref()
+            == Some("true");
+
+    Ok(Json(SetRefreshScheduleResponse {
+        subscription: SubscriptionDto::from_sub(sub, node_count, needs_republish),
+    }))
 }
 
 async fn list_subscriptions_handler(
