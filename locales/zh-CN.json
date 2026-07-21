@@ -491,5 +491,6 @@
   "flow.validation.chain_empty": "链路还没有跳点。",
   "flow.validation.chain_multi_hop_unsupported": "当前引擎暂不支持发布多跳链路。",
   "flow.validation.chain_hop_unresolved": "链路引用的草稿节点组不存在。",
-  "error.geoip_data_too_large": "下载的 GeoIP 数据文件超过允许大小"
+  "error.geoip_data_too_large": "下载的 GeoIP 数据文件超过允许大小",
+  "flow.canvas.minimap": "流程缩略图"
 }

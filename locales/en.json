@@ -491,5 +491,6 @@
   "flow.validation.chain_empty": "The chain has no hops.",
   "flow.validation.chain_multi_hop_unsupported": "The current engine cannot publish multi-hop chains yet.",
   "flow.validation.chain_hop_unresolved": "The chain references a missing draft node group.",
-  "error.geoip_data_too_large": "The downloaded GeoIP dataset exceeds the allowed size"
+  "error.geoip_data_too_large": "The downloaded GeoIP dataset exceeds the allowed size",
+  "flow.canvas.minimap": "Flow overview minimap"
 }

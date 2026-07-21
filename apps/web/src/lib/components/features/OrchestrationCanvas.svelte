@@ -58,6 +58,28 @@
 		node_group: GroupNode,
 		builtin: BuiltinNode
 	};
+
+	function minimapNodeColor(node: Node): string {
+		switch (node.type) {
+			case 'start':
+				return '#111111';
+			case 'end':
+				return '#4a4a4a';
+			case 'rule':
+				return '#f0f0f0';
+			case 'node_group':
+				return '#ffffff';
+			case 'builtin':
+				return '#d0d0d0';
+			default:
+				return '#e8e8e8';
+		}
+	}
+
+	function minimapNodeStroke(node: Node): string {
+		return node.selected ? '#111111' : '#8a8a8a';
+	}
+
 	function onBeforeConnect(connection: Connection) {
 		if (!onconnectrequest) return connection;
 		onconnectrequest(connection);
@@ -145,8 +167,20 @@
 		fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1 }}
 	>
 		<Background variant={BackgroundVariant.Dots} gap={20} size={1} patternColor="#d4d4d4" />
-		<Controls />
-		<MiniMap pannable zoomable nodeColor={(node) => (node.type === 'builtin' ? '#d7d7d7' : '#ffffff')} />
+		<Controls showLock={false} />
+		<MiniMap
+			pannable
+			zoomable
+			ariaLabel={t('flow.canvas.minimap')}
+			nodeColor={minimapNodeColor}
+			nodeStrokeColor={minimapNodeStroke}
+			nodeStrokeWidth={2}
+			nodeBorderRadius={2}
+			maskColor="rgba(17, 17, 17, 0.08)"
+			maskStrokeColor="#111111"
+			maskStrokeWidth={1.25}
+			bgColor="#f7f7f7"
+		/>
 	</SvelteFlow>
 </div>
 
@@ -187,6 +221,8 @@
 	}
 
 	.flow-canvas :global(.svelte-flow__controls) {
+		left: 0.75rem;
+		bottom: 0.75rem;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
 		box-shadow: none;
@@ -204,12 +240,24 @@
 	}
 
 	.flow-canvas :global(.svelte-flow__minimap) {
-		width: 8.5rem;
-		height: 5.5rem;
+		right: 0.75rem;
+		bottom: 0.75rem;
+		width: 10.5rem;
+		height: 7rem;
+		overflow: hidden;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
-		background: rgba(255, 255, 255, 0.94) !important;
+		background: #f7f7f7 !important;
 		box-shadow: none;
+	}
+
+	.flow-canvas :global(.svelte-flow__minimap-mask) {
+		fill: rgba(17, 17, 17, 0.08);
+		stroke: #111111;
+	}
+
+	.flow-canvas :global(.svelte-flow__minimap-node) {
+		stroke: #8a8a8a;
 	}
 
 	.flow-canvas :global(.svelte-flow__attribution) {
@@ -221,8 +269,11 @@
 			height: 34rem;
 		}
 
+		/* Keep a compact overview on small screens instead of removing it. */
 		.flow-canvas :global(.svelte-flow__minimap) {
-			display: none;
+			width: 7.5rem;
+			height: 5rem;
+			opacity: 0.96;
 		}
 	}
 </style>
