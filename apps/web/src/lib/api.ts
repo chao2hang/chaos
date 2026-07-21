@@ -271,7 +271,12 @@ export type OrchestrationBuiltinData = {
 	export type OrchestrationEndData = {
 		/** Render-only information. Removed before persistence. */
 		route_count?: number;
+		/** Render-only information. Removed before persistence. */
+		target_name?: string;
 	};
+
+/** @deprecated Prefer Start/End specific data types. */
+export type OrchestrationAnchorData = OrchestrationStartData | OrchestrationEndData;
 
 	export type OrchestrationNodeData =
                 | OrchestrationRuleData

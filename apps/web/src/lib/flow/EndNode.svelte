@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { LogOut } from '@lucide/svelte';
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import type { OrchestrationAnchorData } from '$lib/api';
+	import type { OrchestrationEndData } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 
 	let { data, selected = false }: NodeProps = $props();
-	const details = $derived(data as unknown as OrchestrationAnchorData);
+	const details = $derived(data as unknown as OrchestrationEndData);
 </script>
 
 <div class="anchor-node" class:selected>
