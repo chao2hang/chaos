@@ -287,6 +287,12 @@
 					? createRuleNode(position, nextRulePriority())
 					: createGroupNode(position, nextGroupIndex());
 			flowNodes = [...flowNodes, created];
+			if (kind === 'rule' && created) {
+				flowEdges = [
+					...flowEdges,
+					{ id: `start-${created.id}`, source: 'start', target: created.id }
+				];
+			}
 			if (kind === 'node_group') {
 				const directY = 70 + flowNodes.filter((node) => node.type === 'node_group').length * 180;
 				flowNodes = flowNodes.map((node) =>
@@ -305,7 +311,7 @@
 
 	function addFromLibrary(kind: AddableNodeKind) {
 		if (kind === 'rule') {
-			addNodeAt(kind, { x: 70, y: 70 + ruleCount * 145 });
+			addNodeAt(kind, { x: 280, y: 70 + ruleCount * 145 });
 			return;
 		}
 		addNodeAt(kind, { x: 520, y: 70 + groupCount * 180 });
@@ -468,7 +474,7 @@
 <svelte:window onbeforeunload={onBeforeUnload} />
 
 <div class="flow-editor-page">
-	<PageHeader title={t('flow.title')} meta="FLOW / V2">
+	<PageHeader title={t('flow.title')} meta="FLOW / V4">
 		{#snippet actions()}
 			<div class="runtime-state" class:blocked={!validation.dae_compatible}>
 				{#if validation.dae_compatible}
@@ -555,7 +561,7 @@
 			<aside class="node-library" aria-label={t('flow.library.title')}>
 				<header>
 					<span>{t('flow.library.title')}</span>
-					<strong>{t('flow.library.v2Document')}</strong>
+					<strong>{t('flow.library.v4Document')}</strong>
 				</header>
 
 				<section class="library-section">

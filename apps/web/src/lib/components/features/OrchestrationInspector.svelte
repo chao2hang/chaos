@@ -78,6 +78,16 @@
 	const targetOptions = $derived(
 		flowNodes.filter((item) => item.type === 'node_group' || item.type === 'builtin')
 	);
+
+	const fallbackLabel = $derived.by(() => {
+		const endEdge = flowEdges.find((item) => item.source === 'end');
+		if (!endEdge) return 'DIRECT';
+		const target = flowNodes.find((item) => item.id === endEdge.target);
+		if (!target) return endEdge.target;
+		if (target.type === 'builtin') return 'DIRECT';
+		if (target.type === 'node_group') return target.data.name || t('flow.node.unnamedGroup');
+		return endEdge.target;
+	});
 	const incomingRules = $derived.by(() => {
 		if (!node || (node.type !== 'node_group' && node.type !== 'builtin')) return [];
 		const sourceIds = new Set(
@@ -419,7 +429,7 @@
 				<div><dt>{t('flow.rules')}</dt><dd>{flowNodes.filter((item) => item.type === 'rule').length}</dd></div>
 				<div><dt>{t('flow.inspector.nodeGroups')}</dt><dd>{flowNodes.filter((item) => item.type === 'node_group').length}</dd></div>
 				<div><dt>{t('flow.inspector.connections')}</dt><dd>{flowEdges.length}</dd></div>
-				<div><dt>{t('flow.fallback')}</dt><dd>DIRECT</dd></div>
+				<div><dt>{t('flow.fallback')}</dt><dd>{fallbackLabel}</dd></div>
 			</dl>
 		</section>
 	{/if}

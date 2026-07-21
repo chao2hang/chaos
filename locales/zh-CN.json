@@ -294,7 +294,7 @@
   "flow.redo": "重做",
   "flow.autoLayout": "自动整理布局",
   "flow.library.title": "节点库",
-  "flow.library.v2Document": "V2 流程文档",
+  "flow.library.v2Document": "V4 流程文档",
   "flow.library.available": "可添加",
   "flow.library.fixed": "固定出口",
   "flow.library.resources": "可用资源",
@@ -459,5 +459,6 @@
   "flow.end": "出口",
   "flow.validation.chain_unsupported": "链路节点已不再支持",
   "flow.start.hint": "流量入口",
-  "flow.end.hint": "默认出口"
+  "flow.end.hint": "默认出口",
+  "flow.library.v4Document": "V4 流程文档"
 }

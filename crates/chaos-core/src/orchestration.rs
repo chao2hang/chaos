@@ -1,4 +1,4 @@
-//! Persisted V2 orchestration graph, validation, and dae routing compilation.
+//! Persisted orchestration graph (V4), validation, and dae routing compilation.
 
 use std::collections::{HashMap, HashSet};
 
