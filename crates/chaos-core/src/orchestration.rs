@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::config_render::{dae_identifier, is_reserved_dae_identifier, normalized_dae_identifier};
 
-pub const ORCHESTRATION_VERSION: u32 = 3;
+pub const ORCHESTRATION_VERSION: u32 = 4;
 const MAX_SOURCE_WEIGHT: u32 = 99;
 const MAX_RULE_PRIORITY: u32 = 9_999;
 const GROUP_POLICIES: [&str; 4] = ["min_moving_avg", "min", "random", "fixed"];
@@ -121,6 +121,7 @@ pub enum FlowNodeKind {
     Rule,
     NodeGroup,
     Builtin,
+    /// V3 legacy — stripped during migration. Not valid in V4 documents.
     Chain,
 }
 
@@ -359,6 +360,50 @@ pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> Or
             .edges
             .push(FlowEdge::new("end-direct", "end", "direct"));
     }
+
+    // V3 → V4: remove chain nodes and rewrite rule targets.
+    if document.version == 3 {
+        let chain_ids: HashSet<String> = document
+            .nodes
+            .iter()
+            .filter(|n| n.kind == FlowNodeKind::Chain)
+            .map(|n| n.id.clone())
+            .collect();
+        if !chain_ids.is_empty() {
+            for edge in document.edges.iter_mut() {
+                if !chain_ids.contains(&edge.target) {
+                    continue;
+                }
+                let chain_node = document
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == edge.target)
+                    .expect("chain id from document");
+                let fallback = match chain_node.data.hops.as_slice() {
+                    [GroupSource::Group { id, .. }] => {
+                        if document
+                            .nodes
+                            .iter()
+                            .any(|n| n.id == *id && n.kind == FlowNodeKind::NodeGroup)
+                        {
+                            id.clone()
+                        } else {
+                            "direct".to_string()
+                        }
+                    }
+                    _ => "direct".to_string(),
+                };
+                edge.target = fallback;
+            }
+            document
+                .edges
+                .retain(|e| !chain_ids.contains(&e.source) && !chain_ids.contains(&e.target));
+            document
+                .nodes
+                .retain(|n| n.kind != FlowNodeKind::Chain);
+        }
+    }
+
     document.version = ORCHESTRATION_VERSION;
     document
 }
@@ -508,10 +553,7 @@ pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationRep
                 }
             }
             FlowNodeKind::Chain => {
-                if !outs.is_empty() {
-                    graph(&mut issues, "chain_terminal_required", Some(&node.id), None);
-                }
-                validate_chain(node, &nodes, ins, &mut names, &mut issues);
+                graph(&mut issues, "chain_unsupported", Some(&node.id), None);
             }
         }
     }
@@ -537,80 +579,13 @@ fn edge_allowed(source: &FlowNode, target: &FlowNode) -> bool {
         FlowNodeKind::Start => target.kind == FlowNodeKind::Rule,
         FlowNodeKind::Rule => matches!(
             target.kind,
-            FlowNodeKind::NodeGroup | FlowNodeKind::Builtin | FlowNodeKind::Chain
+            FlowNodeKind::NodeGroup | FlowNodeKind::Builtin
         ),
         FlowNodeKind::End => matches!(
             target.kind,
             FlowNodeKind::NodeGroup | FlowNodeKind::Builtin
         ),
         _ => false,
-    }
-}
-
-fn validate_chain(
-    node: &FlowNode,
-    nodes: &HashMap<&str, &FlowNode>,
-    ins: &[&FlowEdge],
-    names: &mut HashSet<String>,
-    issues: &mut Vec<ValidationIssue>,
-) {
-    let targeted = !ins.is_empty();
-    match node.data.hops.as_slice() {
-        [] => {
-            if targeted {
-                runtime(issues, "chain_empty", Some(&node.id), None);
-            }
-        }
-        [hop] => {
-            // Node/Subscription 1-hop publish uses chain.name as outbound key.
-            if matches!(
-                hop,
-                GroupSource::Node { .. } | GroupSource::Subscription { .. }
-            ) {
-                validate_chain_outbound_name(node, names, issues);
-            }
-            // Hop resolution only matters when a rule targets this chain (mirror empty-chain).
-            if targeted {
-                if let Err(code) = chain_outbound(nodes, node) {
-                    // Name problems are already graph-scoped above; skip runtime duplicate.
-                    if code != "invalid_chain_name" {
-                        runtime(issues, code, Some(&node.id), None);
-                    }
-                }
-            }
-        }
-        _ => {
-            runtime(issues, "chain_multi_hop_unsupported", Some(&node.id), None);
-        }
-    }
-    let mut hop_keys = HashSet::new();
-    for hop in &node.data.hops {
-        if hop.id().trim().is_empty() {
-            graph(issues, "source_id_required", Some(&node.id), None);
-        }
-        if hop.weight() == 0 || hop.weight() > MAX_SOURCE_WEIGHT {
-            graph(issues, "invalid_source_weight", Some(&node.id), None);
-        }
-        if !hop_keys.insert(hop.key()) {
-            graph(issues, "duplicate_group_source", Some(&node.id), None);
-        }
-    }
-}
-
-/// Same identifier rules as groups: normalize, uniqueness on shared `names`, reserved keys.
-fn validate_chain_outbound_name(
-    node: &FlowNode,
-    names: &mut HashSet<String>,
-    issues: &mut Vec<ValidationIssue>,
-) {
-    let name = dae_identifier(&node.data.name);
-    if normalized_dae_identifier(&node.data.name).is_none()
-        || !names.insert(name.to_ascii_lowercase())
-    {
-        graph(issues, "invalid_chain_name", Some(&node.id), None);
-    }
-    if is_reserved_dae_identifier(&name) {
-        graph(issues, "reserved_group_name", Some(&node.id), None);
     }
 }
 
@@ -642,12 +617,7 @@ pub fn compile_orchestration(
                 .expect("validated rule target");
             let target = nodes[edge.target.as_str()];
             let matcher = rule.data.matcher.as_ref().expect("validated matcher");
-            let outbound = match target.kind {
-                FlowNodeKind::Chain => {
-                    chain_outbound(&nodes, target).expect("validated chain outbound")
-                }
-                _ => outbound(target),
-            };
+            let outbound = outbound(target);
             CompiledRoute {
                 matcher: normalized_matcher(matcher),
                 priority: rule.data.priority.expect("validated priority"),
@@ -830,37 +800,11 @@ fn outbound(node: &FlowNode) -> String {
         FlowNodeKind::Builtin => "direct".into(),
         FlowNodeKind::NodeGroup => dae_identifier(&node.data.name),
         FlowNodeKind::Chain | FlowNodeKind::Rule | FlowNodeKind::Start | FlowNodeKind::End => {
-            unreachable!("chain/rule/start/end use chain_outbound or are not terminals")
+            unreachable!("node kind cannot be a terminal outbound")
         }
     }
 }
 
-fn chain_outbound(
-    nodes: &HashMap<&str, &FlowNode>,
-    chain: &FlowNode,
-) -> Result<String, &'static str> {
-    match chain.data.hops.as_slice() {
-        [] => Err("chain_empty"),
-        [h] => match h {
-            GroupSource::Group { id, .. } => {
-                let Some(n) = nodes.get(id.as_str()) else {
-                    return Err("chain_hop_unresolved");
-                };
-                if n.kind != FlowNodeKind::NodeGroup {
-                    return Err("chain_hop_unresolved");
-                }
-                Ok(dae_identifier(&n.data.name))
-            }
-            GroupSource::Node { .. } | GroupSource::Subscription { .. } => {
-                if normalized_dae_identifier(&chain.data.name).is_none() {
-                    return Err("invalid_chain_name");
-                }
-                Ok(dae_identifier(&chain.data.name))
-            }
-        },
-        _ => Err("chain_multi_hop_unsupported"),
-    }
-}
 fn normalize_domain(value: &str) -> String {
     value.trim().trim_matches('.').to_ascii_lowercase()
 }
@@ -1027,6 +971,119 @@ mod tests {
         vec![start_node(), end_node(), direct_builtin(), group()]
     }
 
+
+    fn chain_node(id: &str, name: &str, hops: Vec<GroupSource>) -> FlowNode {
+        FlowNode {
+            id: id.into(),
+            kind: FlowNodeKind::Chain,
+            position: FlowPosition { x: 500.0, y: 0.0 },
+            data: FlowNodeData {
+                name: name.into(),
+                hops,
+                ..FlowNodeData::default()
+            },
+        }
+    }
+
+    #[test]
+    fn migrates_v3_document_with_chain_nodes_to_group_target() {
+        let mut nodes = base_terminals();
+        nodes.push(chain_node(
+            "chain-1",
+            "via",
+            vec![GroupSource::Group {
+                id: "group".into(),
+                weight: 1,
+            }],
+        ));
+        nodes.push(rule(
+            "rule-a",
+            RuleMatcherKind::DomainSuffix,
+            "example.com",
+            Some(1),
+        ));
+        let document = OrchestrationDocument {
+            version: 3,
+            nodes,
+            edges: vec![
+                FlowEdge::new("s-r", "start", "rule-a"),
+                FlowEdge::new("r-c", "rule-a", "chain-1"),
+                FlowEdge::new("e-d", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let migrated = migrate_orchestration_document(document);
+        assert_eq!(migrated.version, ORCHESTRATION_VERSION);
+        assert!(!migrated.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+        assert!(migrated
+            .edges
+            .iter()
+            .any(|e| e.source == "rule-a" && e.target == "group"));
+        assert!(migrated.compile().is_ok());
+    }
+
+    #[test]
+    fn migrates_v3_chain_with_node_hop_to_direct() {
+        let mut nodes = base_terminals();
+        nodes.push(chain_node(
+            "chain-1",
+            "via",
+            vec![GroupSource::Node {
+                id: "node-1".into(),
+                weight: 1,
+            }],
+        ));
+        nodes.push(rule(
+            "rule-a",
+            RuleMatcherKind::DomainSuffix,
+            "example.com",
+            Some(1),
+        ));
+        let document = OrchestrationDocument {
+            version: 3,
+            nodes,
+            edges: vec![
+                FlowEdge::new("s-r", "start", "rule-a"),
+                FlowEdge::new("r-c", "rule-a", "chain-1"),
+                FlowEdge::new("e-d", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let migrated = migrate_orchestration_document(document);
+        assert!(!migrated.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+        assert!(migrated
+            .edges
+            .iter()
+            .any(|e| e.source == "rule-a" && e.target == "direct"));
+    }
+
+    #[test]
+    fn v4_rejects_chain_nodes_in_validation() {
+        let mut nodes = base_terminals();
+        nodes.push(chain_node("chain-1", "via", vec![]));
+        let document = OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes,
+            edges: vec![FlowEdge::new("e-d", "end", "direct")],
+            viewport: FlowViewport::default(),
+        };
+        let report = document.validate();
+        assert!(!report.valid);
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == "chain_unsupported"));
+    }
+
+    #[test]
+    fn empty_chain_still_serializes_name_and_hops_for_legacy() {
+        let node = chain_node("chain-1", "via", vec![]);
+        let value = serde_json::to_value(&node).unwrap();
+        assert_eq!(value["type"], "chain");
+        assert_eq!(value["data"]["name"], "via");
+        assert_eq!(value["data"]["hops"], serde_json::json!([]));
+    }
+
     #[test]
     fn compile_uses_end_fallback_group() {
         let mut nodes = base_terminals();
@@ -1037,7 +1094,7 @@ mod tests {
             Some(1),
         ));
         let document = OrchestrationDocument {
-            version: 3,
+            version: ORCHESTRATION_VERSION,
             nodes,
             edges: vec![
                 FlowEdge::new("s-r", "start", "rule-a"),
@@ -1051,223 +1108,6 @@ mod tests {
     }
 
     #[test]
-    fn single_hop_chain_collapses_on_compile() {
-        let mut nodes = base_terminals();
-        nodes.push(FlowNode {
-            id: "chain-1".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 500.0, y: 0.0 },
-            data: FlowNodeData {
-                name: "via".into(),
-                hops: vec![GroupSource::Group {
-                    id: "group".into(),
-                    weight: 1,
-                }],
-                ..FlowNodeData::default()
-            },
-        });
-        nodes.push(rule(
-            "rule-a",
-            RuleMatcherKind::DomainSuffix,
-            "example.com",
-            Some(1),
-        ));
-        let document = OrchestrationDocument {
-            version: 3,
-            nodes,
-            edges: vec![
-                FlowEdge::new("s-r", "start", "rule-a"),
-                FlowEdge::new("r-c", "rule-a", "chain-1"),
-                FlowEdge::new("e-d", "end", "direct"),
-            ],
-            viewport: FlowViewport::default(),
-        };
-        let compiled = document.compile().unwrap();
-        assert_eq!(compiled.conditions[0].outbound, dae_identifier("Proxy"));
-        assert_eq!(compiled.fallback, "direct");
-    }
-
-    #[test]
-    fn multi_hop_chain_is_not_dae_compatible() {
-        let mut nodes = base_terminals();
-        nodes.push(FlowNode {
-            id: "chain-1".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 500.0, y: 0.0 },
-            data: FlowNodeData {
-                hops: vec![
-                    GroupSource::Node {
-                        id: "node-1".into(),
-                        weight: 1,
-                    },
-                    GroupSource::Node {
-                        id: "node-2".into(),
-                        weight: 1,
-                    },
-                ],
-                ..FlowNodeData::default()
-            },
-        });
-        nodes.push(rule(
-            "rule-a",
-            RuleMatcherKind::DomainSuffix,
-            "example.com",
-            Some(1),
-        ));
-        let document = OrchestrationDocument {
-            version: 3,
-            nodes,
-            edges: vec![
-                FlowEdge::new("s-r", "start", "rule-a"),
-                FlowEdge::new("r-c", "rule-a", "chain-1"),
-                FlowEdge::new("e-d", "end", "direct"),
-            ],
-            viewport: FlowViewport::default(),
-        };
-        let report = document.validate();
-        assert!(report.valid, "graph may be valid");
-        assert!(!report.dae_compatible);
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == "chain_multi_hop_unsupported"));
-        assert!(document.compile().is_err());
-    }
-
-    #[test]
-    fn node_hop_chain_rejects_reserved_name() {
-        let mut nodes = base_terminals();
-        nodes.push(FlowNode {
-            id: "chain-1".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 500.0, y: 0.0 },
-            data: FlowNodeData {
-                name: "direct".into(),
-                hops: vec![GroupSource::Node {
-                    id: "node-1".into(),
-                    weight: 1,
-                }],
-                ..FlowNodeData::default()
-            },
-        });
-        nodes.push(rule(
-            "rule-a",
-            RuleMatcherKind::DomainSuffix,
-            "example.com",
-            Some(1),
-        ));
-        let document = OrchestrationDocument {
-            version: 3,
-            nodes,
-            edges: vec![
-                FlowEdge::new("s-r", "start", "rule-a"),
-                FlowEdge::new("r-c", "rule-a", "chain-1"),
-                FlowEdge::new("e-d", "end", "direct"),
-            ],
-            viewport: FlowViewport::default(),
-        };
-        let report = document.validate();
-        assert!(!report.valid);
-        assert!(!report.dae_compatible);
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == "reserved_group_name" && i.scope == ValidationScope::Graph));
-    }
-
-    #[test]
-    fn node_hop_chain_name_collides_with_group() {
-        let mut nodes = base_terminals();
-        nodes.push(FlowNode {
-            id: "chain-1".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 500.0, y: 0.0 },
-            data: FlowNodeData {
-                name: "Proxy".into(),
-                hops: vec![GroupSource::Node {
-                    id: "node-1".into(),
-                    weight: 1,
-                }],
-                ..FlowNodeData::default()
-            },
-        });
-        nodes.push(rule(
-            "rule-a",
-            RuleMatcherKind::DomainSuffix,
-            "example.com",
-            Some(1),
-        ));
-        let document = OrchestrationDocument {
-            version: 3,
-            nodes,
-            edges: vec![
-                FlowEdge::new("s-r", "start", "rule-a"),
-                FlowEdge::new("r-c", "rule-a", "chain-1"),
-                FlowEdge::new("e-d", "end", "direct"),
-            ],
-            viewport: FlowViewport::default(),
-        };
-        let report = document.validate();
-        assert!(!report.valid);
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == "invalid_chain_name" && i.scope == ValidationScope::Graph));
-    }
-
-    #[test]
-    fn untargeted_broken_one_hop_chain_does_not_poison_dae_compatible() {
-        let mut nodes = base_terminals();
-        // Fix default group so document can be dae_compatible without this chain.
-        if let Some(g) = nodes.iter_mut().find(|n| n.kind == FlowNodeKind::NodeGroup) {
-            g.data.sources = vec![GroupSource::Node {
-                id: "node-1".into(),
-                weight: 1,
-            }];
-        }
-        nodes.push(FlowNode {
-            id: "chain-orphan".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 500.0, y: 0.0 },
-            data: FlowNodeData {
-                name: "orphan_via".into(),
-                hops: vec![GroupSource::Group {
-                    id: "missing-group".into(),
-                    weight: 1,
-                }],
-                ..FlowNodeData::default()
-            },
-        });
-        nodes.push(rule(
-            "rule-a",
-            RuleMatcherKind::DomainSuffix,
-            "example.com",
-            Some(1),
-        ));
-        let document = OrchestrationDocument {
-            version: 3,
-            nodes,
-            edges: vec![
-                FlowEdge::new("s-r", "start", "rule-a"),
-                FlowEdge::new("r-g", "rule-a", "group"),
-                FlowEdge::new("e-d", "end", "direct"),
-            ],
-            viewport: FlowViewport::default(),
-        };
-        let report = document.validate();
-        assert!(report.valid, "graph should stay valid: {:?}", report.issues);
-        assert!(
-            report.dae_compatible,
-            "untargeted 1-hop hop errors must not poison dae_compatible: {:?}",
-            report.issues
-        );
-        assert!(!report
-            .issues
-            .iter()
-            .any(|i| i.code == "chain_hop_unresolved"));
-    }
-
-    #[test]
     fn rejects_rule_without_start_edge_and_illegal_edges() {
         let mut nodes = base_terminals();
         nodes.push(rule(
@@ -1277,7 +1117,7 @@ mod tests {
             Some(1),
         ));
         let document = OrchestrationDocument {
-            version: 3,
+            version: ORCHESTRATION_VERSION,
             nodes,
             edges: vec![
                 FlowEdge::new("r-d", "rule-a", "direct"),
@@ -1294,29 +1134,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_chain_serializes_name_and_hops() {
-        let chain = FlowNode {
-            id: "chain-1".into(),
-            kind: FlowNodeKind::Chain,
-            position: FlowPosition { x: 0.0, y: 0.0 },
-            data: FlowNodeData {
-                name: "via".into(),
-                hops: vec![],
-                ..FlowNodeData::default()
-            },
-        };
-        let value = serde_json::to_value(chain).unwrap();
-        assert_eq!(value["type"], "chain");
-        assert_eq!(value["data"]["name"], "via");
-        assert_eq!(value["data"]["hops"], serde_json::json!([]));
-        assert!(value["data"].get("policy").is_none());
-        assert!(value["data"].get("sources").is_none());
-    }
-
-    #[test]
     fn default_document_has_start_end_and_fallback_edge() {
         let document = OrchestrationDocument::default();
-        assert_eq!(document.version, 3);
+        assert_eq!(document.version, ORCHESTRATION_VERSION);
         assert!(document
             .nodes
             .iter()
@@ -1353,7 +1173,7 @@ mod tests {
             viewport: FlowViewport::default(),
         };
         let migrated = migrate_orchestration_document(v2);
-        assert_eq!(migrated.version, 3);
+        assert_eq!(migrated.version, ORCHESTRATION_VERSION);
         assert!(migrated.nodes.iter().any(|n| n.id == "start"));
         assert!(migrated.nodes.iter().any(|n| n.id == "end"));
         assert!(migrated
