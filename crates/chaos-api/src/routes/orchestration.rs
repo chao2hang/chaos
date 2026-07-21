@@ -310,25 +310,7 @@ fn prepare_publish_plan(
     let expanded = expand_document_groups(&document, catalog).map_err(PrepareError::Resource)?;
     assign_runtime_group_ids(&mut document);
 
-    let targeted_chains: HashSet<String> = document
-        .edges
-        .iter()
-        .filter_map(|edge| {
-            document
-                .nodes
-                .iter()
-                .find(|node| node.id == edge.source && node.kind == FlowNodeKind::Rule)
-                .and_then(|_| {
-                    document
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == edge.target && node.kind == FlowNodeKind::Chain)
-                        .map(|node| node.id.clone())
-                })
-        })
-        .collect();
-
-    let mut groups: Vec<PublishedGroup> = document
+    let groups: Vec<PublishedGroup> = document
         .nodes
         .iter()
         .filter(|node| node.kind == FlowNodeKind::NodeGroup)
@@ -350,48 +332,6 @@ fn prepare_publish_plan(
                 .collect(),
         })
         .collect();
-
-    // Single-hop Node/Subscription chains materialize as ephemeral runtime groups
-    // named with the chain outbound key (already validated by compile).
-    for node in &document.nodes {
-        if node.kind != FlowNodeKind::Chain || !targeted_chains.contains(&node.id) {
-            continue;
-        }
-        if node.data.hops.len() != 1 {
-            continue;
-        }
-        let hop = &node.data.hops[0];
-        match hop {
-            GroupSource::Group { .. } => {
-                // Collapses to an existing flow group outbound; no extra membership.
-            }
-            GroupSource::Node { .. } | GroupSource::Subscription { .. } => {
-                let members = expand_sources(
-                    std::slice::from_ref(hop),
-                    &node.id,
-                    &expanded,
-                    catalog,
-                )
-                .map_err(PrepareError::Resource)?;
-                if members.is_empty() {
-                    return Err(PrepareError::Resource(PublishIssue {
-                        code: "group_source_empty",
-                        node_id: node.id.clone(),
-                    }));
-                }
-                groups.push(PublishedGroup {
-                    node_id: node.id.clone(),
-                    id: Uuid::new_v4().to_string(),
-                    name: node.data.name.trim().to_string(),
-                    policy: node.data.policy.trim().to_string(),
-                    members: members
-                        .into_iter()
-                        .map(|(node_id, weight)| (node_id, i64::from(weight)))
-                        .collect(),
-                });
-            }
-        }
-    }
 
     let document_json = serde_json::to_string(&document).map_err(PrepareError::Serialization)?;
     let routing = compiled
@@ -445,38 +385,9 @@ fn expand_document_groups(
         )?;
     }
 
-    // Resource-check chain hops the same way as group sources (existence only).
-    for chain in document
-        .nodes
-        .iter()
-        .filter(|node| node.kind == FlowNodeKind::Chain)
-    {
-        for hop in &chain.data.hops {
-            match hop {
-                GroupSource::Node { id, .. } => {
-                    if !catalog.node_ids.contains(id) {
-                        return Err(resource_issue("source_missing", chain));
-                    }
-                }
-                GroupSource::Subscription { id, .. } => {
-                    if !catalog.subscription_ids.contains(id) {
-                        return Err(resource_issue("source_missing", chain));
-                    }
-                }
-                GroupSource::Group { id, .. } => {
-                    if references.contains_key(id) {
-                        continue;
-                    }
-                    if !catalog.group_ids.contains(id) {
-                        return Err(resource_issue("source_missing", chain));
-                    }
-                }
-            }
-        }
-    }
-
     Ok(cache)
 }
+
 
 fn resolve_flow_group(
     group_id: &str,
@@ -523,77 +434,6 @@ fn resolve_flow_group(
         cache.insert(group_id.to_string(), members.clone());
     }
     result
-}
-
-/// Expand sources when nested flow groups are already fully expanded in `expanded`.
-fn expand_sources(
-    sources: &[GroupSource],
-    owner_id: &str,
-    expanded: &HashMap<String, Vec<(String, u32)>>,
-    catalog: &SourceCatalog,
-) -> Result<Vec<(String, u32)>, PublishIssue> {
-    let mut members = Vec::<(String, u32)>::new();
-    let mut member_indexes = HashMap::<String, usize>::new();
-    for source in sources {
-        let source_members = match source {
-            GroupSource::Node { id, weight } => {
-                if !catalog.node_ids.contains(id) {
-                    return Err(PublishIssue {
-                        code: "source_missing",
-                        node_id: owner_id.to_string(),
-                    });
-                }
-                vec![(id.clone(), *weight)]
-            }
-            GroupSource::Subscription { id, weight } => {
-                if !catalog.subscription_ids.contains(id) {
-                    return Err(PublishIssue {
-                        code: "source_missing",
-                        node_id: owner_id.to_string(),
-                    });
-                }
-                catalog
-                    .nodes_by_subscription
-                    .get(id)
-                    .into_iter()
-                    .flatten()
-                    .map(|node_id| (node_id.clone(), *weight))
-                    .collect()
-            }
-            GroupSource::Group { id, weight } => {
-                let nested = if let Some(flow_members) = expanded.get(id) {
-                    flow_members.clone()
-                } else if catalog.group_ids.contains(id) {
-                    catalog
-                        .members_by_group
-                        .get(id)
-                        .cloned()
-                        .unwrap_or_default()
-                } else {
-                    return Err(PublishIssue {
-                        code: "source_missing",
-                        node_id: owner_id.to_string(),
-                    });
-                };
-                nested
-                    .into_iter()
-                    .map(|(node_id, nested_weight)| {
-                        (node_id, nested_weight.saturating_mul(*weight).clamp(1, 99))
-                    })
-                    .collect()
-            }
-        };
-        for (node_id, weight) in source_members {
-            if !catalog.node_ids.contains(&node_id) {
-                return Err(PublishIssue {
-                    code: "source_missing",
-                    node_id: owner_id.to_string(),
-                });
-            }
-            merge_member(&mut members, &mut member_indexes, node_id, weight);
-        }
-    }
-    Ok(members)
 }
 
 fn expand_sources_recursive(
@@ -727,18 +567,10 @@ fn normalize_document(mut document: OrchestrationDocument) -> OrchestrationDocum
         })
         .collect();
     for node in &mut document.nodes {
-        match node.kind {
-            FlowNodeKind::NodeGroup => {
-                for source in &mut node.data.sources {
-                    rewrite_group_ref(source, &runtime_refs);
-                }
+        if node.kind == FlowNodeKind::NodeGroup {
+            for source in &mut node.data.sources {
+                rewrite_group_ref(source, &runtime_refs);
             }
-            FlowNodeKind::Chain => {
-                for hop in &mut node.data.hops {
-                    rewrite_group_ref(hop, &runtime_refs);
-                }
-            }
-            _ => {}
         }
     }
     document
@@ -889,11 +721,8 @@ fn document_references_source(document: &OrchestrationDocument, kind: &str, id: 
             .sources
             .iter()
             .any(|source| source_kind_label(source) == kind && source.id() == id),
-        FlowNodeKind::Chain => node
-            .data
-            .hops
-            .iter()
-            .any(|hop| source_kind_label(hop) == kind && hop.id() == id),
+        // Chain is V3-only and stripped by migration; ignore if present in raw legacy docs.
+        FlowNodeKind::Chain => false,
         _ => false,
     })
 }
@@ -946,7 +775,7 @@ pub(crate) async fn mark_republish_if_published_node_added(
     };
     let affected = document.nodes.iter().any(|node| match node.kind {
         FlowNodeKind::NodeGroup => node.data.sources.iter().any(source_matches),
-        FlowNodeKind::Chain => node.data.hops.iter().any(source_matches),
+        FlowNodeKind::Chain => false,
         _ => false,
     });
     if affected {
@@ -1098,6 +927,56 @@ mod tests {
         assert!(check_document_limits(&document, Locale::En).is_err());
     }
 
+
+    #[test]
+    fn normalizes_v3_chain_documents_before_publish() {
+        let catalog = SourceCatalog {
+            node_ids: ["n1"].into_iter().map(str::to_string).collect(),
+            ..SourceCatalog::default()
+        };
+        let document = OrchestrationDocument {
+            version: 3,
+            nodes: vec![
+                start_node(),
+                rule_node("example.com"),
+                group_node(
+                    "group",
+                    "Proxy",
+                    vec![GroupSource::Node {
+                        id: "n1".into(),
+                        weight: 1,
+                    }],
+                ),
+                chain_node(
+                    "chain-1",
+                    "Via",
+                    vec![GroupSource::Group {
+                        id: "group".into(),
+                        weight: 1,
+                    }],
+                ),
+                direct_node(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("start-rule", "start", "rule"),
+                FlowEdge::new("rule-chain", "rule", "chain-1"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let normalized = normalize_document(document);
+        assert_eq!(normalized.version, ORCHESTRATION_VERSION);
+        assert!(!normalized.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+        assert!(normalized
+            .edges
+            .iter()
+            .any(|e| e.source == "rule" && e.target == "group"));
+        let (document, plan) = prepare_publish_plan(normalized, &catalog).unwrap();
+        assert_eq!(plan.routing[0].outbound, "Proxy");
+        assert!(!document.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+    }
+
     #[test]
     fn prepares_compiled_routing_and_flattens_all_source_kinds() {
         let catalog = SourceCatalog {
@@ -1171,69 +1050,6 @@ mod tests {
     }
 
     #[test]
-    fn materializes_single_hop_node_chain_as_published_group() {
-        let catalog = SourceCatalog {
-            node_ids: ["n1"].into_iter().map(str::to_string).collect(),
-            ..SourceCatalog::default()
-        };
-        let document = publishable_doc(
-            vec![chain_node(
-                "chain-1",
-                "Via Node",
-                vec![GroupSource::Node {
-                    id: "n1".into(),
-                    weight: 2,
-                }],
-            )],
-            vec![FlowEdge::new("rule-chain", "rule", "chain-1")],
-        );
-        let (_document, plan) = prepare_publish_plan(document, &catalog).unwrap();
-        assert_eq!(plan.routing[0].outbound, "Via_Node");
-        let chain_group = plan
-            .groups
-            .iter()
-            .find(|g| g.node_id == "chain-1")
-            .expect("materialized chain group");
-        assert_eq!(chain_group.name, "Via Node");
-        assert_eq!(chain_group.members, vec![("n1".into(), 2)]);
-    }
-
-    #[test]
-    fn rejects_multi_hop_chain_on_publish() {
-        let catalog = SourceCatalog {
-            node_ids: ["n1", "n2"].into_iter().map(str::to_string).collect(),
-            ..SourceCatalog::default()
-        };
-        let document = publishable_doc(
-            vec![chain_node(
-                "chain-1",
-                "Multi",
-                vec![
-                    GroupSource::Node {
-                        id: "n1".into(),
-                        weight: 1,
-                    },
-                    GroupSource::Node {
-                        id: "n2".into(),
-                        weight: 1,
-                    },
-                ],
-            )],
-            vec![FlowEdge::new("rule-chain", "rule", "chain-1")],
-        );
-        let error = prepare_publish_plan(document, &catalog).unwrap_err();
-        match error {
-            PrepareError::Validation(report) => {
-                assert!(report
-                    .issues
-                    .iter()
-                    .any(|issue| issue.code == "chain_multi_hop_unsupported"));
-            }
-            other => panic!("expected validation error, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn rejects_missing_sources_during_publication() {
         let document = publishable_doc(
             vec![group_node(
@@ -1257,30 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_chain_hop_during_publication() {
-        let document = publishable_doc(
-            vec![chain_node(
-                "chain-1",
-                "Broken",
-                vec![GroupSource::Node {
-                    id: "missing".into(),
-                    weight: 1,
-                }],
-            )],
-            vec![FlowEdge::new("rule-chain", "rule", "chain-1")],
-        );
-        let error = prepare_publish_plan(document, &SourceCatalog::default()).unwrap_err();
-        assert!(matches!(
-            error,
-            PrepareError::Resource(PublishIssue {
-                code: "source_missing",
-                ..
-            }) | PrepareError::Validation(_)
-        ));
-    }
-
-    #[test]
-    fn normalizes_v2_documents_to_version_3() {
+    fn normalizes_legacy_documents_to_current_version() {
         let document = OrchestrationDocument {
             version: 2,
             nodes: vec![
