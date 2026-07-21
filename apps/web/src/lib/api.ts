@@ -258,68 +258,113 @@ export type OrchestrationNodeGroupData = {
 };
 
 export type OrchestrationBuiltinData = {
-	builtin: 'direct';
-	/** Render-only information. Removed before persistence. */
-	route_count?: number;
-};
+		builtin: 'direct';
+		/** Render-only information. Removed before persistence. */
+		route_count?: number;
+	};
 
-export type OrchestrationNodeData =
-	| OrchestrationRuleData
-	| OrchestrationNodeGroupData
-	| OrchestrationBuiltinData;
+	export type OrchestrationStartData = {
+		/** Render-only information. Removed before persistence. */
+		route_count?: number;
+	};
 
-type OrchestrationNodePresentation = {
-	selected?: boolean;
-	draggable?: boolean;
-	deletable?: boolean;
-	ariaLabel?: string;
-};
+	export type OrchestrationEndData = {
+		/** Render-only information. Removed before persistence. */
+		route_count?: number;
+	};
 
-export type OrchestrationRuleNodeDto = OrchestrationNodePresentation & {
-	id: string;
-	type: 'rule';
-	position: { x: number; y: number };
-	data: OrchestrationRuleData;
-};
+	export type OrchestrationChainData = {
+		name: string;
+		hops: OrchestrationSource[];
+		/** Render-only information. Removed before persistence. */
+		route_count?: number;
+		target_name?: string;
+	};
 
-export type OrchestrationNodeGroupDto = OrchestrationNodePresentation & {
-	id: string;
-	type: 'node_group';
-	position: { x: number; y: number };
-	data: OrchestrationNodeGroupData;
-};
+	export type OrchestrationNodeData =
+		| OrchestrationRuleData
+		| OrchestrationNodeGroupData
+		| OrchestrationBuiltinData
+		| OrchestrationStartData
+		| OrchestrationEndData
+		| OrchestrationChainData;
 
-export type OrchestrationBuiltinNodeDto = OrchestrationNodePresentation & {
-	id: string;
-	type: 'builtin';
-	position: { x: number; y: number };
-	data: OrchestrationBuiltinData;
-};
+	type OrchestrationNodePresentation = {
+		selected?: boolean;
+		draggable?: boolean;
+		deletable?: boolean;
+		ariaLabel?: string;
+	};
 
-export type OrchestrationNodeDto =
-	| OrchestrationRuleNodeDto
-	| OrchestrationNodeGroupDto
-	| OrchestrationBuiltinNodeDto;
+	export type OrchestrationRuleNodeDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'rule';
+		position: { x: number; y: number };
+		data: OrchestrationRuleData;
+	};
 
-export type OrchestrationEdgeDto = {
-	id: string;
-	source: string;
-	target: string;
-	type?: string;
-	selected?: boolean;
-	deletable?: boolean;
-	markerEnd?: Edge['markerEnd'];
-	style?: string;
-	label?: string;
-};
+	export type OrchestrationNodeGroupDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'node_group';
+		position: { x: number; y: number };
+		data: OrchestrationNodeGroupData;
+	};
 
-export type OrchestrationDocument = {
-	version: 2;
-	nodes: OrchestrationNodeDto[];
-	edges: OrchestrationEdgeDto[];
-	viewport: { x: number; y: number; zoom: number };
-	needs_republish?: boolean;
-};
+	export type OrchestrationBuiltinNodeDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'builtin';
+		position: { x: number; y: number };
+		data: OrchestrationBuiltinData;
+	};
+
+	export type OrchestrationStartNodeDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'start';
+		position: { x: number; y: number };
+		data: OrchestrationStartData;
+	};
+
+	export type OrchestrationEndNodeDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'end';
+		position: { x: number; y: number };
+		data: OrchestrationEndData;
+	};
+
+	export type OrchestrationChainNodeDto = OrchestrationNodePresentation & {
+		id: string;
+		type: 'chain';
+		position: { x: number; y: number };
+		data: OrchestrationChainData;
+	};
+
+	export type OrchestrationNodeDto =
+		| OrchestrationRuleNodeDto
+		| OrchestrationNodeGroupDto
+		| OrchestrationBuiltinNodeDto
+		| OrchestrationStartNodeDto
+		| OrchestrationEndNodeDto
+		| OrchestrationChainNodeDto;
+
+	export type OrchestrationEdgeDto = {
+		id: string;
+		source: string;
+		target: string;
+		type?: string;
+		selected?: boolean;
+		deletable?: boolean;
+		markerEnd?: Edge['markerEnd'];
+		style?: string;
+		label?: string;
+	};
+
+	export type OrchestrationDocument = {
+		version: 2 | 3;
+		nodes: OrchestrationNodeDto[];
+		edges: OrchestrationEdgeDto[];
+		viewport: { x: number; y: number; zoom: number };
+		needs_republish?: boolean;
+	};
 
 export type OrchestrationValidationIssue = {
 	code: string;

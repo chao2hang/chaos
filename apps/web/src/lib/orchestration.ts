@@ -3,14 +3,18 @@ import type {
 	GroupDto,
 	NodeDto,
 	OrchestrationBuiltinNodeDto,
+	OrchestrationChainData,
+	OrchestrationChainNodeDto,
 	OrchestrationDocument,
 	OrchestrationEdgeDto,
+	OrchestrationEndNodeDto,
 	OrchestrationNodeDto,
 	OrchestrationNodeGroupData,
 	OrchestrationRuleData,
 	OrchestrationRuleMatcher,
 	OrchestrationRuleNodeDto,
 	OrchestrationSource,
+	OrchestrationStartNodeDto,
 	OrchestrationValidation,
 	OrchestrationValidationIssue,
 	SubscriptionDto
@@ -21,6 +25,7 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 0.85 };
 const DEFAULT_GROUP_POLICY = 'min_moving_avg';
 const GROUP_POLICIES = new Set(['min_moving_avg', 'min', 'random', 'fixed']);
 const MAX_RULE_PRIORITY = 9_999;
+const RESERVED_NAMES = new Set(['direct', 'must_direct', 'block']);
 
 export type OrchestrationResources = {
 	nodes: NodeDto[];
@@ -30,7 +35,8 @@ export type OrchestrationResources = {
 
 export type RuleDataPatch = Partial<OrchestrationRuleData>;
 export type GroupDataPatch = Partial<OrchestrationNodeGroupData>;
-export type NodeDataPatch = RuleDataPatch | GroupDataPatch;
+export type ChainDataPatch = Partial<OrchestrationChainData>;
+export type NodeDataPatch = RuleDataPatch | GroupDataPatch | ChainDataPatch;
 
 export function uid(prefix: string): string {
 	const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -84,13 +90,97 @@ export function createDirectBuiltin(position: { x: number; y: number }): Orchest
 	};
 }
 
+export function createStartNode(position: { x: number; y: number } = { x: 40, y: 200 }): OrchestrationStartNodeDto {
+	return {
+		id: 'start',
+		type: 'start',
+		position,
+		data: {},
+		deletable: false,
+		draggable: true,
+		ariaLabel: 'Traffic entry'
+	};
+}
+
+export function createEndNode(position: { x: number; y: number } = { x: 760, y: 280 }): OrchestrationEndNodeDto {
+	return {
+		id: 'end',
+		type: 'end',
+		position,
+		data: {},
+		deletable: false,
+		draggable: true,
+		ariaLabel: 'Default exit'
+	};
+}
+
+export function createChainNode(
+	position: { x: number; y: number },
+	index: number
+): OrchestrationChainNodeDto {
+	return {
+		id: uid('chain'),
+		type: 'chain',
+		position,
+		data: {
+			name: `chain_${String(index).padStart(2, '0')}`,
+			hops: []
+		},
+		deletable: true,
+		draggable: true,
+		ariaLabel: 'Hop chain outbound'
+	};
+}
+
+export function migrateDocument(document: OrchestrationDocument): OrchestrationDocument {
+	const nodes = [...document.nodes];
+	const edges = [...document.edges];
+	if (!nodes.some((node) => node.type === 'start')) nodes.push(createStartNode());
+	if (!nodes.some((node) => node.type === 'end')) nodes.push(createEndNode());
+	if (!nodes.some((node) => node.type === 'builtin' && node.data.builtin === 'direct')) {
+		nodes.push(createDirectBuiltin({ x: 520, y: 280 }));
+	}
+	for (const rule of nodes.filter((node) => node.type === 'rule')) {
+		if (!edges.some((edge) => edge.source === 'start' && edge.target === rule.id)) {
+			edges.push({ id: `start-${rule.id}`, source: 'start', target: rule.id });
+		}
+	}
+	if (!edges.some((edge) => edge.source === 'end')) {
+		edges.push({ id: 'end-direct', source: 'end', target: 'direct' });
+	}
+	return sanitizeDocument(nodes, edges, document.viewport);
+}
+
+export function addRuleWithStart(
+	document: OrchestrationDocument,
+	position: { x: number; y: number }
+): OrchestrationDocument {
+	const migrated = migrateDocument(document);
+	let nextPriority = 1;
+	for (const node of migrated.nodes) {
+		if (node.type === 'rule' && validPriority(node.data.priority)) {
+			nextPriority = Math.max(nextPriority, (node.data.priority ?? 0) + 1);
+		}
+	}
+	const rule = createRuleNode(position, nextPriority);
+	const edges = [
+		...migrated.edges,
+		{ id: `start-${rule.id}`, source: 'start', target: rule.id }
+	];
+	return decorateDocument({
+		...migrated,
+		nodes: [...migrated.nodes, rule],
+		edges
+	});
+}
+
 export function sanitizeDocument(
 	nodes: OrchestrationNodeDto[],
 	edges: OrchestrationEdgeDto[],
 	viewport: OrchestrationDocument['viewport']
 ): OrchestrationDocument {
 	return {
-		version: 2,
+		version: 3,
 		nodes: nodes.map(sanitizeNode),
 		edges: edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
 		viewport: safeViewport(viewport)
@@ -116,6 +206,25 @@ function sanitizeNode(node: OrchestrationNodeDto): OrchestrationNodeDto {
 	}
 	if (node.type === 'builtin') {
 		return { ...base, data: { builtin: 'direct' } } as OrchestrationBuiltinNodeDto;
+	}
+	if (node.type === 'start') {
+		return { ...base, data: {} } as OrchestrationStartNodeDto;
+	}
+	if (node.type === 'end') {
+		return { ...base, data: {} } as OrchestrationEndNodeDto;
+	}
+	if (node.type === 'chain') {
+		return {
+			...base,
+			data: {
+				name: node.data.name.trim(),
+				hops: (node.data.hops ?? []).map((hop) => ({
+					kind: hop.kind,
+					id: hop.id,
+					weight: clampWeight(hop.weight)
+				}))
+			}
+		} as OrchestrationChainNodeDto;
 	}
 	return {
 		...base,
@@ -162,65 +271,109 @@ export function snapshotDocument(document: OrchestrationDocument): string {
 }
 
 export function decorateDocument(document: OrchestrationDocument): OrchestrationDocument {
-	const incoming = countEdges(document.edges, 'target');
-	const runtimeGroupRefs = new Map<string, string>();
-	for (const node of document.nodes) {
-		if (node.type === 'node_group' && node.data.runtime_group_id) {
-			runtimeGroupRefs.set(node.data.runtime_group_id, node.id);
+		const migrated = migrateDocument(document);
+		const incoming = countEdges(migrated.edges, 'target');
+		const outgoing = countEdges(migrated.edges, 'source');
+		const runtimeGroupRefs = new Map<string, string>();
+		for (const node of migrated.nodes) {
+			if (node.type === 'node_group' && node.data.runtime_group_id) {
+				runtimeGroupRefs.set(node.data.runtime_group_id, node.id);
+			}
 		}
-	}
-	const targets = new Map(
-		document.nodes
-			.filter((node) => node.type !== 'rule')
-			.map((node) => [node.id, node.type === 'builtin' ? 'DIRECT' : node.data.name])
-	);
-	let fallbackPriority = 1;
-	for (const node of document.nodes) {
-		if (node.type === 'rule') fallbackPriority = Math.max(fallbackPriority, (node.data.priority ?? 0) + 1);
-	}
+		const targets = new Map(
+			migrated.nodes
+				.filter((node) => node.type !== 'rule' && node.type !== 'start' && node.type !== 'end')
+				.map((node) => [
+					node.id,
+					node.type === 'builtin'
+						? 'DIRECT'
+						: node.type === 'chain'
+							? node.data.name || 'Chain'
+							: node.data.name
+				])
+		);
+		let fallbackPriority = 1;
+		for (const node of migrated.nodes) {
+			if (node.type === 'rule') fallbackPriority = Math.max(fallbackPriority, (node.data.priority ?? 0) + 1);
+		}
 
-	return {
-		...document,
-		nodes: document.nodes.map((node): OrchestrationNodeDto => {
-			if (node.type === 'rule') {
-				const target = document.edges.find((edge) => edge.source === node.id)?.target;
-				const priority = validPriority(node.data.priority) ? node.data.priority : fallbackPriority++;
+		return {
+			...migrated,
+			nodes: migrated.nodes.map((node): OrchestrationNodeDto => {
+				if (node.type === 'rule') {
+					const target = migrated.edges.find((edge) => edge.source === node.id)?.target;
+					const priority = validPriority(node.data.priority) ? node.data.priority : fallbackPriority++;
+					return {
+						...node,
+						data: { ...node.data, priority, target_name: target ? targets.get(target) : undefined },
+						deletable: true,
+						draggable: true,
+						ariaLabel: 'Routing rule'
+					};
+				}
+				if (node.type === 'node_group') {
+					return {
+						...node,
+						data: {
+							...node.data,
+							sources: (node.data.sources ?? []).map((source) =>
+								source.kind === 'group' && runtimeGroupRefs.has(source.id)
+									? { ...source, id: runtimeGroupRefs.get(source.id)! }
+									: source
+							),
+							route_count: incoming.get(node.id) ?? 0
+						},
+						deletable: true,
+						draggable: true,
+						ariaLabel: node.data.name || 'Node group outbound'
+					};
+				}
+				if (node.type === 'chain') {
+					return {
+						...node,
+						data: {
+							...node.data,
+							hops: (node.data.hops ?? []).map((hop) =>
+								hop.kind === 'group' && runtimeGroupRefs.has(hop.id)
+									? { ...hop, id: runtimeGroupRefs.get(hop.id)! }
+									: hop
+							),
+							route_count: incoming.get(node.id) ?? 0
+						},
+						deletable: true,
+						draggable: true,
+						ariaLabel: node.data.name || 'Hop chain outbound'
+					};
+				}
+				if (node.type === 'start') {
+					return {
+						...node,
+						data: { route_count: outgoing.get(node.id) ?? 0 },
+						deletable: false,
+						draggable: true,
+						ariaLabel: 'Traffic entry'
+					};
+				}
+				if (node.type === 'end') {
+					return {
+						...node,
+						data: { route_count: outgoing.get(node.id) ?? 0 },
+						deletable: false,
+						draggable: true,
+						ariaLabel: 'Default exit'
+					};
+				}
 				return {
 					...node,
-					data: { ...node.data, priority, target_name: target ? targets.get(target) : undefined },
-					deletable: true,
+					data: { ...node.data, route_count: incoming.get(node.id) ?? 0 },
+					deletable: false,
 					draggable: true,
-					ariaLabel: 'Routing rule'
+					ariaLabel: 'Direct outbound'
 				};
-			}
-			if (node.type === 'node_group') {
-				return {
-					...node,
-					data: {
-						...node.data,
-						sources: (node.data.sources ?? []).map((source) =>
-							source.kind === 'group' && runtimeGroupRefs.has(source.id)
-								? { ...source, id: runtimeGroupRefs.get(source.id)! }
-								: source
-						),
-						route_count: incoming.get(node.id) ?? 0
-					},
-					deletable: true,
-					draggable: true,
-					ariaLabel: node.data.name || 'Node group outbound'
-				};
-			}
-			return {
-				...node,
-				data: { ...node.data, route_count: incoming.get(node.id) ?? 0 },
-				deletable: false,
-				draggable: true,
-				ariaLabel: 'Direct outbound'
-			};
-		}),
-		edges: document.edges.map(decorateEdge)
-	};
-}
+			}),
+			edges: migrated.edges.map(decorateEdge)
+		};
+	}
 
 function countEdges(edges: OrchestrationEdgeDto[], key: 'source' | 'target') {
 	const counts = new Map<string, number>();
@@ -238,167 +391,258 @@ export function decorateEdge(edge: OrchestrationEdgeDto): OrchestrationEdgeDto {
 	};
 }
 
-export function canConnect(
-	connection: Pick<Connection, 'source' | 'target'>,
-	nodes: OrchestrationNodeDto[],
-	edges: OrchestrationEdgeDto[]
-): boolean {
-	const { source, target } = connection;
-	if (!source || !target || source === target) return false;
-	if (edges.some((edge) => edge.source === source && edge.target === target)) return false;
-	const sourceNode = nodes.find((node) => node.id === source);
-	const targetNode = nodes.find((node) => node.id === target);
-	return (
-		sourceNode?.type === 'rule' &&
-		(targetNode?.type === 'node_group' || targetNode?.type === 'builtin')
-	);
-}
-
-export function createConnectionEdge(
-	connection: Pick<Connection, 'source' | 'target'>,
-	nodes: OrchestrationNodeDto[],
-	edges: OrchestrationEdgeDto[]
-): OrchestrationEdgeDto | null {
-	if (!canConnect(connection, nodes, edges) || !connection.source || !connection.target) return null;
-	return decorateEdge({ id: uid('edge'), source: connection.source, target: connection.target });
-}
-
-export function setRuleTarget(
-	ruleId: string,
-	targetId: string | null,
-	nodes: OrchestrationNodeDto[],
-	edges: OrchestrationEdgeDto[]
-): OrchestrationEdgeDto[] {
-	const withoutCurrent = edges.filter((edge) => edge.source !== ruleId);
-	if (!targetId) return withoutCurrent;
-	const edge = createConnectionEdge({ source: ruleId, target: targetId }, nodes, withoutCurrent);
-	return edge ? [...withoutCurrent, edge] : withoutCurrent;
-}
-
-export function autoLayout(document: OrchestrationDocument): OrchestrationDocument {
-	const rules = document.nodes
-		.filter((node): node is OrchestrationRuleNodeDto => node.type === 'rule')
-		.sort((left, right) => (left.data.priority ?? Number.MAX_SAFE_INTEGER) - (right.data.priority ?? Number.MAX_SAFE_INTEGER));
-	const outbounds = [
-		...document.nodes.filter((node) => node.type === 'node_group'),
-		...document.nodes.filter((node) => node.type === 'builtin')
-	];
-	const positions = new Map<string, { x: number; y: number }>();
-	rules.forEach((node, index) => positions.set(node.id, { x: 70, y: 70 + index * 145 }));
-	outbounds.forEach((node, index) => positions.set(node.id, { x: 520, y: 70 + index * 180 }));
-	return decorateDocument({
-		...document,
-		nodes: document.nodes.map((node) => ({ ...node, position: positions.get(node.id) ?? node.position }))
-	});
-}
-
-export function validateLocal(
-	document: OrchestrationDocument,
-	resources: OrchestrationResources
-): OrchestrationValidation {
-	const issues: OrchestrationValidationIssue[] = [];
-	const graph = (code: string, node_id?: string, edge_id?: string) =>
-		issues.push({ code, scope: 'graph', ...(node_id ? { node_id } : {}), ...(edge_id ? { edge_id } : {}) });
-	const runtime = (code: string, node_id?: string) =>
-		issues.push({ code, scope: 'runtime', ...(node_id ? { node_id } : {}) });
-	if (document.version !== 2) graph('unsupported_version');
-
-	const byId = new Map<string, OrchestrationNodeDto>();
-	for (const node of document.nodes) {
-		if (!node.id.trim()) graph('node_id_required', node.id);
-		else if (byId.has(node.id)) graph('duplicate_node_id', node.id);
-		byId.set(node.id, node);
-		if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) {
-			graph('invalid_node_position', node.id);
+function edgeAllowed(
+		source: OrchestrationNodeDto,
+		target: OrchestrationNodeDto
+	): boolean {
+		if (source.type === 'start') return target.type === 'rule';
+		if (source.type === 'rule') {
+			return target.type === 'node_group' || target.type === 'builtin' || target.type === 'chain';
 		}
+		if (source.type === 'end') {
+			return target.type === 'node_group' || target.type === 'builtin';
+		}
+		return false;
 	}
 
-	const direct = document.nodes.filter(
-		(node) => node.type === 'builtin' && node.data.builtin === 'direct'
-	);
-	if (direct.length !== 1) graph('direct_required');
-
-	const outgoing = new Map<string, OrchestrationEdgeDto[]>();
-	const edgeIds = new Set<string>();
-	const pairs = new Set<string>();
-	for (const edge of document.edges) {
-		if (!edge.id.trim()) graph('edge_id_required', undefined, edge.id);
-		else if (edgeIds.has(edge.id)) graph('duplicate_edge_id', undefined, edge.id);
-		edgeIds.add(edge.id);
-		const source = byId.get(edge.source);
-		const target = byId.get(edge.target);
-		if (!source || !target) {
-			graph('dangling_edge', undefined, edge.id);
-			continue;
+	export function canConnect(
+		connection: Pick<Connection, 'source' | 'target'>,
+		nodes: OrchestrationNodeDto[],
+		edges: OrchestrationEdgeDto[]
+	): boolean {
+		const { source, target } = connection;
+		if (!source || !target || source === target) return false;
+		if (edges.some((edge) => edge.source === source && edge.target === target)) return false;
+		const sourceNode = nodes.find((node) => node.id === source);
+		const targetNode = nodes.find((node) => node.id === target);
+		if (!sourceNode || !targetNode || !edgeAllowed(sourceNode, targetNode)) return false;
+		if (sourceNode.type === 'start') {
+			// each rule may have at most one inbound from start
+			if (edges.some((edge) => edge.source === 'start' && edge.target === target)) return false;
 		}
-		if (edge.source === edge.target) graph('self_connection', edge.source, edge.id);
-		const pair = `${edge.source}\0${edge.target}`;
-		if (pairs.has(pair)) graph('duplicate_connection', undefined, edge.id);
-		pairs.add(pair);
-		if (source.type !== 'rule' || (target.type !== 'node_group' && target.type !== 'builtin')) {
-			graph('invalid_connection', undefined, edge.id);
+		if (sourceNode.type === 'rule' || sourceNode.type === 'end') {
+			// replace semantics handled in createConnectionEdge; allow if no other out or same retarget path
+			return true;
 		}
-		outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+		return true;
 	}
 
-	const groupKeys = new Set<string>();
-	const rulePriorities = new Set<number>();
-	const ruleMatchers = new Set<string>();
-	const flowGroupRefs = new Set<string>();
-	const flowGroups = new Map<
-		string,
-		Extract<OrchestrationNodeDto, { type: 'node_group' }>
-	>();
-	for (const node of document.nodes) {
-		if (node.type !== 'node_group') continue;
-		flowGroupRefs.add(node.id);
-		flowGroups.set(node.id, node);
-		if (node.data.runtime_group_id) flowGroupRefs.add(node.data.runtime_group_id);
-		if (node.data.runtime_group_id) flowGroups.set(node.data.runtime_group_id, node);
+	export function createConnectionEdge(
+		connection: Pick<Connection, 'source' | 'target'>,
+		nodes: OrchestrationNodeDto[],
+		edges: OrchestrationEdgeDto[]
+	): OrchestrationEdgeDto | null {
+		if (!connection.source || !connection.target) return null;
+		let working = edges;
+		const sourceNode = nodes.find((node) => node.id === connection.source);
+		if (sourceNode?.type === 'rule' || sourceNode?.type === 'end') {
+			working = edges.filter((edge) => edge.source !== connection.source);
+		}
+		if (!canConnect(connection, nodes, working)) return null;
+		return decorateEdge({
+			id: uid('edge'),
+			source: connection.source,
+			target: connection.target
+		});
 	}
-	for (const node of document.nodes) {
-		const outputs = outgoing.get(node.id) ?? [];
-		if (node.type === 'rule') {
-			if (!matcherValid(node.data.matcher)) graph('invalid_rule_pattern', node.id);
-			if (outputs.length !== 1) graph('rule_target_required', node.id);
-			if (!validPriority(node.data.priority)) graph('invalid_rule_priority', node.id);
-			if (node.data.priority !== undefined && rulePriorities.has(node.data.priority)) {
-				graph('duplicate_rule_priority', node.id);
+
+	export function setRuleTarget(
+		ruleId: string,
+		targetId: string | null,
+		nodes: OrchestrationNodeDto[],
+		edges: OrchestrationEdgeDto[]
+	): OrchestrationEdgeDto[] {
+		const withoutCurrent = edges.filter((edge) => edge.source !== ruleId);
+		if (!targetId) return withoutCurrent;
+		const edge = createConnectionEdge({ source: ruleId, target: targetId }, nodes, withoutCurrent);
+		return edge ? [...withoutCurrent, edge] : withoutCurrent;
+	}
+
+	export function setEndTarget(
+		targetId: string | null,
+		nodes: OrchestrationNodeDto[],
+		edges: OrchestrationEdgeDto[]
+	): OrchestrationEdgeDto[] {
+		const withoutCurrent = edges.filter((edge) => edge.source !== 'end');
+		if (!targetId) return withoutCurrent;
+		const edge = createConnectionEdge({ source: 'end', target: targetId }, nodes, withoutCurrent);
+		return edge ? [...withoutCurrent, edge] : withoutCurrent;
+	}
+
+	export function autoLayout(document: OrchestrationDocument): OrchestrationDocument {
+		const migrated = migrateDocument(document);
+		const rules = migrated.nodes
+			.filter((node): node is OrchestrationRuleNodeDto => node.type === 'rule')
+			.sort(
+				(left, right) =>
+					(left.data.priority ?? Number.MAX_SAFE_INTEGER) -
+					(right.data.priority ?? Number.MAX_SAFE_INTEGER)
+			);
+		const outbounds = [
+			...migrated.nodes.filter((node) => node.type === 'node_group'),
+			...migrated.nodes.filter((node) => node.type === 'chain'),
+			...migrated.nodes.filter((node) => node.type === 'builtin')
+		];
+		const positions = new Map<string, { x: number; y: number }>();
+		positions.set('start', { x: 40, y: 200 });
+		positions.set('end', { x: 800, y: 280 });
+		rules.forEach((node, index) => positions.set(node.id, { x: 280, y: 70 + index * 145 }));
+		outbounds.forEach((node, index) => positions.set(node.id, { x: 560, y: 70 + index * 180 }));
+		return decorateDocument({
+			...migrated,
+			nodes: migrated.nodes.map((node) => ({
+				...node,
+				position: positions.get(node.id) ?? node.position
+			}))
+		});
+	}
+
+	export function validateLocal(
+		document: OrchestrationDocument,
+		resources: OrchestrationResources
+	): OrchestrationValidation {
+		const issues: OrchestrationValidationIssue[] = [];
+		const graph = (code: string, node_id?: string, edge_id?: string) =>
+			issues.push({ code, scope: 'graph', ...(node_id ? { node_id } : {}), ...(edge_id ? { edge_id } : {}) });
+		const runtime = (code: string, node_id?: string) =>
+			issues.push({ code, scope: 'runtime', ...(node_id ? { node_id } : {}) });
+		const migrated = migrateDocument(document);
+		if (migrated.version !== 3) graph('unsupported_version');
+
+		const byId = new Map<string, OrchestrationNodeDto>();
+		for (const node of migrated.nodes) {
+			if (!node.id.trim()) graph('node_id_required', node.id);
+			else if (byId.has(node.id)) graph('duplicate_node_id', node.id);
+			byId.set(node.id, node);
+			if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) {
+				graph('invalid_node_position', node.id);
 			}
-			if (node.data.priority !== undefined) rulePriorities.add(node.data.priority);
-			const matcherKey = `${node.data.matcher.kind}:${
-				node.data.matcher.kind === 'domain_suffix'
-					? normalizeDomainSuffix(node.data.matcher.pattern)
-					: node.data.matcher.pattern.trim().toLowerCase()
-			}`;
-			if (ruleMatchers.has(matcherKey)) graph('duplicate_rule_matcher', node.id);
-			ruleMatchers.add(matcherKey);
 		}
-		if (node.type === 'node_group') {
-			if (outputs.length) graph('group_terminal_required', node.id);
-			const key = daeIdentifier(node.data.name).toLowerCase();
-			if (!key || groupKeys.has(key)) graph('invalid_group_name', node.id);
-			if (['direct', 'must_direct', 'block'].includes(key)) graph('reserved_group_name', node.id);
-			groupKeys.add(key);
-			if (!GROUP_POLICIES.has(node.data.policy.trim())) graph('invalid_group_policy', node.id);
-			if (!node.data.sources.length) runtime('group_source_required', node.id);
-			validateSources(node.data.sources, node.id, resources, flowGroupRefs, flowGroups, graph, runtime);
-		}
-		if (node.type === 'builtin') {
-			if (node.data.builtin !== 'direct') graph('unsupported_builtin', node.id);
-			if (outputs.length) graph('builtin_terminal_required', node.id);
-		}
-	}
-	validateGroupSourceCycles(document, graph);
 
-	const deduplicated = deduplicateIssues(issues);
-	const valid = !deduplicated.some((issue) => issue.scope === 'graph');
-	return {
-		valid,
-		dae_compatible: valid && !deduplicated.some((issue) => issue.scope === 'runtime'),
-		issues: deduplicated
-	};
-}
+		const starts = migrated.nodes.filter((node) => node.type === 'start');
+		const ends = migrated.nodes.filter((node) => node.type === 'end');
+		const direct = migrated.nodes.filter(
+			(node) => node.type === 'builtin' && node.data.builtin === 'direct'
+		);
+		if (starts.length !== 1) graph('start_required');
+		if (ends.length !== 1) graph('end_required');
+		if (direct.length !== 1) graph('direct_required');
+
+		const outgoing = new Map<string, OrchestrationEdgeDto[]>();
+		const incoming = new Map<string, OrchestrationEdgeDto[]>();
+		const edgeIds = new Set<string>();
+		const pairs = new Set<string>();
+		for (const edge of migrated.edges) {
+			if (!edge.id.trim()) graph('edge_id_required', undefined, edge.id);
+			else if (edgeIds.has(edge.id)) graph('duplicate_edge_id', undefined, edge.id);
+			edgeIds.add(edge.id);
+			const source = byId.get(edge.source);
+			const target = byId.get(edge.target);
+			if (!source || !target) {
+				graph('dangling_edge', undefined, edge.id);
+				continue;
+			}
+			if (edge.source === edge.target) graph('self_connection', edge.source, edge.id);
+			const pair = `${edge.source}\0${edge.target}`;
+			if (pairs.has(pair)) graph('duplicate_connection', undefined, edge.id);
+			pairs.add(pair);
+			if (!edgeAllowed(source, target)) {
+				graph('invalid_connection', undefined, edge.id);
+			}
+			outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+			incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge]);
+		}
+
+		const nameKeys = new Set<string>();
+		const rulePriorities = new Set<number>();
+		const ruleMatchers = new Set<string>();
+		const flowGroupRefs = new Set<string>();
+		const flowGroups = new Map<
+			string,
+			Extract<OrchestrationNodeDto, { type: 'node_group' }>
+		>();
+		for (const node of migrated.nodes) {
+			if (node.type !== 'node_group') continue;
+			flowGroupRefs.add(node.id);
+			flowGroups.set(node.id, node);
+			if (node.data.runtime_group_id) flowGroupRefs.add(node.data.runtime_group_id);
+			if (node.data.runtime_group_id) flowGroups.set(node.data.runtime_group_id, node);
+		}
+		for (const node of migrated.nodes) {
+			const outputs = outgoing.get(node.id) ?? [];
+			const inputs = incoming.get(node.id) ?? [];
+			if (node.type === 'rule') {
+				if (!matcherValid(node.data.matcher)) graph('invalid_rule_pattern', node.id);
+				if (outputs.length !== 1) graph('rule_target_required', node.id);
+				const startIns = inputs.filter((edge) => edge.source === 'start');
+				if (startIns.length !== 1) graph('rule_start_required', node.id);
+				if (!validPriority(node.data.priority)) graph('invalid_rule_priority', node.id);
+				if (node.data.priority !== undefined && rulePriorities.has(node.data.priority)) {
+					graph('duplicate_rule_priority', node.id);
+				}
+				if (node.data.priority !== undefined) rulePriorities.add(node.data.priority);
+				const matcherKey = `${node.data.matcher.kind}:${
+					node.data.matcher.kind === 'domain_suffix'
+						? normalizeDomainSuffix(node.data.matcher.pattern)
+						: node.data.matcher.pattern.trim().toLowerCase()
+				}`;
+				if (ruleMatchers.has(matcherKey)) graph('duplicate_rule_matcher', node.id);
+				ruleMatchers.add(matcherKey);
+			}
+			if (node.type === 'node_group') {
+				if (outputs.length) graph('group_terminal_required', node.id);
+				const key = daeIdentifier(node.data.name).toLowerCase();
+				if (!key || nameKeys.has(key)) graph('invalid_group_name', node.id);
+				if (RESERVED_NAMES.has(key)) graph('reserved_group_name', node.id);
+				nameKeys.add(key);
+				if (!GROUP_POLICIES.has(node.data.policy.trim())) graph('invalid_group_policy', node.id);
+				if (!node.data.sources.length) runtime('group_source_required', node.id);
+				validateSources(node.data.sources, node.id, resources, flowGroupRefs, flowGroups, graph, runtime);
+			}
+			if (node.type === 'builtin') {
+				if (node.data.builtin !== 'direct') graph('unsupported_builtin', node.id);
+				if (outputs.length) graph('builtin_terminal_required', node.id);
+			}
+			if (node.type === 'chain') {
+				if (outputs.length) graph('chain_terminal_required', node.id);
+				const hops = node.data.hops ?? [];
+				const targeted = inputs.length > 0;
+				if (hops.length >= 2) runtime('chain_multi_hop_unsupported', node.id);
+				if (hops.length === 0 && targeted) runtime('chain_empty', node.id);
+				if (hops.length === 1) {
+					const hop = hops[0];
+					if (hop.kind === 'group' && !flowGroups.has(hop.id) && targeted) {
+						runtime('chain_hop_unresolved', node.id);
+					}
+					if ((hop.kind === 'node' || hop.kind === 'subscription') && targeted) {
+						const key = daeIdentifier(node.data.name).toLowerCase();
+						if (!key || nameKeys.has(key)) graph('invalid_chain_name', node.id);
+						if (RESERVED_NAMES.has(key)) graph('reserved_group_name', node.id);
+						if (key) nameKeys.add(key);
+					}
+				}
+				validateSources(hops, node.id, resources, flowGroupRefs, flowGroups, graph, runtime);
+			}
+			if (node.type === 'end') {
+				if (outputs.length !== 1) graph('end_target_required', node.id);
+				else {
+					const target = byId.get(outputs[0].target);
+					if (!target || (target.type !== 'node_group' && target.type !== 'builtin')) {
+						graph('end_target_invalid', node.id);
+					}
+				}
+			}
+		}
+		validateGroupSourceCycles(migrated, graph);
+
+		const deduplicated = deduplicateIssues(issues);
+		const valid = !deduplicated.some((issue) => issue.scope === 'graph');
+		return {
+			valid,
+			dae_compatible: valid && !deduplicated.some((issue) => issue.scope === 'runtime'),
+			issues: deduplicated
+		};
+	}
 
 function validateSources(
 	sources: OrchestrationSource[],
@@ -588,13 +832,19 @@ function clampWeight(value: number): number {
 }
 
 export function nodeDisplayName(node: OrchestrationNodeDto): string {
-	if (node.type === 'rule') return node.data.matcher.pattern || 'Untitled rule';
-	if (node.type === 'node_group') return node.data.name || 'Unnamed node group';
-	return 'DIRECT';
-}
+		if (node.type === 'rule') return node.data.matcher.pattern || 'Untitled rule';
+		if (node.type === 'node_group') return node.data.name || 'Unnamed node group';
+		if (node.type === 'chain') return node.data.name || 'Unnamed chain';
+		if (node.type === 'start') return 'START';
+		if (node.type === 'end') return 'END';
+		return 'DIRECT';
+	}
 
-export function nodeKindLabel(kind: OrchestrationNodeDto['type']): string {
-	if (kind === 'node_group') return 'NODE GROUP';
-	if (kind === 'builtin') return 'BUILT-IN';
-	return 'RULE';
-}
+	export function nodeKindLabel(kind: OrchestrationNodeDto['type']): string {
+		if (kind === 'node_group') return 'NODE GROUP';
+		if (kind === 'builtin') return 'BUILT-IN';
+		if (kind === 'chain') return 'CHAIN';
+		if (kind === 'start') return 'START';
+		if (kind === 'end') return 'END';
+		return 'RULE';
+	}
