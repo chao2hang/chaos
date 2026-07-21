@@ -10,6 +10,7 @@ export { default as Metric } from './components/ui/Metric.svelte';
 export { default as Notice } from './components/ui/Notice.svelte';
 export { default as PageHeader } from './components/ui/PageHeader.svelte';
 export { default as PasswordInput } from './components/ui/PasswordInput.svelte';
+export { default as ResourceToolbar } from './components/ui/ResourceToolbar.svelte';
 export { default as SearchInput } from './components/ui/SearchInput.svelte';
 export { default as Section } from './components/ui/Section.svelte';
 export { default as SegmentedControl } from './components/ui/SegmentedControl.svelte';

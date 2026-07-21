@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ArrowRight, RefreshCw } from '@lucide/svelte';
+	import { ArrowRight, RefreshCw, Route as RouteIcon } from '@lucide/svelte';
 	import { ApiClientError, getRouting, type RoutingRuleDto } from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import ActionLink from '$lib/components/ui/ActionLink.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -47,10 +49,9 @@
 				title={t('common.reload')}
 				onclick={() => void load()}
 			/>
-			<a class="orchestrate-link" href="/orchestrate">
-				<span>{t('routing.openOrchestrate')}</span>
-				<ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" />
-			</a>
+			<ActionLink class="orchestrate-action" href="/orchestrate" variant="primary" icon={ArrowRight}>
+				{t('routing.openOrchestrate')}
+			</ActionLink>
 		{/snippet}
 	</PageHeader>
 
@@ -82,30 +83,13 @@
 					{/each}
 				</div>
 			{:else}
-				<div class="empty-state">{t('routing.emptyDescription')}</div>
+				<EmptyState icon={RouteIcon} title={t('routing.emptyDescription')} />
 			{/if}
 		</Section>
 	{/if}
 </div>
 
 <style>
-	.orchestrate-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		min-height: 2.25rem;
-		padding: 0 0.8rem;
-		border: 1px solid var(--ink);
-		border-radius: var(--radius-md);
-		background: var(--ink);
-		color: var(--surface);
-		font-size: 0.75rem;
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.orchestrate-link:hover { opacity: 0.85; }
-
 	.fallback-value {
 		display: inline-flex;
 		align-items: center;
@@ -150,11 +134,10 @@
 	.rule-index { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.7rem; }
 	.rule-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.rule-row.disabled { opacity: 0.45; }
-	.empty-state { padding: var(--space-5); color: var(--ink-muted); border: 1px dashed var(--line-strong); border-radius: var(--radius-md); font-size: 0.8rem; }
 
 	@media (max-width: 700px) {
 		.rules-table { overflow-x: auto; }
-		.orchestrate-link span { display: none; }
-		.orchestrate-link { padding: 0 0.65rem; }
+		:global(.orchestrate-action .ui-command__label) { display: none; }
+		:global(.orchestrate-action) { width: var(--control-md); min-width: var(--control-md); padding: 0; }
 	}
 </style>

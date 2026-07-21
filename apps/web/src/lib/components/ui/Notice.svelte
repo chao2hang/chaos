@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Check, CircleAlert, Info, X } from '@lucide/svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		message,
@@ -18,7 +19,7 @@
 	<Icon size={16} strokeWidth={1.9} aria-hidden="true" />
 	<p>{message}</p>
 	{#if ondismiss}
-		<button type="button" aria-label="Dismiss" title="Dismiss" onclick={ondismiss}>
+		<button type="button" aria-label={t('common.dismiss')} title={t('common.dismiss')} onclick={ondismiss}>
 			<X size={15} strokeWidth={1.8} aria-hidden="true" />
 		</button>
 	{/if}

@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { LoaderCircle } from '@lucide/svelte';
-	let { label = 'Loading' } = $props<{ label?: string }>();
+	import { t } from '$lib/i18n.svelte';
+	let { label } = $props<{ label?: string }>();
 </script>
 
 <div class="loading" role="status">
 	<LoaderCircle size={18} strokeWidth={1.7} aria-hidden="true" />
-	<span>{label}</span>
+	<span>{label ?? t('common.loading')}</span>
 </div>
 
 <style>

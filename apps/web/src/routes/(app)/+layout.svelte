@@ -310,7 +310,7 @@
 			height: var(--topbar-height);
 			padding: 0 var(--space-3);
 			border-bottom: 1px solid var(--line);
-			background: rgba(255, 255, 255, 0.96);
+			background: var(--surface-frosted);
 			backdrop-filter: blur(8px);
 		}
 

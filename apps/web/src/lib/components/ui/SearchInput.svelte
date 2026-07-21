@@ -1,20 +1,21 @@
 <script lang="ts">
 	import { Search, X } from '@lucide/svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		value = $bindable(''),
-		placeholder = 'Search',
-		label = 'Search',
+		placeholder,
+		label,
 		disabled = false
 	} = $props<{ value?: string; placeholder?: string; label?: string; disabled?: boolean }>();
 </script>
 
 <label class="search-field">
-	<span class="sr-only">{label}</span>
+	<span class="sr-only">{label ?? t('common.search')}</span>
 	<Search size={15} strokeWidth={1.8} aria-hidden="true" />
-	<input type="search" bind:value {placeholder} {disabled} />
+	<input type="search" bind:value placeholder={placeholder ?? t('common.search')} {disabled} />
 	{#if value}
-		<button type="button" aria-label="Clear search" title="Clear search" onclick={() => (value = '')}>
+		<button type="button" aria-label={t('common.clearSearch')} title={t('common.clearSearch')} onclick={() => (value = '')}>
 			<X size={14} strokeWidth={1.8} aria-hidden="true" />
 		</button>
 	{/if}

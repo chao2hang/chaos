@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Eye, EyeOff } from '@lucide/svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		value = $bindable(''),
@@ -20,6 +21,9 @@
 	}>();
 
 	let visible = $state(false);
+	const toggleLabel = $derived(
+		t(visible ? 'common.hidePassword' : 'common.showPassword', { label })
+	);
 </script>
 
 <div class="password-input">
@@ -35,8 +39,8 @@
 	/>
 	<button
 		type="button"
-		aria-label={visible ? `Hide ${label}` : `Show ${label}`}
-		title={visible ? `Hide ${label}` : `Show ${label}`}
+		aria-label={toggleLabel}
+		title={toggleLabel}
 		disabled={disabled}
 		onclick={() => (visible = !visible)}
 	>

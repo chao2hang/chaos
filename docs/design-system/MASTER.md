@@ -74,6 +74,7 @@ Spacing follows a 4px base through `--space-1` to `--space-12`.
 | `Notice` | Inline feedback | Info, success, error, dismissible |
 | `PageHeader` | Page identity and primary commands | Metadata, title, description, actions |
 | `PasswordInput` | Password entry with visibility control | Hidden, visible, disabled |
+| `ResourceToolbar` | Search, resource count, and refresh controls | Empty search, filtered search, refresh, disabled |
 | `SearchInput` | Resource filtering | Empty, populated, clear, disabled |
 | `Section` | Bordered functional region | Header, actions, count, flush body |
 | `SegmentedControl` | Small mutually exclusive view switch | Selected, unselected, counted |

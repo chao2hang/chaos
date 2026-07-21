@@ -79,13 +79,13 @@
 	{#if !ready}
 		<LoadingState label={t('auth.setup.checking')} />
 	{:else}
-		<div class="auth-stack">
+		<div class="auth-flow">
 			{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
 
 			{#if !apiOk}
 				<Button full icon={RefreshCw} onclick={checkStatus}>{t('common.retry')}</Button>
 			{:else}
-				<form onsubmit={onSubmit}>
+				<form class="form-stack" onsubmit={onSubmit}>
 					<Field label={t('auth.setup.username')} forId="username">
 						<input
 							id="username"
@@ -136,23 +136,7 @@
 				</form>
 			{/if}
 
-			<p class="alternate"><a href="/login">{t('auth.setup.alreadyInitialized')}</a></p>
+			<p class="auth-alternate"><a href="/login">{t('auth.setup.alreadyInitialized')}</a></p>
 		</div>
 	{/if}
 </AuthShell>
-
-<style>
-	.auth-stack,
-	form {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-4);
-	}
-
-	.alternate {
-		margin: var(--space-2) 0 0;
-		color: var(--ink-muted);
-		font-size: 0.78rem;
-		text-align: center;
-	}
-</style>

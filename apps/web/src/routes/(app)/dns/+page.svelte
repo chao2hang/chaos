@@ -211,7 +211,7 @@
 
 		{#if dirty}
 			<div class="sticky-actions">
-				<div>
+				<div class="sticky-actions__copy">
 					<strong>{t('common.unsavedChanges')}</strong>
 					<span>{t('dns.unsavedDescription')}</span>
 				</div>
@@ -239,18 +239,4 @@
 		width: min(22rem, 100%);
 	}
 
-	.sticky-actions > div:first-child {
-		display: flex;
-		min-width: 0;
-		flex-direction: column;
-	}
-
-	.sticky-actions strong {
-		font-size: 0.8rem;
-	}
-
-	.sticky-actions span {
-		color: var(--ink-muted);
-		font-size: 0.7rem;
-	}
 </style>

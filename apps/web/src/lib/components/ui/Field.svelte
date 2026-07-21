@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		label,
@@ -21,7 +22,7 @@
 <div class="field-wrap" class:invalid={!!error}>
 	<div class="label-row">
 		<label for={forId}>{label}</label>
-		{#if optional}<span>Optional</span>{/if}
+		{#if optional}<span>{t('common.optional')}</span>{/if}
 	</div>
 	{@render children()}
 	{#if error}<p class="field-error">{error}</p>{:else if hint}<p class="hint">{hint}</p>{/if}

@@ -17,7 +17,7 @@
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
-	import SearchInput from '$lib/components/ui/SearchInput.svelte';
+	import ResourceToolbar from '$lib/components/ui/ResourceToolbar.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import Status from '$lib/components/ui/Status.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
@@ -149,7 +149,7 @@
 
 	{#if importOpen}
 		<Section title={t('subscriptions.importTitle')} description={t('subscriptions.importDescription')}>
-			<form class="import-form" onsubmit={(event) => { event.preventDefault(); void onImport(); }}>
+			<form class="form-stack" onsubmit={(event) => { event.preventDefault(); void onImport(); }}>
 				<div class="form-grid">
 					<Field label={t('subscriptions.urlLabel')} forId="subscription-url">
 						<input
@@ -171,7 +171,7 @@
 						/>
 					</Field>
 				</div>
-				<div class="import-footer">
+				<div class="form-footer">
 					<span>{t('subscriptions.importHint')}</span>
 					<Button type="submit" variant="primary" icon={RadioTower} loading={importing}>
 						{importing ? t('common.importing') : t('common.import')}
@@ -184,24 +184,13 @@
 	{#if !loaded}
 		<LoadingState label={t('common.loading')} />
 	{:else}
-		<div class="resource-toolbar">
-			<SearchInput
-				bind:value={query}
-				placeholder={t('subscriptions.searchPlaceholder')}
-				label={t('subscriptions.searchPlaceholder')}
-			/>
-			<div class="toolbar-meta">
-				<span>{t('subscriptions.counts', { subs: subscriptions.length, nodes: totalNodes })}</span>
-				<Button
-					variant="ghost"
-					size="icon"
-					icon={RefreshCw}
-					aria-label={t('common.refresh')}
-					title={t('common.refresh')}
-					onclick={load}
-				/>
-			</div>
-		</div>
+		<ResourceToolbar
+			bind:value={query}
+			placeholder={t('subscriptions.searchPlaceholder')}
+			meta={t('subscriptions.counts', { subs: subscriptions.length, nodes: totalNodes })}
+			refreshLabel={t('common.refresh')}
+			onrefresh={load}
+		/>
 
 		{#if filteredSubscriptions.length}
 			<TableFrame>
@@ -291,35 +280,10 @@
 />
 
 <style>
-	.import-form {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-4);
-	}
-
 	.form-grid {
 		display: grid;
 		grid-template-columns: minmax(0, 2fr) minmax(10rem, 1fr);
 		gap: var(--space-4);
-	}
-
-	.import-footer,
-	.resource-toolbar,
-	.toolbar-meta {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-	}
-
-	.import-footer > span,
-	.toolbar-meta > span {
-		color: var(--ink-muted);
-		font-size: 0.72rem;
-	}
-
-	.actions-col {
-		text-align: right;
 	}
 
 	.url {
@@ -348,72 +312,12 @@
 			grid-template-columns: 1fr;
 		}
 
-		.resource-toolbar {
-			align-items: stretch;
-			flex-direction: column;
-		}
-
-		.toolbar-meta {
-			justify-content: space-between;
-		}
-
-		:global(.table-frame) {
-			overflow: visible;
-			border: 0;
-		}
-
-		table,
-		tbody,
-		tr,
-		td {
-			display: block;
-			width: 100%;
-		}
-
-		thead {
-			display: none;
-		}
-
-		tbody {
-			display: flex;
-			flex-direction: column;
-			gap: var(--space-3);
-		}
-
-		tr {
-			padding: var(--space-3);
-			border: 1px solid var(--line);
-			border-radius: var(--radius-lg);
-		}
-
-		td {
-			display: grid;
-			grid-template-columns: 6.5rem minmax(0, 1fr);
-			gap: var(--space-3);
-			padding: 0.38rem 0;
-			border: 0;
-			text-align: right;
-		}
-
-		td::before {
-			content: attr(data-label);
-			color: var(--ink-faint);
-			font-size: 0.7rem;
-			font-weight: 600;
-			text-align: left;
-		}
-
-		td :global(.status),
 		.url {
 			justify-self: end;
 		}
 
 		.url {
 			max-width: min(16rem, 55vw);
-		}
-
-		.row-actions {
-			justify-content: flex-end;
 		}
 	}
 </style>

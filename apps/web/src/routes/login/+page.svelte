@@ -79,14 +79,14 @@
 	{#if !ready}
 		<LoadingState label={t('auth.login.checkingApi')} />
 	{:else}
-		<div class="auth-stack">
+		<div class="auth-flow">
 			{#if expired}<Notice message={t('auth.login.expired')} />{/if}
 			{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
 
 			{#if !apiOk}
 				<Button full icon={RefreshCw} onclick={checkApi}>{t('common.retry')}</Button>
 			{:else}
-				<form onsubmit={onSubmit}>
+				<form class="form-stack" onsubmit={onSubmit}>
 					<Field label={t('auth.login.username')} forId="username">
 						<input
 							id="username"
@@ -112,23 +112,7 @@
 				</form>
 			{/if}
 
-			<p class="alternate"><a href="/setup">{t('auth.login.firstRun')}</a></p>
+			<p class="auth-alternate"><a href="/setup">{t('auth.login.firstRun')}</a></p>
 		</div>
 	{/if}
 </AuthShell>
-
-<style>
-	.auth-stack,
-	form {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-4);
-	}
-
-	.alternate {
-		margin: var(--space-2) 0 0;
-		color: var(--ink-muted);
-		font-size: 0.78rem;
-		text-align: center;
-	}
-</style>
