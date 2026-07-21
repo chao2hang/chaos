@@ -17,6 +17,7 @@
 	import Field from '$lib/components/ui/Field.svelte';
 	import SearchInput from '$lib/components/ui/SearchInput.svelte';
 	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
+	import NodePickList from '$lib/components/features/NodePickList.svelte';
 
 	type SourceTab = OrchestrationSource['kind'];
 	type ResourceOption = { kind: SourceTab; id: string; name: string; meta: string };
@@ -317,19 +318,37 @@
 			{/if}
 		</section>
 
-		<section class="inspector-section resource-section">
-			<SegmentedControl bind:value={sourceTab} options={sourceTabs} label={t('flow.inspector.sourceType')} />
-			<SearchInput bind:value={query} placeholder={t('flow.inspector.searchResources')} />
-			<div class="resource-list">
-				{#each resourceOptions as option (`${option.kind}:${option.id}`)}
-					<label class:selected={isSelected(option)}>
-						<input type="checkbox" checked={isSelected(option)} disabled={busy} onchange={(event) => toggleSource(option, (event.currentTarget as HTMLInputElement).checked)} />
-						<span><strong>{option.name}</strong><small>{option.meta}</small></span>
-					</label>
-				{/each}
-				{#if !resourceOptions.length}<div class="compact-empty">{t('common.noSearchResults')}</div>{/if}
-			</div>
-		</section>
+<section class="inspector-section resource-section">
+				<SegmentedControl bind:value={sourceTab} options={sourceTabs} label={t('flow.inspector.sourceType')} />
+				{#if sourceTab === 'node'}
+					<NodePickList
+						nodes={inventoryNodes}
+						{busy}
+						isChecked={(node) =>
+							selectedSources.some((source) => source.kind === 'node' && source.id === node.id)}
+						onToggle={(node, checked) =>
+							toggleSource({ kind: 'node', id: node.id, name: node.name, meta: '' }, checked)}
+						showWeight={false}
+					/>
+				{:else}
+					<SearchInput bind:value={query} placeholder={t('flow.inspector.searchResources')} />
+					<div class="resource-list">
+						{#each resourceOptions as option (`${option.kind}:${option.id}`)}
+							<label class:selected={isSelected(option)}>
+								<input
+									type="checkbox"
+									checked={isSelected(option)}
+									disabled={busy}
+									onchange={(event) =>
+										toggleSource(option, (event.currentTarget as HTMLInputElement).checked)}
+								/>
+								<span><strong>{option.name}</strong><small>{option.meta}</small></span>
+							</label>
+						{/each}
+						{#if !resourceOptions.length}<div class="compact-empty">{t('common.noSearchResults')}</div>{/if}
+					</div>
+				{/if}
+			</section>
 
 		<section class="inspector-section">
 			<div class="section-title"><strong>{t('flow.inspector.connectedRules')}</strong><span>{incomingRules.length}</span></div>
