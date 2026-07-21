@@ -35,6 +35,7 @@
 		onupdaterule,
 		onupdategroup,
 		onsettarget,
+		onsetendtarget,
 		ondelete,
 		onselectnode
 	}: {
@@ -50,6 +51,7 @@
 		onupdaterule: (id: string, patch: Partial<OrchestrationRuleData>) => void;
 		onupdategroup: (id: string, patch: Partial<OrchestrationNodeGroupData>) => void;
 		onsettarget: (ruleId: string, targetId: string | null) => void;
+		onsetendtarget: (targetId: string | null) => void;
 		ondelete: (kind: 'node' | 'edge', id: string) => void;
 		onselectnode: (id: string) => void;
 	} = $props();
@@ -69,7 +71,9 @@
 	const edgeSource = $derived(edge ? flowNodes.find((item) => item.id === edge.source) ?? null : null);
 	const edgeTarget = $derived(edge ? flowNodes.find((item) => item.id === edge.target) ?? null : null);
 	const selectedTargetId = $derived(
-		node?.type === 'rule' ? flowEdges.find((item) => item.source === node.id)?.target ?? '' : ''
+		node?.type === 'rule' || node?.type === 'end'
+			? flowEdges.find((item) => item.source === node.id)?.target ?? ''
+			: ''
 	);
 	const targetOptions = $derived(
 		flowNodes.filter((item) => item.type === 'node_group' || item.type === 'builtin')
@@ -205,7 +209,7 @@
 			<span>{t('flow.inspector.title')}</span>
 			<strong>{node ? nodeName(node) : edge ? t('flow.inspector.connection') : t('flow.inspector.overview')}</strong>
 		</div>
-		{#if ((node && node.type !== 'builtin') || edge) && !busy}
+		{#if ((node && node.type !== 'builtin' && node.type !== 'start' && node.type !== 'end') || edge) && !busy}
 			<Button
 				variant="ghost"
 				size="icon"
@@ -375,6 +379,34 @@
 				{#if !incomingRules.length}<div class="compact-empty">{t('flow.inspector.noConnectedRules')}</div>{/if}
 			</div>
 		</section>
+	{:else if node?.type === 'end'}
+		<section class="inspector-section">
+			<Field label={t('flow.fallbackTarget')} forId="flow-end-target">
+				<select
+					id="flow-end-target"
+					value={selectedTargetId}
+					disabled={busy}
+					onchange={(event) =>
+						onsetendtarget((event.currentTarget as HTMLSelectElement).value || null)}
+				>
+					<option value="">{t('flow.rule.noTarget')}</option>
+					{#each targetOptions as target (target.id)}
+						<option value={target.id}>{nodeName(target)}</option>
+					{/each}
+				</select>
+			</Field>
+			<p class="fixed-summary-text">{t('flow.end.description')}</p>
+		</section>
+	{:else if node?.type === 'start'}
+		<section class="inspector-section">
+			<dl class="overview">
+				<div>
+					<dt>{t('flow.rules')}</dt>
+					<dd>{flowEdges.filter((edge) => edge.source === 'start').length}</dd>
+				</div>
+			</dl>
+			<p class="fixed-summary-text">{t('flow.start.description')}</p>
+		</section>
 	{:else if edge}
 		<section class="inspector-section connection-summary">
 			<div><span>{t('flow.edge.from')}</span><strong>{edgeSource ? nodeName(edgeSource) : edge.source}</strong></div>
@@ -450,4 +482,5 @@
 	.overview dl div:last-child { border-bottom: 0; }
 	.overview dt { color: var(--ink-muted); font-size: .72rem; }
 	.overview dd { margin: 0; font-family: var(--font-mono); font-size: .72rem; font-weight: 700; }
+	.fixed-summary-text { margin: 0; color: var(--ink-muted); font-size: 0.68rem; line-height: 1.5; }
 </style>

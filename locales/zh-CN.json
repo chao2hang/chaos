@@ -48,7 +48,6 @@
   "common.discard": "放弃更改",
   "common.discardTitle": "放弃未保存的更改？",
   "common.discardDescription": "当前草稿会被服务器上的最新配置替换，此操作无法撤销。",
-
   "nav.primary": "主导航",
   "nav.menu": "打开菜单",
   "nav.close": "关闭菜单",
@@ -64,10 +63,8 @@
   "nav.orchestrate": "编排",
   "nav.logout": "退出登录",
   "nav.checkingSession": "正在检查会话...",
-
   "home.loading": "正在连接控制平面...",
   "home.apiUnreachable": "无法连接 API：{error}。请确认 chaos-api 已在 :2030 运行。",
-
   "auth.login.title": "登录",
   "auth.login.subtitle": "进入 chaos 控制平面。",
   "auth.login.checkingApi": "正在检查 API...",
@@ -79,7 +76,6 @@
   "auth.login.failed": "登录失败",
   "auth.login.expired": "登录状态已失效，请重新登录。完成后将返回之前的页面。",
   "auth.login.apiDown": "无法连接 API，请确认 chaos-api 已启动。",
-
   "auth.setup.title": "初始设置",
   "auth.setup.subtitle": "创建首个管理员账户。",
   "auth.setup.checking": "正在检查状态...",
@@ -94,7 +90,6 @@
   "auth.setup.passwordTooShort": "密码至少需要 8 个字符。",
   "auth.setup.passwordMismatch": "两次输入的密码不一致。",
   "auth.setup.apiDown": "无法连接 API，请确认 chaos-api 已启动。",
-
   "dashboard.title": "仪表盘",
   "dashboard.subtitle": "查看系统状态，测试节点延迟并控制 dae 运行时。",
   "dashboard.apiHealth": "系统信息",
@@ -132,7 +127,6 @@
   "dashboard.field.configExists": "配置文件",
   "dashboard.field.workDir": "工作目录",
   "dashboard.field.dataPlane": "数据面",
-
   "nodes.title": "节点",
   "nodes.subtitle": "管理分享链接并测试节点连通性。",
   "nodes.importAction": "导入节点",
@@ -166,7 +160,6 @@
   "nodes.deleteConfirm": "删除此节点？",
   "nodes.imported": "已导入 {ok} 个节点{failSuffix}",
   "nodes.importedFailSuffix": "，{fail} 个失败",
-
   "subscriptions.title": "订阅",
   "subscriptions.subtitle": "管理订阅源并按需刷新节点。",
   "subscriptions.importAction": "添加订阅",
@@ -202,7 +195,6 @@
   "subscriptions.needsRepublish": "订阅新增了节点。已发布的节点组仍使用上次快照，请到分流编排重新发布后再应用。",
   "subscriptions.deleted": "订阅已删除",
   "subscriptions.refresh": "刷新",
-
   "groups.title": "策略组",
   "groups.subtitle": "管理出站策略；节点成员在编排工作台中配置。",
   "groups.addAction": "新建策略组",
@@ -235,7 +227,6 @@
   "groups.deleted": "策略组已删除",
   "groups.nameRequired": "请输入策略组名称",
   "groups.nameDuplicate": "策略组名称不能重复",
-
   "flow.title": "分流编排",
   "flow.subtitle": "集中配置策略组、节点成员与分流规则，并在应用前检查最终拓扑。",
   "flow.stage.groups": "策略组与成员",
@@ -382,7 +373,6 @@
   "flow.validation.source_missing": "节点组引用的资源已不存在。",
   "flow.validation.builtin_terminal_required": "DIRECT 是终点，不能继续连接其他流程节点。",
   "flow.validation.unsupported_builtin": "流程包含不受支持的内置出口。",
-
   "routing.title": "分流",
   "routing.subtitle": "按顺序匹配流量并选择出站策略。",
   "routing.readOnlyDescription": "由分流编排画布生成的运行时规则。",
@@ -408,7 +398,6 @@
   "routing.ruleRequired": "启用的规则需要匹配表达式和出口",
   "routing.hint": "示例：domain(example.com)、domain(geosite:cn)、ip(geoip:private)、pname(curl)",
   "routing.unsavedDescription": "规则顺序、匹配条件或默认出口已更改。",
-
   "dns.title": "DNS",
   "dns.subtitle": "管理命名上游和 DNS 请求分流。",
   "dns.upstreams": "DNS 上游",
@@ -433,7 +422,6 @@
   "dns.invalidRule": "启用的 DNS 规则必须包含有效表达式和现有上游",
   "dns.hint": "示例：qname(geosite:cn) 使用 alidns",
   "dns.unsavedDescription": "上游、规则或默认解析项已更改。",
-
   "error.unauthorized": "未认证",
   "error.invalid_token": "令牌无效或已过期",
   "error.invalid_credentials": "用户名或密码错误",
@@ -463,5 +451,11 @@
   "error.request_timeout": "请求超时，请稍后重试",
   "error.invalid_response": "API 响应无效",
   "error.database_error": "数据库错误",
-  "error.unknown": "出现错误"
+  "error.unknown": "出现错误",
+  "flow.fallbackTarget": "回退目标",
+  "flow.end.description": "当没有规则匹配时，流量将转发到此目标。",
+  "flow.start.description": "所有流量从这里进入，按优先级分发到各规则。",
+  "flow.start": "入口",
+  "flow.end": "出口",
+  "flow.validation.chain_unsupported": "链路节点已不再支持"
 }

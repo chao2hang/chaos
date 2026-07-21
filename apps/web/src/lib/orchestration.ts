@@ -3,8 +3,6 @@ import type {
 	GroupDto,
 	NodeDto,
 	OrchestrationBuiltinNodeDto,
-	OrchestrationChainData,
-	OrchestrationChainNodeDto,
 	OrchestrationDocument,
 	OrchestrationEdgeDto,
 	OrchestrationEndNodeDto,
@@ -35,8 +33,9 @@ export type OrchestrationResources = {
 
 export type RuleDataPatch = Partial<OrchestrationRuleData>;
 export type GroupDataPatch = Partial<OrchestrationNodeGroupData>;
-export type ChainDataPatch = Partial<OrchestrationChainData>;
-export type NodeDataPatch = RuleDataPatch | GroupDataPatch | ChainDataPatch;
+export type NodeDataPatch = RuleDataPatch | GroupDataPatch;
+
+export const ORCHESTRATION_VERSION = 4 as const;
 
 export function uid(prefix: string): string {
 	const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -114,27 +113,34 @@ export function createEndNode(position: { x: number; y: number } = { x: 760, y: 
 	};
 }
 
-export function createChainNode(
-	position: { x: number; y: number },
-	index: number
-): OrchestrationChainNodeDto {
-	return {
-		id: uid('chain'),
-		type: 'chain',
-		position,
-		data: {
-			name: `chain_${String(index).padStart(2, '0')}`,
-			hops: []
-		},
-		deletable: true,
-		draggable: true,
-		ariaLabel: 'Hop chain outbound'
-	};
-}
-
 export function migrateDocument(document: OrchestrationDocument): OrchestrationDocument {
-	const nodes = [...document.nodes];
-	const edges = [...document.edges];
+	let nodes = [...(document.nodes ?? [])] as OrchestrationNodeDto[];
+	let edges = [...(document.edges ?? [])];
+
+	// V3 → V4: strip chain nodes and rewrite rule targets.
+	if ((document as { version?: number }).version === 3) {
+		const chainIds = new Set(
+			nodes.filter((node) => (node as { type: string }).type === 'chain').map((node) => node.id)
+		);
+		if (chainIds.size > 0) {
+			edges = edges.map((edge) => {
+				if (!chainIds.has(edge.target)) return edge;
+				const chainNode = nodes.find((node) => node.id === edge.target) as
+					| { type: string; data?: { hops?: Array<{ kind: string; id: string }> } }
+					| undefined;
+				const hop = chainNode?.data?.hops?.[0];
+				const target =
+					hop?.kind === 'group' &&
+					nodes.some((n) => n.id === hop.id && n.type === 'node_group')
+						? hop.id
+						: 'direct';
+				return { ...edge, target };
+			});
+			edges = edges.filter((edge) => !chainIds.has(edge.source) && !chainIds.has(edge.target));
+			nodes = nodes.filter((node) => (node as { type: string }).type !== 'chain');
+		}
+	}
+
 	if (!nodes.some((node) => node.type === 'start')) nodes.push(createStartNode());
 	if (!nodes.some((node) => node.type === 'end')) nodes.push(createEndNode());
 	if (!nodes.some((node) => node.type === 'builtin' && node.data.builtin === 'direct')) {
@@ -180,7 +186,7 @@ export function sanitizeDocument(
 	viewport: OrchestrationDocument['viewport']
 ): OrchestrationDocument {
 	return {
-		version: 3,
+		version: ORCHESTRATION_VERSION,
 		nodes: nodes.map(sanitizeNode),
 		edges: edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
 		viewport: safeViewport(viewport)
@@ -212,19 +218,6 @@ function sanitizeNode(node: OrchestrationNodeDto): OrchestrationNodeDto {
 	}
 	if (node.type === 'end') {
 		return { ...base, data: {} } as OrchestrationEndNodeDto;
-	}
-	if (node.type === 'chain') {
-		return {
-			...base,
-			data: {
-				name: node.data.name.trim(),
-				hops: (node.data.hops ?? []).map((hop) => ({
-					kind: hop.kind,
-					id: hop.id,
-					weight: clampWeight(hop.weight)
-				}))
-			}
-		} as OrchestrationChainNodeDto;
 	}
 	return {
 		...base,
@@ -282,14 +275,10 @@ export function decorateDocument(document: OrchestrationDocument): Orchestration
 		}
 		const targets = new Map(
 			migrated.nodes
-				.filter((node) => node.type !== 'rule' && node.type !== 'start' && node.type !== 'end')
+				.filter((node) => node.type === 'node_group' || node.type === 'builtin')
 				.map((node) => [
 					node.id,
-					node.type === 'builtin'
-						? 'DIRECT'
-						: node.type === 'chain'
-							? node.data.name || 'Chain'
-							: node.data.name
+					node.type === 'builtin' ? 'DIRECT' : node.data.name
 				])
 		);
 		let fallbackPriority = 1;
@@ -326,23 +315,6 @@ export function decorateDocument(document: OrchestrationDocument): Orchestration
 						deletable: true,
 						draggable: true,
 						ariaLabel: node.data.name || 'Node group outbound'
-					};
-				}
-				if (node.type === 'chain') {
-					return {
-						...node,
-						data: {
-							...node.data,
-							hops: (node.data.hops ?? []).map((hop) =>
-								hop.kind === 'group' && runtimeGroupRefs.has(hop.id)
-									? { ...hop, id: runtimeGroupRefs.get(hop.id)! }
-									: hop
-							),
-							route_count: incoming.get(node.id) ?? 0
-						},
-						deletable: true,
-						draggable: true,
-						ariaLabel: node.data.name || 'Hop chain outbound'
 					};
 				}
 				if (node.type === 'start') {
@@ -397,7 +369,7 @@ function edgeAllowed(
 	): boolean {
 		if (source.type === 'start') return target.type === 'rule';
 		if (source.type === 'rule') {
-			return target.type === 'node_group' || target.type === 'builtin' || target.type === 'chain';
+			return target.type === 'node_group' || target.type === 'builtin';
 		}
 		if (source.type === 'end') {
 			return target.type === 'node_group' || target.type === 'builtin';
@@ -480,7 +452,6 @@ function edgeAllowed(
 			);
 		const outbounds = [
 			...migrated.nodes.filter((node) => node.type === 'node_group'),
-			...migrated.nodes.filter((node) => node.type === 'chain'),
 			...migrated.nodes.filter((node) => node.type === 'builtin')
 		];
 		const positions = new Map<string, { x: number; y: number }>();
@@ -507,7 +478,7 @@ function edgeAllowed(
 		const runtime = (code: string, node_id?: string) =>
 			issues.push({ code, scope: 'runtime', ...(node_id ? { node_id } : {}) });
 		const migrated = migrateDocument(document);
-		if (migrated.version !== 3) graph('unsupported_version');
+		if (migrated.version !== ORCHESTRATION_VERSION) graph('unsupported_version');
 
 		const byId = new Map<string, OrchestrationNodeDto>();
 		for (const node of migrated.nodes) {
@@ -603,25 +574,8 @@ function edgeAllowed(
 				if (node.data.builtin !== 'direct') graph('unsupported_builtin', node.id);
 				if (outputs.length) graph('builtin_terminal_required', node.id);
 			}
-			if (node.type === 'chain') {
-				if (outputs.length) graph('chain_terminal_required', node.id);
-				const hops = node.data.hops ?? [];
-				const targeted = inputs.length > 0;
-				if (hops.length >= 2) runtime('chain_multi_hop_unsupported', node.id);
-				if (hops.length === 0 && targeted) runtime('chain_empty', node.id);
-				if (hops.length === 1) {
-					const hop = hops[0];
-					if (hop.kind === 'group' && !flowGroups.has(hop.id) && targeted) {
-						runtime('chain_hop_unresolved', node.id);
-					}
-					if ((hop.kind === 'node' || hop.kind === 'subscription') && targeted) {
-						const key = daeIdentifier(node.data.name).toLowerCase();
-						if (!key || nameKeys.has(key)) graph('invalid_chain_name', node.id);
-						if (RESERVED_NAMES.has(key)) graph('reserved_group_name', node.id);
-						if (key) nameKeys.add(key);
-					}
-				}
-				validateSources(hops, node.id, resources, flowGroupRefs, flowGroups, graph, runtime);
+			if ((node as { type: string }).type === 'chain') {
+				graph('chain_unsupported', node.id);
 			}
 			if (node.type === 'end') {
 				if (outputs.length !== 1) graph('end_target_required', node.id);
@@ -834,8 +788,7 @@ function clampWeight(value: number): number {
 export function nodeDisplayName(node: OrchestrationNodeDto): string {
 		if (node.type === 'rule') return node.data.matcher.pattern || 'Untitled rule';
 		if (node.type === 'node_group') return node.data.name || 'Unnamed node group';
-		if (node.type === 'chain') return node.data.name || 'Unnamed chain';
-		if (node.type === 'start') return 'START';
+			if (node.type === 'start') return 'START';
 		if (node.type === 'end') return 'END';
 		return 'DIRECT';
 	}
@@ -843,8 +796,7 @@ export function nodeDisplayName(node: OrchestrationNodeDto): string {
 	export function nodeKindLabel(kind: OrchestrationNodeDto['type']): string {
 		if (kind === 'node_group') return 'NODE GROUP';
 		if (kind === 'builtin') return 'BUILT-IN';
-		if (kind === 'chain') return 'CHAIN';
-		if (kind === 'start') return 'START';
+			if (kind === 'start') return 'START';
 		if (kind === 'end') return 'END';
 		return 'RULE';
 	}
