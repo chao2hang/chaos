@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::config_render::{dae_identifier, is_reserved_dae_identifier, normalized_dae_identifier};
 
-pub const ORCHESTRATION_VERSION: u32 = 2;
+pub const ORCHESTRATION_VERSION: u32 = 3;
 const MAX_SOURCE_WEIGHT: u32 = 99;
 const MAX_RULE_PRIORITY: u32 = 9_999;
 const GROUP_POLICIES: [&str; 4] = ["min_moving_avg", "min", "random", "fixed"];
@@ -46,9 +46,12 @@ pub struct FlowNode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowNodeKind {
+    Start,
+    End,
     Rule,
     NodeGroup,
     Builtin,
+    Chain,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +85,9 @@ pub struct FlowNodeData {
     pub policy: String,
     #[serde(default)]
     pub sources: Vec<GroupSource>,
+    /// Ordered hop list for `chain` nodes (reuses group source shapes).
+    #[serde(default)]
+    pub hops: Vec<GroupSource>,
     #[serde(default)]
     pub matcher: Option<RuleMatcher>,
     #[serde(default)]
@@ -97,21 +103,42 @@ impl Serialize for FlowNodeData {
     where
         S: Serializer,
     {
-        let mut data = serializer.serialize_struct("FlowNodeData", 5)?;
         if let Some(matcher) = &self.matcher {
+            let mut data = serializer.serialize_struct("FlowNodeData", 2)?;
             data.serialize_field("matcher", matcher)?;
             if let Some(priority) = self.priority {
                 data.serialize_field("priority", &priority)?;
             }
-        } else if let Some(builtin) = self.builtin {
+            return data.end();
+        }
+        if let Some(builtin) = self.builtin {
+            let mut data = serializer.serialize_struct("FlowNodeData", 1)?;
             data.serialize_field("builtin", &builtin)?;
-        } else {
+            return data.end();
+        }
+        // Chain: name + hops (when hops present, or empty-hop chain without group sources/policy overrides).
+        if !self.hops.is_empty() {
+            let mut data = serializer.serialize_struct("FlowNodeData", 2)?;
             data.serialize_field("name", &self.name)?;
-            data.serialize_field("policy", &self.policy)?;
-            data.serialize_field("sources", &self.sources)?;
-            if let Some(runtime_group_id) = &self.runtime_group_id {
-                data.serialize_field("runtime_group_id", runtime_group_id)?;
-            }
+            data.serialize_field("hops", &self.hops)?;
+            return data.end();
+        }
+        // Start/End: minimal empty object (default data, no group fields).
+        if self.name.is_empty()
+            && self.sources.is_empty()
+            && self.runtime_group_id.is_none()
+            && self.policy == default_policy()
+        {
+            let data = serializer.serialize_struct("FlowNodeData", 0)?;
+            return data.end();
+        }
+        // Node group.
+        let mut data = serializer.serialize_struct("FlowNodeData", 4)?;
+        data.serialize_field("name", &self.name)?;
+        data.serialize_field("policy", &self.policy)?;
+        data.serialize_field("sources", &self.sources)?;
+        if let Some(runtime_group_id) = &self.runtime_group_id {
+            data.serialize_field("runtime_group_id", runtime_group_id)?;
         }
         data.end()
     }
@@ -123,6 +150,7 @@ impl Default for FlowNodeData {
             name: String::new(),
             policy: default_policy(),
             sources: vec![],
+            hops: vec![],
             matcher: None,
             priority: None,
             builtin: None,
@@ -251,11 +279,64 @@ impl Default for OrchestrationDocument {
     fn default() -> Self {
         Self {
             version: ORCHESTRATION_VERSION,
-            nodes: vec![default_group(), direct_builtin()],
-            edges: vec![],
+            nodes: vec![
+                start_node(),
+                default_group(),
+                direct_builtin(),
+                end_node(),
+            ],
+            edges: vec![FlowEdge::new("end-direct", "end", "direct")],
             viewport: FlowViewport::default(),
         }
     }
+}
+
+/// Ensure start/end/direct anchors and start→rule / end→terminal edges for v3 documents.
+pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> OrchestrationDocument {
+    // If already v3 and has start+end, still ensure invariants (idempotent).
+    if !document.nodes.iter().any(|n| n.kind == FlowNodeKind::Start) {
+        document.nodes.push(start_node());
+    }
+    if !document.nodes.iter().any(|n| n.kind == FlowNodeKind::End) {
+        document.nodes.push(end_node());
+    }
+    if !document.nodes.iter().any(|n| {
+        n.kind == FlowNodeKind::Builtin && n.data.builtin == Some(BuiltinKind::Direct)
+    }) {
+        document.nodes.push(direct_builtin());
+    }
+    // Ensure start → each rule
+    let rule_ids: Vec<String> = document
+        .nodes
+        .iter()
+        .filter(|n| n.kind == FlowNodeKind::Rule)
+        .map(|n| n.id.clone())
+        .collect();
+    for rule_id in rule_ids {
+        let has = document
+            .edges
+            .iter()
+            .any(|e| e.source == "start" && e.target == rule_id);
+        if !has {
+            document
+                .edges
+                .push(FlowEdge::new(&format!("start-{rule_id}"), "start", &rule_id));
+        }
+    }
+    // Ensure end has exactly one outbound to terminal; default direct if missing
+    let end_outs: Vec<_> = document
+        .edges
+        .iter()
+        .filter(|e| e.source == "end")
+        .cloned()
+        .collect();
+    if end_outs.is_empty() {
+        document
+            .edges
+            .push(FlowEdge::new("end-direct", "end", "direct"));
+    }
+    document.version = ORCHESTRATION_VERSION;
+    document
 }
 
 pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationReport {
@@ -318,9 +399,24 @@ pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationRep
         if !pairs.insert((edge.source.as_str(), edge.target.as_str())) {
             graph(&mut issues, "duplicate_connection", None, Some(&edge.id));
         }
-        if source.kind != FlowNodeKind::Rule
-            || !matches!(target.kind, FlowNodeKind::NodeGroup | FlowNodeKind::Builtin)
-        {
+        // Task 1 keeps legacy rule→terminal validation; start/end/chain edges are accepted
+        // so migrated defaults and compile fixtures remain green until Task 2 edge matrix.
+        let legal = match source.kind {
+            FlowNodeKind::Rule => {
+                matches!(
+                    target.kind,
+                    FlowNodeKind::NodeGroup | FlowNodeKind::Builtin | FlowNodeKind::Chain
+                )
+            }
+            FlowNodeKind::Start => target.kind == FlowNodeKind::Rule,
+            FlowNodeKind::End => {
+                matches!(target.kind, FlowNodeKind::NodeGroup | FlowNodeKind::Builtin)
+            }
+            FlowNodeKind::NodeGroup
+            | FlowNodeKind::Builtin
+            | FlowNodeKind::Chain => false,
+        };
+        if !legal {
             graph(&mut issues, "invalid_connection", None, Some(&edge.id));
         }
         outgoing.entry(edge.source.as_str()).or_default().push(edge);
@@ -353,6 +449,9 @@ pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationRep
                         None,
                     );
                 }
+            }
+            FlowNodeKind::Start | FlowNodeKind::End | FlowNodeKind::Chain => {
+                // Full start/end/chain field rules land in Task 2.
             }
         }
     }
@@ -568,7 +667,22 @@ fn outbound(node: &FlowNode) -> String {
     match node.kind {
         FlowNodeKind::Builtin => "direct".into(),
         FlowNodeKind::NodeGroup => dae_identifier(&node.data.name),
-        FlowNodeKind::Rule => unreachable!("rules cannot be targets"),
+        FlowNodeKind::Chain => {
+            // Single-hop collapse / multi-hop gating is Task 2+; keep compile path complete.
+            if let Some(hop) = node.data.hops.first() {
+                match hop {
+                    GroupSource::Group { id, .. } => id.clone(),
+                    GroupSource::Node { id, .. } | GroupSource::Subscription { id, .. } => {
+                        id.clone()
+                    }
+                }
+            } else {
+                "direct".into()
+            }
+        }
+        FlowNodeKind::Rule | FlowNodeKind::Start | FlowNodeKind::End => {
+            unreachable!("rules/start/end cannot be targets")
+        }
     }
 }
 fn normalize_domain(value: &str) -> String {
@@ -607,6 +721,24 @@ fn valid_cidr(value: &str) -> bool {
         Err(_) => false,
     }
 }
+fn start_node() -> FlowNode {
+    FlowNode {
+        id: "start".into(),
+        kind: FlowNodeKind::Start,
+        position: FlowPosition { x: 40.0, y: 200.0 },
+        data: FlowNodeData::default(),
+    }
+}
+
+fn end_node() -> FlowNode {
+    FlowNode {
+        id: "end".into(),
+        kind: FlowNodeKind::End,
+        position: FlowPosition { x: 760.0, y: 280.0 },
+        data: FlowNodeData::default(),
+    }
+}
+
 fn direct_builtin() -> FlowNode {
     FlowNode {
         id: "direct".into(),
@@ -716,11 +848,79 @@ mod tests {
     }
 
     #[test]
+    fn default_document_has_start_end_and_fallback_edge() {
+        let document = OrchestrationDocument::default();
+        assert_eq!(document.version, 3);
+        assert!(document
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::Start && n.id == "start"));
+        assert!(document
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::End && n.id == "end"));
+        assert!(document
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::Builtin && n.id == "direct"));
+        assert!(document
+            .edges
+            .iter()
+            .any(|e| e.source == "end" && e.target == "direct"));
+    }
+
+    #[test]
+    fn migrates_v2_document_injects_start_end_and_start_rule_edges() {
+        let v2 = OrchestrationDocument {
+            version: 2,
+            nodes: vec![
+                rule(
+                    "rule-domain",
+                    RuleMatcherKind::DomainSuffix,
+                    "example.com",
+                    Some(1),
+                ),
+                group(),
+                direct_builtin(),
+            ],
+            edges: vec![FlowEdge::new("r-g", "rule-domain", "group")],
+            viewport: FlowViewport::default(),
+        };
+        let migrated = migrate_orchestration_document(v2);
+        assert_eq!(migrated.version, 3);
+        assert!(migrated.nodes.iter().any(|n| n.id == "start"));
+        assert!(migrated.nodes.iter().any(|n| n.id == "end"));
+        assert!(migrated
+            .edges
+            .iter()
+            .any(|e| e.source == "start" && e.target == "rule-domain"));
+        assert!(migrated
+            .edges
+            .iter()
+            .any(|e| e.source == "end" && e.target == "direct"));
+        // original rule target preserved
+        assert!(migrated
+            .edges
+            .iter()
+            .any(|e| e.source == "rule-domain" && e.target == "group"));
+    }
+
+    #[test]
     fn default_document_contains_one_group_and_fixed_direct() {
         let document = OrchestrationDocument::default();
-        assert_eq!(document.version, 2);
-        assert_eq!(document.nodes, vec![default_group(), direct_builtin()]);
-        assert!(document.edges.is_empty());
+        assert_eq!(document.version, ORCHESTRATION_VERSION);
+        assert!(document
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::NodeGroup && n.id == "group-default"));
+        assert!(document
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::Builtin && n.id == "direct"));
+        assert!(document
+            .edges
+            .iter()
+            .any(|e| e.source == "end" && e.target == "direct"));
         assert!(document.validate().valid);
         assert!(!document.validate().dae_compatible);
         assert!(document
@@ -733,8 +933,9 @@ mod tests {
     #[test]
     fn rules_compile_matchers_by_priority_and_fall_back_to_direct() {
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
+                start_node(),
                 rule(
                     "rule-domain",
                     RuleMatcherKind::DomainSuffix,
@@ -749,10 +950,14 @@ mod tests {
                 ),
                 group(),
                 direct_builtin(),
+                end_node(),
             ],
             edges: vec![
+                FlowEdge::new("start-domain", "start", "rule-domain"),
+                FlowEdge::new("start-cidr", "start", "rule-cidr"),
                 FlowEdge::new("domain-group", "rule-domain", "group"),
                 FlowEdge::new("cidr-direct", "rule-cidr", "direct"),
+                FlowEdge::new("end-direct", "end", "direct"),
             ],
             viewport: FlowViewport::default(),
         };
@@ -817,7 +1022,7 @@ mod tests {
         let mut blocked = group();
         blocked.data.name = "block".into();
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![first, second, blocked, direct_builtin()],
             edges: vec![
                 FlowEdge::new("r1-direct", "r1", "direct"),
@@ -843,7 +1048,7 @@ mod tests {
     #[test]
     fn serializes_only_the_data_fields_for_each_frontend_node_kind() {
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
                 rule("rule", RuleMatcherKind::DomainSuffix, "example.com", None),
                 group(),
@@ -873,7 +1078,7 @@ mod tests {
         let mut invalid_group = group();
         invalid_group.data.policy = "custom(policy)".into();
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
                 rule("rule", RuleMatcherKind::DomainSuffix, "bad..example", None),
                 invalid_group,
@@ -897,7 +1102,7 @@ mod tests {
         let mut target = group();
         target.data.name = "Hong Kong / Auto".into();
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
                 rule(
                     "rule",
@@ -934,7 +1139,7 @@ mod tests {
             weight: 1,
         }];
         let document = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![first, second, direct_builtin()],
             edges: vec![],
             viewport: FlowViewport::default(),
