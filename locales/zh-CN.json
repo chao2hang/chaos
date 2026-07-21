@@ -457,5 +457,7 @@
   "flow.start.description": "所有流量从这里进入，按优先级分发到各规则。",
   "flow.start": "入口",
   "flow.end": "出口",
-  "flow.validation.chain_unsupported": "链路节点已不再支持"
+  "flow.validation.chain_unsupported": "链路节点已不再支持",
+  "flow.start.hint": "流量入口",
+  "flow.end.hint": "默认出口"
 }

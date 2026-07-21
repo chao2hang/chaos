@@ -20,6 +20,8 @@
 	import RuleNode from '$lib/flow/RuleNode.svelte';
 	import GroupNode from '$lib/flow/GroupNode.svelte';
 	import BuiltinNode from '$lib/flow/BuiltinNode.svelte';
+	import StartNode from '$lib/flow/StartNode.svelte';
+	import EndNode from '$lib/flow/EndNode.svelte';
 
 	let {
 		nodes = $bindable(),
@@ -50,6 +52,8 @@
 	} = $props();
 
 	const nodeTypes = {
+		start: StartNode,
+		end: EndNode,
 		rule: RuleNode,
 		node_group: GroupNode,
 		builtin: BuiltinNode

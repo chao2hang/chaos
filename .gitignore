@@ -31,3 +31,4 @@ logs
 .superpowers/
 .zcode/
 .worktrees/
+dist/

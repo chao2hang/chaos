@@ -457,5 +457,7 @@
   "flow.start.description": "All traffic enters here and is distributed to rules by priority.",
   "flow.start": "Start",
   "flow.end": "End",
-  "flow.validation.chain_unsupported": "Chain nodes are no longer supported"
+  "flow.validation.chain_unsupported": "Chain nodes are no longer supported",
+  "flow.start.hint": "Traffic entry",
+  "flow.end.hint": "Default exit"
 }

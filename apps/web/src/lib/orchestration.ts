@@ -327,9 +327,13 @@ export function decorateDocument(document: OrchestrationDocument): Orchestration
 					};
 				}
 				if (node.type === 'end') {
+					const target = migrated.edges.find((edge) => edge.source === node.id)?.target;
 					return {
 						...node,
-						data: { route_count: outgoing.get(node.id) ?? 0 },
+						data: {
+							route_count: outgoing.get(node.id) ?? 0,
+							target_name: target ? targets.get(target) : undefined
+						},
 						deletable: false,
 						draggable: true,
 						ariaLabel: 'Default exit'
