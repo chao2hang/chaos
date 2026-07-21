@@ -179,8 +179,9 @@ async fn put_orchestration(
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<OrchestrationDocument>, ApiError> {
     let _runtime_guard = state.runtime_lock.lock().await;
-    check_document_limits(&document, locale)?;
+    // Migrate first so v2 drafts are accepted and limits see version 3.
     let document = normalize_document(document);
+    check_document_limits(&document, locale)?;
     let raw = serde_json::to_string(&document)
         .map_err(|error| ApiError::internal_logged(locale, error))?;
     chaos_store::set_meta(&state.pool, chaos_store::META_ORCHESTRATION_DRAFT, &raw).await?;
@@ -192,8 +193,9 @@ async fn validate_document(
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<ValidationReport>, ApiError> {
+    let document = normalize_document(document);
     check_document_limits(&document, locale)?;
-    Ok(Json(normalize_document(document).validate()))
+    Ok(Json(document.validate()))
 }
 
 async fn publish_document(
@@ -203,8 +205,8 @@ async fn publish_document(
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<PublishResponse>, ApiError> {
     let _runtime_guard = state.runtime_lock.lock().await;
-    check_document_limits(&document, locale)?;
     let document = normalize_document(document);
+    check_document_limits(&document, locale)?;
     let catalog = SourceCatalog::load(&state).await?;
     let (document, plan) = prepare_publish_plan(document, &catalog)
         .map_err(|error| map_prepare_error(error, locale))?;
@@ -308,7 +310,7 @@ fn prepare_publish_plan(
     let expanded = expand_document_groups(&document, catalog).map_err(PrepareError::Resource)?;
     assign_runtime_group_ids(&mut document);
 
-    let groups = document
+    let groups: Vec<PublishedGroup> = document
         .nodes
         .iter()
         .filter(|node| node.kind == FlowNodeKind::NodeGroup)
@@ -330,6 +332,7 @@ fn prepare_publish_plan(
                 .collect(),
         })
         .collect();
+
     let document_json = serde_json::to_string(&document).map_err(PrepareError::Serialization)?;
     let routing = compiled
         .conditions
@@ -381,8 +384,10 @@ fn expand_document_groups(
             &mut visiting,
         )?;
     }
+
     Ok(cache)
 }
+
 
 fn resolve_flow_group(
     group_id: &str,
@@ -410,63 +415,15 @@ fn resolve_flow_group(
     };
 
     let result = (|| {
-        let mut members = Vec::<(String, u32)>::new();
-        let mut member_indexes = HashMap::<String, usize>::new();
-        for source in &group.data.sources {
-            let source_members = match source {
-                GroupSource::Node { id, weight } => {
-                    if !catalog.node_ids.contains(id) {
-                        return Err(resource_issue("source_missing", group));
-                    }
-                    vec![(id.clone(), *weight)]
-                }
-                GroupSource::Subscription { id, weight } => {
-                    if !catalog.subscription_ids.contains(id) {
-                        return Err(resource_issue("source_missing", group));
-                    }
-                    catalog
-                        .nodes_by_subscription
-                        .get(id)
-                        .into_iter()
-                        .flatten()
-                        .map(|node_id| (node_id.clone(), *weight))
-                        .collect()
-                }
-                GroupSource::Group { id, weight } => {
-                    let nested = if let Some(flow_group_id) = references.get(id) {
-                        resolve_flow_group(
-                            flow_group_id,
-                            flow_groups,
-                            references,
-                            catalog,
-                            cache,
-                            visiting,
-                        )?
-                    } else {
-                        if !catalog.group_ids.contains(id) {
-                            return Err(resource_issue("source_missing", group));
-                        }
-                        catalog
-                            .members_by_group
-                            .get(id)
-                            .cloned()
-                            .unwrap_or_default()
-                    };
-                    nested
-                        .into_iter()
-                        .map(|(node_id, nested_weight)| {
-                            (node_id, nested_weight.saturating_mul(*weight).clamp(1, 99))
-                        })
-                        .collect()
-                }
-            };
-            for (node_id, weight) in source_members {
-                if !catalog.node_ids.contains(&node_id) {
-                    return Err(resource_issue("source_missing", group));
-                }
-                merge_member(&mut members, &mut member_indexes, node_id, weight);
-            }
-        }
+        let members = expand_sources_recursive(
+            &group.data.sources,
+            group,
+            flow_groups,
+            references,
+            catalog,
+            cache,
+            visiting,
+        )?;
         if members.is_empty() {
             return Err(resource_issue("group_source_empty", group));
         }
@@ -477,6 +434,75 @@ fn resolve_flow_group(
         cache.insert(group_id.to_string(), members.clone());
     }
     result
+}
+
+fn expand_sources_recursive(
+    sources: &[GroupSource],
+    owner: &FlowNode,
+    flow_groups: &HashMap<String, &FlowNode>,
+    references: &HashMap<String, String>,
+    catalog: &SourceCatalog,
+    cache: &mut HashMap<String, Vec<(String, u32)>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Vec<(String, u32)>, PublishIssue> {
+    let mut members = Vec::<(String, u32)>::new();
+    let mut member_indexes = HashMap::<String, usize>::new();
+    for source in sources {
+        let source_members = match source {
+            GroupSource::Node { id, weight } => {
+                if !catalog.node_ids.contains(id) {
+                    return Err(resource_issue("source_missing", owner));
+                }
+                vec![(id.clone(), *weight)]
+            }
+            GroupSource::Subscription { id, weight } => {
+                if !catalog.subscription_ids.contains(id) {
+                    return Err(resource_issue("source_missing", owner));
+                }
+                catalog
+                    .nodes_by_subscription
+                    .get(id)
+                    .into_iter()
+                    .flatten()
+                    .map(|node_id| (node_id.clone(), *weight))
+                    .collect()
+            }
+            GroupSource::Group { id, weight } => {
+                let nested = if let Some(flow_group_id) = references.get(id) {
+                    resolve_flow_group(
+                        flow_group_id,
+                        flow_groups,
+                        references,
+                        catalog,
+                        cache,
+                        visiting,
+                    )?
+                } else {
+                    if !catalog.group_ids.contains(id) {
+                        return Err(resource_issue("source_missing", owner));
+                    }
+                    catalog
+                        .members_by_group
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                nested
+                    .into_iter()
+                    .map(|(node_id, nested_weight)| {
+                        (node_id, nested_weight.saturating_mul(*weight).clamp(1, 99))
+                    })
+                    .collect()
+            }
+        };
+        for (node_id, weight) in source_members {
+            if !catalog.node_ids.contains(&node_id) {
+                return Err(resource_issue("source_missing", owner));
+            }
+            merge_member(&mut members, &mut member_indexes, node_id, weight);
+        }
+    }
+    Ok(members)
 }
 
 fn merge_member(
@@ -528,6 +554,7 @@ fn assign_runtime_group_ids(document: &mut OrchestrationDocument) {
 }
 
 fn normalize_document(mut document: OrchestrationDocument) -> OrchestrationDocument {
+    document = chaos_core::orchestration::migrate_orchestration_document(document);
     let runtime_refs: HashMap<String, String> = document
         .nodes
         .iter()
@@ -540,18 +567,21 @@ fn normalize_document(mut document: OrchestrationDocument) -> OrchestrationDocum
         })
         .collect();
     for node in &mut document.nodes {
-        if node.kind != FlowNodeKind::NodeGroup {
-            continue;
-        }
-        for source in &mut node.data.sources {
-            if let GroupSource::Group { id, .. } = source {
-                if let Some(flow_node_id) = runtime_refs.get(id) {
-                    *id = flow_node_id.clone();
-                }
+        if node.kind == FlowNodeKind::NodeGroup {
+            for source in &mut node.data.sources {
+                rewrite_group_ref(source, &runtime_refs);
             }
         }
     }
     document
+}
+
+fn rewrite_group_ref(source: &mut GroupSource, runtime_refs: &HashMap<String, String>) {
+    if let GroupSource::Group { id, .. } = source {
+        if let Some(flow_node_id) = runtime_refs.get(id) {
+            *id = flow_node_id.clone();
+        }
+    }
 }
 
 fn map_prepare_error(error: PrepareError, locale: chaos_i18n::Locale) -> ApiError {
@@ -579,7 +609,7 @@ fn check_document_limits(
     let source_count: usize = document
         .nodes
         .iter()
-        .map(|node| node.data.sources.len())
+        .map(|node| node.data.sources.len() + node.data.hops.len())
         .sum();
     if document.version != ORCHESTRATION_VERSION
         || document.nodes.len() > MAX_FLOW_NODES
@@ -607,6 +637,11 @@ fn check_document_limits(
                 .sources
                 .iter()
                 .any(|source| source.id().len() > 128)
+            || node
+                .data
+                .hops
+                .iter()
+                .any(|hop| hop.id().len() > 128)
     });
     let oversized_edge = document
         .edges
@@ -664,21 +699,32 @@ async fn documents_reference_source(
         };
         let document: OrchestrationDocument = serde_json::from_str(&raw)
             .map_err(|error| ApiError::internal_logged(chaos_i18n::Locale::En, error))?;
-        if document.nodes.iter().any(|node| {
-            node.kind == FlowNodeKind::NodeGroup
-                && node.data.sources.iter().any(|source| {
-                    let source_kind = match source {
-                        GroupSource::Node { .. } => "node",
-                        GroupSource::Subscription { .. } => "subscription",
-                        GroupSource::Group { .. } => "group",
-                    };
-                    source_kind == kind && source.id() == id
-                })
-        }) {
+        if document_references_source(&document, kind, id) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn source_kind_label(source: &GroupSource) -> &'static str {
+    match source {
+        GroupSource::Node { .. } => "node",
+        GroupSource::Subscription { .. } => "subscription",
+        GroupSource::Group { .. } => "group",
+    }
+}
+
+fn document_references_source(document: &OrchestrationDocument, kind: &str, id: &str) -> bool {
+    document.nodes.iter().any(|node| match node.kind {
+        FlowNodeKind::NodeGroup => node
+            .data
+            .sources
+            .iter()
+            .any(|source| source_kind_label(source) == kind && source.id() == id),
+        // Chain is V3-only and stripped by migration; ignore if present in raw legacy docs.
+        FlowNodeKind::Chain => false,
+        _ => false,
+    })
 }
 
 pub(crate) async fn mark_republish_if_published_source_changed(
@@ -718,17 +764,19 @@ pub(crate) async fn mark_republish_if_published_node_added(
         .into_iter()
         .map(|group| (group.id, group.filter_tag))
         .collect();
-    let affected = document.nodes.iter().any(|node| {
-        node.kind == FlowNodeKind::NodeGroup
-            && node.data.sources.iter().any(|source| match source {
-                GroupSource::Node { id, .. } => id == node_id,
-                GroupSource::Subscription { id, .. } => subscription_id == Some(id.as_str()),
-                GroupSource::Group { id, .. } => group_filters
-                    .get(id)
-                    .and_then(|filter| filter.as_deref())
-                    .zip(tag)
-                    .is_some_and(|(filter, node_tag)| filter == node_tag),
-            })
+    let source_matches = |source: &GroupSource| match source {
+        GroupSource::Node { id, .. } => id == node_id,
+        GroupSource::Subscription { id, .. } => subscription_id == Some(id.as_str()),
+        GroupSource::Group { id, .. } => group_filters
+            .get(id)
+            .and_then(|filter| filter.as_deref())
+            .zip(tag)
+            .is_some_and(|(filter, node_tag)| filter == node_tag),
+    };
+    let affected = document.nodes.iter().any(|node| match node.kind {
+        FlowNodeKind::NodeGroup => node.data.sources.iter().any(source_matches),
+        FlowNodeKind::Chain => false,
+        _ => false,
     });
     if affected {
         chaos_store::set_meta(
@@ -782,6 +830,24 @@ mod tests {
         }
     }
 
+    fn start_node() -> FlowNode {
+        FlowNode {
+            id: "start".into(),
+            kind: FlowNodeKind::Start,
+            position: FlowPosition { x: -200.0, y: 0.0 },
+            data: FlowNodeData::default(),
+        }
+    }
+
+    fn end_node() -> FlowNode {
+        FlowNode {
+            id: "end".into(),
+            kind: FlowNodeKind::End,
+            position: FlowPosition { x: 900.0, y: 0.0 },
+            data: FlowNodeData::default(),
+        }
+    }
+
     fn rule_node(target_pattern: &str) -> FlowNode {
         FlowNode {
             id: "rule".into(),
@@ -810,6 +876,39 @@ mod tests {
         }
     }
 
+    fn chain_node(id: &str, name: &str, hops: Vec<GroupSource>) -> FlowNode {
+        FlowNode {
+            id: id.into(),
+            kind: FlowNodeKind::Chain,
+            position: FlowPosition { x: 500.0, y: 100.0 },
+            data: FlowNodeData {
+                name: name.into(),
+                hops,
+                ..FlowNodeData::default()
+            },
+        }
+    }
+
+    /// v3 topology anchors + start→rule + end→direct; rule→target supplied by caller edges.
+    fn publishable_doc(
+        mut extra_nodes: Vec<FlowNode>,
+        mut rule_target_edges: Vec<FlowEdge>,
+    ) -> OrchestrationDocument {
+        let mut nodes = vec![start_node(), rule_node("example.com"), direct_node(), end_node()];
+        nodes.append(&mut extra_nodes);
+        let mut edges = vec![
+            FlowEdge::new("start-rule", "start", "rule"),
+            FlowEdge::new("end-direct", "end", "direct"),
+        ];
+        edges.append(&mut rule_target_edges);
+        OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes,
+            edges,
+            viewport: FlowViewport::default(),
+        }
+    }
+
     #[test]
     fn accepts_incomplete_drafts() {
         assert!(check_document_limits(&OrchestrationDocument::default(), Locale::En).is_ok());
@@ -826,6 +925,56 @@ mod tests {
             })
             .collect();
         assert!(check_document_limits(&document, Locale::En).is_err());
+    }
+
+
+    #[test]
+    fn normalizes_v3_chain_documents_before_publish() {
+        let catalog = SourceCatalog {
+            node_ids: ["n1"].into_iter().map(str::to_string).collect(),
+            ..SourceCatalog::default()
+        };
+        let document = OrchestrationDocument {
+            version: 3,
+            nodes: vec![
+                start_node(),
+                rule_node("example.com"),
+                group_node(
+                    "group",
+                    "Proxy",
+                    vec![GroupSource::Node {
+                        id: "n1".into(),
+                        weight: 1,
+                    }],
+                ),
+                chain_node(
+                    "chain-1",
+                    "Via",
+                    vec![GroupSource::Group {
+                        id: "group".into(),
+                        weight: 1,
+                    }],
+                ),
+                direct_node(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("start-rule", "start", "rule"),
+                FlowEdge::new("rule-chain", "rule", "chain-1"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let normalized = normalize_document(document);
+        assert_eq!(normalized.version, ORCHESTRATION_VERSION);
+        assert!(!normalized.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+        assert!(normalized
+            .edges
+            .iter()
+            .any(|e| e.source == "rule" && e.target == "group"));
+        let (document, plan) = prepare_publish_plan(normalized, &catalog).unwrap();
+        assert_eq!(plan.routing[0].outbound, "Proxy");
+        assert!(!document.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
     }
 
     #[test]
@@ -865,18 +1014,21 @@ mod tests {
                 },
             ],
         );
-        let document = OrchestrationDocument {
-            version: 2,
-            nodes: vec![rule_node("example.com"), base, combined, direct_node()],
-            edges: vec![FlowEdge::new("rule-combined", "rule", "combined")],
-            viewport: FlowViewport::default(),
-        };
+        let document = publishable_doc(
+            vec![base, combined],
+            vec![FlowEdge::new("rule-combined", "rule", "combined")],
+        );
 
         let (document, plan) = prepare_publish_plan(document, &catalog).unwrap();
         assert_eq!(plan.routing[0].expression, "domain(suffix: example.com)");
         assert_eq!(plan.routing[0].outbound, "Combined_Group");
+        let combined_group = plan
+            .groups
+            .iter()
+            .find(|g| g.node_id == "combined")
+            .expect("combined group");
         assert_eq!(
-            plan.groups[1].members,
+            combined_group.members,
             vec![("n1".into(), 4), ("n2".into(), 6), ("n3".into(), 14)]
         );
         assert!(document
@@ -889,27 +1041,27 @@ mod tests {
                 .as_deref()
                 .is_some_and(|id| !id.is_empty())));
         let persisted: serde_json::Value = serde_json::from_str(&plan.document).unwrap();
-        assert!(persisted["edges"][0].get("data").is_none());
+        assert_eq!(persisted["version"], ORCHESTRATION_VERSION);
+        assert!(persisted["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|edge| edge.get("data").is_none()));
     }
 
     #[test]
     fn rejects_missing_sources_during_publication() {
-        let document = OrchestrationDocument {
-            version: 2,
-            nodes: vec![
-                group_node(
-                    "group",
-                    "Proxy",
-                    vec![GroupSource::Node {
-                        id: "missing".into(),
-                        weight: 1,
-                    }],
-                ),
-                direct_node(),
-            ],
-            edges: vec![],
-            viewport: FlowViewport::default(),
-        };
+        let document = publishable_doc(
+            vec![group_node(
+                "group",
+                "Proxy",
+                vec![GroupSource::Node {
+                    id: "missing".into(),
+                    weight: 1,
+                }],
+            )],
+            vec![FlowEdge::new("rule-group", "rule", "group")],
+        );
         let error = prepare_publish_plan(document, &SourceCatalog::default()).unwrap_err();
         assert!(matches!(
             error,
@@ -920,6 +1072,42 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn normalizes_legacy_documents_to_current_version() {
+        let document = OrchestrationDocument {
+            version: 2,
+            nodes: vec![
+                rule_node("example.com"),
+                group_node(
+                    "group",
+                    "Proxy",
+                    vec![GroupSource::Node {
+                        id: "n1".into(),
+                        weight: 1,
+                    }],
+                ),
+                direct_node(),
+            ],
+            edges: vec![FlowEdge::new("rule-group", "rule", "group")],
+            viewport: FlowViewport::default(),
+        };
+        let normalized = normalize_document(document);
+        assert_eq!(normalized.version, ORCHESTRATION_VERSION);
+        assert!(normalized
+            .nodes
+            .iter()
+            .any(|node| node.kind == FlowNodeKind::Start));
+        assert!(normalized
+            .nodes
+            .iter()
+            .any(|node| node.kind == FlowNodeKind::End));
+        assert!(normalized
+            .edges
+            .iter()
+            .any(|edge| edge.source == "start" && edge.target == "rule"));
+        assert!(check_document_limits(&normalized, Locale::En).is_ok());
+    }
+
     #[tokio::test]
     async fn detects_draft_node_references_and_marks_changed_published_sources() {
         let pool = chaos_store::connect("sqlite::memory:").await.unwrap();
@@ -927,8 +1115,10 @@ mod tests {
         let state = AppState::new(pool, "test-secret".into());
 
         let draft = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
+                start_node(),
+                end_node(),
                 group_node(
                     "draft-group",
                     "Draft",
@@ -939,7 +1129,7 @@ mod tests {
                 ),
                 direct_node(),
             ],
-            edges: vec![],
+            edges: vec![FlowEdge::new("end-direct", "end", "direct")],
             viewport: FlowViewport::default(),
         };
         chaos_store::set_meta(
@@ -958,8 +1148,10 @@ mod tests {
         .unwrap());
 
         let published = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
+                start_node(),
+                end_node(),
                 group_node(
                     "published-group",
                     "Published",
@@ -970,7 +1162,7 @@ mod tests {
                 ),
                 direct_node(),
             ],
-            edges: vec![],
+            edges: vec![FlowEdge::new("end-direct", "end", "direct")],
             viewport: FlowViewport::default(),
         };
         chaos_store::set_meta(
@@ -1003,8 +1195,10 @@ mod tests {
                 .await
                 .unwrap();
         let tagged_source = OrchestrationDocument {
-            version: 2,
+            version: ORCHESTRATION_VERSION,
             nodes: vec![
+                start_node(),
+                end_node(),
                 group_node(
                     "tagged-source",
                     "Tagged Source",
@@ -1015,7 +1209,7 @@ mod tests {
                 ),
                 direct_node(),
             ],
-            edges: vec![],
+            edges: vec![FlowEdge::new("end-direct", "end", "direct")],
             viewport: FlowViewport::default(),
         };
         chaos_store::set_meta(

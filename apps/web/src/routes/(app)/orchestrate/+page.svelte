@@ -44,7 +44,9 @@
 		createGroupNode,
 		createRuleNode,
 		decorateDocument,
+		ORCHESTRATION_VERSION,
 		sanitizeDocument,
+		setEndTarget,
 		setRuleTarget,
 		snapshotDocument,
 		validateLocal
@@ -105,7 +107,7 @@
 		const selectedNode = selectedNodeId;
 		const selectedEdge = selectedEdgeId;
 		const decorated = decorateDocument({
-			version: 2,
+			version: ORCHESTRATION_VERSION,
 			nodes: flowNodes,
 			edges: flowEdges,
 			viewport
@@ -337,11 +339,17 @@
 		}, `target:${ruleId}`);
 	}
 
+	function updateEndTarget(targetId: string | null) {
+		mutate(() => {
+			flowEdges = setEndTarget(targetId, flowNodes, flowEdges);
+		}, 'target:end');
+	}
+
 	function deleteElement(kind: 'node' | 'edge', id: string) {
 		mutate(() => {
 			if (kind === 'node') {
 				const node = flowNodes.find((item) => item.id === id);
-				if (!node || node.type === 'builtin') return;
+				if (!node || node.type === 'builtin' || node.type === 'start' || node.type === 'end') return;
 				flowNodes = flowNodes.filter((item) => item.id !== id);
 				flowEdges = flowEdges.filter((edge) => edge.source !== id && edge.target !== id);
 			} else {
@@ -364,7 +372,9 @@
 
 	function addConnection(connection: Connection) {
 		if (!connection.source || !connection.target) return;
-		updateRuleTarget(connection.source, connection.target);
+		if (connection.source === 'end') updateEndTarget(connection.target);
+		else if (connection.source !== 'start') updateRuleTarget(connection.source, connection.target);
+		else return;
 		selectNode(connection.source);
 	}
 
@@ -605,7 +615,7 @@
 
 				<footer class:blocked={runtimeIssues.length > 0}>
 					<span>DATA PLANE</span>
-					<strong>V2 / DIRECT FALLBACK</strong>
+					<strong>DIRECT FALLBACK</strong>
 				</footer>
 			</aside>
 
@@ -662,6 +672,7 @@
 				onupdaterule={updateRule}
 				onupdategroup={updateGroup}
 				onsettarget={updateRuleTarget}
+				onsetendtarget={updateEndTarget}
 				ondelete={deleteElement}
 				onselectnode={selectNode}
 			/>
