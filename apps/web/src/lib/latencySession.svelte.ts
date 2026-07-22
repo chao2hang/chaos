@@ -10,12 +10,11 @@ import {
 	normalizeTestIds,
 	shouldAcceptGeneration
 } from '$lib/latencySessionCore';
+import { toast } from '$lib/toast.svelte';
 
 export function createLatencySession() {
 	let latencyById = $state<Record<string, LatencyDto>>({});
 	let testing = $state<string | null>(null);
-	let error = $state('');
-	let message = $state('');
 	let generation = 0;
 
 	function dispose() {
@@ -23,14 +22,8 @@ export function createLatencySession() {
 		testing = null;
 	}
 
-	function clearNotices() {
-		error = '';
-		message = '';
-	}
-
 	async function load() {
 		const gen = generation;
-		error = '';
 		try {
 			const response = await listLatency();
 			if (!shouldAcceptGeneration(generation, gen)) return;
@@ -39,7 +32,9 @@ export function createLatencySession() {
 			latencyById = map;
 		} catch (cause) {
 			if (!shouldAcceptGeneration(generation, gen)) return;
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.latencyFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.latencyFailed')
+			});
 		}
 	}
 
@@ -49,21 +44,22 @@ export function createLatencySession() {
 
 		const gen = generation;
 		testing = marker;
-		error = '';
-		message = '';
 		try {
 			const response = await testLatency(normalized);
 			if (!shouldAcceptGeneration(generation, gen)) return;
 			latencyById = mergeLatencyMap(latencyById, response.results);
 			const alive = response.results.filter((result) => result.alive).length;
-			message = t('dashboard.latencyFinished', {
-				alive,
-				total: response.results.length
+			toast.success({
+				title: t('dashboard.latencyFinished', {
+					alive,
+					total: response.results.length
+				})
 			});
 		} catch (cause) {
 			if (!shouldAcceptGeneration(generation, gen)) return;
-			error =
-				cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.latencyFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.latencyFailed')
+			});
 		} finally {
 			if (shouldAcceptGeneration(generation, gen)) testing = null;
 		}
@@ -76,16 +72,9 @@ export function createLatencySession() {
 		get testing() {
 			return testing;
 		},
-		get error() {
-			return error;
-		},
-		get message() {
-			return message;
-		},
 		load,
 		test,
-		dispose,
-		clearNotices
+		dispose
 	};
 }
 

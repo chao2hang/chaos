@@ -8,20 +8,18 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PasswordInput from '$lib/components/ui/PasswordInput.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let username = $state('admin');
 	let password = $state('');
 	let confirmPassword = $state('');
-	let error = $state('');
 	let busy = $state(false);
 	let ready = $state(false);
 	let apiOk = $state(false);
 
 	async function checkStatus() {
 		ready = false;
-		error = '';
 		try {
 			const status = await authStatus();
 			apiOk = true;
@@ -31,7 +29,9 @@
 			}
 		} catch (cause) {
 			apiOk = false;
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.apiDown');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.apiDown')
+			});
 		} finally {
 			ready = true;
 		}
@@ -44,13 +44,12 @@
 
 	async function onSubmit(event: SubmitEvent) {
 		event.preventDefault();
-		error = '';
 		if (password.length < 8) {
-			error = t('auth.setup.passwordTooShort');
+			toast.error({ title: t('auth.setup.passwordTooShort') });
 			return;
 		}
 		if (password !== confirmPassword) {
-			error = t('auth.setup.passwordMismatch');
+			toast.error({ title: t('auth.setup.passwordMismatch') });
 			return;
 		}
 
@@ -64,7 +63,9 @@
 				await goto('/login');
 				return;
 			}
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.failed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.setup.failed')
+			});
 		} finally {
 			busy = false;
 		}
@@ -79,10 +80,8 @@
 	{#if !ready}
 		<LoadingState label={t('auth.setup.checking')} />
 	{:else}
-		<div class="auth-flow">
-			{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-
-			{#if !apiOk}
+<div class="auth-flow">
+				{#if !apiOk}
 				<Button full icon={RefreshCw} onclick={checkStatus}>{t('common.retry')}</Button>
 			{:else}
 				<form class="form-stack" onsubmit={onSubmit}>

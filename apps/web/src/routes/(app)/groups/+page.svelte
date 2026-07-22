@@ -22,20 +22,18 @@
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import ResourceToolbar from '$lib/components/ui/ResourceToolbar.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
 	import NodePickList from '$lib/components/features/NodePickList.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	const policies = ['min_moving_avg', 'fixed', 'random', 'min'];
 
 	let groups = $state<GroupDto[]>([]);
 	let nodes = $state<NodeDto[]>([]);
 	let query = $state('');
-	let error = $state('');
-	let message = $state('');
 	let loaded = $state(false);
 	let formOpen = $state(false);
 	let busy = $state(false);
@@ -52,13 +50,14 @@
 	}
 
 	async function load() {
-		error = '';
 		try {
 			const [groupResult, nodeResult] = await Promise.all([listGroups(), listNodes()]);
 			groups = groupResult.groups;
 			nodes = nodeResult.nodes;
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.loadFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.loadFailed')
+			});
 		} finally {
 			loaded = true;
 		}
@@ -92,21 +91,19 @@
 		policy = 'min_moving_avg';
 		filterTag = '';
 		members = [];
-		formOpen = true;
-		formSnapshot = currentFormSnapshot();
-		error = '';
-	}
+formOpen = true;
+			formSnapshot = currentFormSnapshot();
+		}
 
-	function openEdit(group: GroupDto) {
-		editId = group.id;
-		name = group.name;
-		policy = group.policy;
-		filterTag = group.filter_tag ?? '';
-		members = (group.members ?? []).map((member) => ({ ...member }));
-		formOpen = true;
-		formSnapshot = currentFormSnapshot();
-		error = '';
-	}
+		function openEdit(group: GroupDto) {
+			editId = group.id;
+			name = group.name;
+			policy = group.policy;
+			filterTag = group.filter_tag ?? '';
+			members = (group.members ?? []).map((member) => ({ ...member }));
+			formOpen = true;
+			formSnapshot = currentFormSnapshot();
+		}
 
 	function closeForm() {
 		if (busy) return;
@@ -116,23 +113,22 @@
 	}
 
 	async function onSave() {
-		error = '';
-		message = '';
 		const normalizedName = name.trim();
 		if (!normalizedName) {
-			error = t('groups.nameRequired');
+			toast.error({ title: t('groups.nameRequired') });
 			return;
 		}
 		const duplicate = groups.some(
 			(group) => group.id !== editId && group.name.toLowerCase() === normalizedName.toLowerCase()
 		);
 		if (duplicate) {
-			error = t('groups.nameDuplicate');
+			toast.error({ title: t('groups.nameDuplicate') });
 			return;
 		}
 
 		busy = true;
 		let savedGroup: GroupDto | null = null;
+		let saveFailed = false;
 		try {
 			if (editId) {
 				savedGroup = await updateGroup(editId, {
@@ -140,14 +136,14 @@
 					policy,
 					filter_tag: filterTag.trim() || null
 				});
-				message = t('groups.updated');
+				toast.success({ title: t('groups.updated') });
 			} else {
 				savedGroup = await createGroup({
 					name: normalizedName,
 					policy,
 					filter_tag: filterTag.trim() || undefined
 				});
-				message = t('groups.created');
+				toast.success({ title: t('groups.created') });
 			}
 			await replaceGroupMembers(
 				savedGroup.id,
@@ -156,16 +152,19 @@
 			closeForm();
 			await load();
 		} catch (cause) {
+			saveFailed = true;
 			if (savedGroup) {
 				editId = savedGroup.id;
 				formOpen = true;
-				error = t('groups.membersSaveFailed');
+				toast.error({ title: t('groups.membersSaveFailed') });
 			} else {
-				error = cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.saveFailed');
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.saveFailed')
+				});
 			}
 		} finally {
 			busy = false;
-			if (!error) formOpen = false;
+			if (!saveFailed) formOpen = false;
 		}
 	}
 
@@ -197,15 +196,16 @@
 	async function confirmDelete() {
 		if (!deleteTarget) return;
 		busy = true;
-		error = '';
 		try {
 			const id = deleteTarget.id;
 			await deleteGroup(id);
 			groups = groups.filter((group) => group.id !== id);
 			deleteTarget = null;
-			message = t('groups.deleted');
+			toast.success({ title: t('groups.deleted') });
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.deleteFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.deleteFailed')
+			});
 		} finally {
 			busy = false;
 		}
@@ -230,12 +230,9 @@
 				{formOpen ? t('common.close') : t('groups.addAction')}
 			</Button>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-
-	{#if formOpen}
+		{#if formOpen}
 		<Section
 			title={editId ? t('groups.editTitle') : t('groups.createTitle')}
 			description={t('groups.formDescription')}

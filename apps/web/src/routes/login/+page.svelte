@@ -9,12 +9,11 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PasswordInput from '$lib/components/ui/PasswordInput.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let username = $state('admin');
 	let password = $state('');
-	let error = $state('');
 	let busy = $state(false);
 	let ready = $state(false);
 	let apiOk = $state(false);
@@ -36,7 +35,6 @@
 
 	async function checkApi() {
 		ready = false;
-		error = '';
 		try {
 			await health();
 			apiOk = true;
@@ -47,7 +45,9 @@
 			}
 		} catch (cause) {
 			apiOk = false;
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.login.apiDown');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.login.apiDown')
+			});
 		} finally {
 			ready = true;
 		}
@@ -58,17 +58,27 @@
 		void checkApi();
 	});
 
+	$effect(() => {
+		if (expired) {
+			toast.info({ id: 'auth-expired', title: t('auth.login.expired'), duration: 0 });
+		} else {
+			toast.dismiss('auth-expired');
+		}
+	});
+
 	async function onSubmit(event: SubmitEvent) {
 		event.preventDefault();
 		if (!apiOk) return;
-		error = '';
 		busy = true;
 		try {
 			const response = await login(username.trim(), password);
 			setToken(response.token);
+			toast.dismiss('auth-expired');
 			await goto(loginTarget(), { replaceState: true });
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.login.failed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('auth.login.failed')
+			});
 		} finally {
 			busy = false;
 		}
@@ -80,9 +90,6 @@
 		<LoadingState label={t('auth.login.checkingApi')} />
 	{:else}
 		<div class="auth-flow">
-			{#if expired}<Notice message={t('auth.login.expired')} />{/if}
-			{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-
 			{#if !apiOk}
 				<Button full icon={RefreshCw} onclick={checkApi}>{t('common.retry')}</Button>
 			{:else}

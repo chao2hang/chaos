@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { ArrowRight, RefreshCw, Route as RouteIcon } from '@lucide/svelte';
 	import { ApiClientError, getRouting, type RoutingRuleDto } from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
@@ -8,25 +8,30 @@
 	import ActionLink from '$lib/components/ui/ActionLink.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let rules = $state<RoutingRuleDto[]>([]);
 	let fallback = $state('direct');
-	let error = $state('');
 	let loaded = $state(false);
 	let busy = $state(false);
 
 	async function load() {
 		busy = true;
-		error = '';
 		try {
 			const document = await getRouting();
 			rules = document.rules;
 			fallback = document.fallback;
+			toast.info({
+				id: 'routing-readonly',
+				title: t('routing.readOnlyNotice'),
+				duration: 0
+			});
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('routing.loadFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('routing.loadFailed')
+			});
 		} finally {
 			busy = false;
 			loaded = true;
@@ -35,6 +40,10 @@
 
 	onMount(() => {
 		void load();
+	});
+
+	onDestroy(() => {
+		toast.dismiss('routing-readonly');
 	});
 </script>
 
@@ -54,16 +63,12 @@
 				{t('routing.openOrchestrate')}
 			</ActionLink>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-
-	{#if !loaded}
-		<LoadingState label={t('common.loading')} />
-	{:else}
-		<Notice tone="info" message={t('routing.readOnlyNotice')} />
-
-		<Section title={t('routing.defaultsTitle')} description={t('routing.generatedFallbackDescription')}>
+		{#if !loaded}
+			<LoadingState label={t('common.loading')} />
+		{:else}
+			<Section title={t('routing.defaultsTitle')} description={t('routing.generatedFallbackDescription')}>
 			<div class="fallback-value"><span>{t('routing.fallback')}</span><strong>{fallback}</strong></div>
 		</Section>
 

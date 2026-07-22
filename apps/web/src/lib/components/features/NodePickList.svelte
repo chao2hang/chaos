@@ -7,7 +7,6 @@
 	import { sortByLatency } from '$lib/latencySessionCore';
 	import { t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import SearchInput from '$lib/components/ui/SearchInput.svelte';
 
 	let {
@@ -62,14 +61,7 @@
 </script>
 
 <div class="node-pick-list" class:compact>
-	{#if session.error}
-		<Notice tone="error" message={session.error} ondismiss={() => session.clearNotices()} />
-	{/if}
-	{#if session.message}
-		<Notice tone="success" message={session.message} ondismiss={() => session.clearNotices()} />
-	{/if}
-
-	<div class="node-pick-toolbar">
+		<div class="node-pick-toolbar">
 		<SearchInput bind:value={query} placeholder={t('flow.searchNodes')} />
 		<div class="node-pick-actions">
 			{#if toolbar}{@render toolbar()}{/if}

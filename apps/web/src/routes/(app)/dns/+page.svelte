@@ -15,19 +15,17 @@
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import NamedEndpointEditor, {
 		type NamedEndpoint
 	} from '$lib/components/features/NamedEndpointEditor.svelte';
 	import RoutingRuleEditor from '$lib/components/features/RoutingRuleEditor.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let upstreams = $state<NamedEndpoint[]>([]);
 	let rules = $state<RoutingRuleDto[]>([]);
 	let fallback = $state('alidns');
-	let error = $state('');
-	let message = $state('');
 	let loaded = $state(false);
 	let busy = $state(false);
 	let savedSnapshot = $state('');
@@ -39,7 +37,6 @@
 
 	async function load() {
 		busy = true;
-		error = '';
 		try {
 			const document = await getDns();
 			upstreams = document.upstreams.map((upstream) => ({
@@ -55,7 +52,9 @@
 			savedSnapshot = snapshot();
 			confirmReload = false;
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.loadFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.loadFailed')
+			});
 		} finally {
 			busy = false;
 			loaded = true;
@@ -90,20 +89,18 @@
 	}
 
 	async function onSave() {
-		error = '';
-		message = '';
 		const names = upstreams.map((upstream) => upstream.name.trim()).filter(Boolean);
 		const nameSet = new Set(names);
 		if (!upstreams.length || upstreams.some((upstream) => !upstream.name.trim() || !upstream.value.trim())) {
-			error = t('dns.upstreamRequired');
+			toast.error({ title: t('dns.upstreamRequired') });
 			return;
 		}
 		if (nameSet.size !== names.length) {
-			error = t('dns.duplicateUpstream');
+			toast.error({ title: t('dns.duplicateUpstream') });
 			return;
 		}
 		if (!fallback.trim() || !nameSet.has(fallback.trim())) {
-			error = t('dns.invalidFallback');
+			toast.error({ title: t('dns.invalidFallback') });
 			return;
 		}
 		if (
@@ -113,7 +110,7 @@
 					(!rule.expression.trim() || !rule.outbound.trim() || !nameSet.has(rule.outbound.trim()))
 			)
 		) {
-			error = t('dns.invalidRule');
+			toast.error({ title: t('dns.invalidRule') });
 			return;
 		}
 
@@ -139,9 +136,11 @@
 			}));
 			fallback = document.fallback;
 			savedSnapshot = snapshot();
-			message = t('dns.saved');
+			toast.success({ title: t('dns.saved') });
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.saveFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.saveFailed')
+			});
 		} finally {
 			busy = false;
 		}
@@ -175,12 +174,9 @@
 				{busy && loaded ? t('common.saving') : t('common.saveChanges')}
 			</Button>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-
-	{#if !loaded}
+		{#if !loaded}
 		<LoadingState label={t('common.loading')} />
 	{:else}
 		<Section title={t('dns.upstreams')} description={t('dns.upstreamsDescription')} count={upstreams.length}>

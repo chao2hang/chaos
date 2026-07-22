@@ -5,16 +5,17 @@
 	import { authStatus, ApiClientError } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 	import AppLogo from '$lib/components/ui/AppLogo.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import { toast } from '$lib/toast.svelte';
 
-	let message = $state('');
+	let failed = $state(false);
 	let busy = $state(false);
 
 	async function checkStatus() {
 		busy = true;
-		message = '';
+		failed = false;
+		toast.dismiss('home-api');
 		try {
 			const status = await authStatus();
 			if (!status.initialized) {
@@ -25,7 +26,12 @@
 			await goto(token ? '/dashboard' : '/login');
 		} catch (cause) {
 			const detail = cause instanceof ApiClientError ? cause.message : t('error.request_failed');
-			message = t('home.apiUnreachable', { error: detail });
+			failed = true;
+			toast.error({
+				id: 'home-api',
+				title: t('home.apiUnreachable', { error: detail }),
+				duration: 0
+			});
 		} finally {
 			busy = false;
 		}
@@ -39,8 +45,7 @@
 <main class="boot">
 	<div class="boot-content">
 		<AppLogo />
-		{#if message}
-			<Notice tone="error" {message} />
+		{#if failed}
 			<Button icon={RefreshCw} loading={busy} onclick={() => void checkStatus()}>{t('common.retry')}</Button>
 		{:else}
 			<LoadingState label={t('home.loading')} />
@@ -62,9 +67,5 @@
 		flex-direction: column;
 		align-items: center;
 		gap: var(--space-6);
-	}
-
-	.boot-content :global(.notice) {
-		width: 100%;
 	}
 </style>

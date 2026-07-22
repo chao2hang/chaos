@@ -9,6 +9,7 @@
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	type Connection = {
 		id: string;
@@ -24,7 +25,6 @@
 
 	let connections = $state<Connection[]>([]);
 	let loading = $state(true);
-	let error = $state('');
 	let autoRefresh = $state(true);
 	let interval: ReturnType<typeof setInterval> | null = null;
 
@@ -32,9 +32,8 @@
 		try {
 			const res = await api<{ connections: Connection[] }>('/api/v1/runtime/connections');
 			connections = res.connections;
-			error = '';
 		} catch {
-			error = t('connections.loadFailed');
+			toast.error({ title: t('connections.loadFailed') });
 		} finally {
 			loading = false;
 		}

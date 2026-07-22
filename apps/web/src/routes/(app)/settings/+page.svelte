@@ -14,15 +14,13 @@
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let users = $state<UserDto[]>([]);
 	let loaded = $state(false);
-	let error = $state('');
-	let message = $state('');
 	let createOpen = $state(false);
 	let creating = $state(false);
 	let newUsername = $state('');
@@ -32,15 +30,16 @@
 	let deleting = $state(false);
 
 	async function load() {
-		error = '';
 		try {
 			const res = await listUsers();
 			users = res.users;
 		} catch (cause) {
 			if (cause instanceof ApiClientError && cause.code === 'admin_required') {
-				error = t('settings.adminRequired');
+				toast.error({ title: t('settings.adminRequired') });
 			} else {
-				error = cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.loadFailed');
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.loadFailed')
+				});
 			}
 		} finally {
 			loaded = true;
@@ -48,23 +47,23 @@
 	}
 
 	async function onCreate() {
-		error = '';
-		message = '';
 		if (!newUsername.trim() || newPassword.length < 8) {
-			error = t('settings.invalidInput');
+			toast.error({ title: t('settings.invalidInput') });
 			return;
 		}
 		creating = true;
 		try {
 			await createUser(newUsername.trim(), newPassword, newRole);
-			message = t('settings.userCreated', { name: newUsername.trim() });
+			toast.success({ title: t('settings.userCreated', { name: newUsername.trim() }) });
 			newUsername = '';
 			newPassword = '';
 			newRole = 'user';
 			createOpen = false;
 			await load();
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.createFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.createFailed')
+			});
 		} finally {
 			creating = false;
 		}
@@ -73,14 +72,15 @@
 	async function confirmDelete() {
 		if (!deleteTarget) return;
 		deleting = true;
-		error = '';
 		try {
 			await deleteUser(deleteTarget.id);
-			message = t('settings.userDeleted', { name: deleteTarget.username });
+			toast.success({ title: t('settings.userDeleted', { name: deleteTarget.username }) });
 			deleteTarget = null;
 			await load();
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.deleteFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.deleteFailed')
+			});
 		} finally {
 			deleting = false;
 		}
@@ -104,12 +104,9 @@
 				{createOpen ? t('common.close') : t('settings.addUser')}
 			</Button>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-
-	{#if createOpen}
+		{#if createOpen}
 		<Section title={t('settings.createUserTitle')}>
 			<form class="form-stack" onsubmit={(e) => { e.preventDefault(); void onCreate(); }}>
 				<div class="form-grid">
