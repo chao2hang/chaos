@@ -319,7 +319,7 @@
   "flow.saved": "编排更改已保存",
   "flow.saveFailed": "保存编排失败",
   "flow.loadFailed": "加载编排失败",
-  "flow.applied": "配置已保存并应用，共 {nodes} 个节点",
+  "flow.applied": "配置已保存并应用",
   "flow.groupDeleted": "节点组已删除；相关规则已暂时改为 {replacement}，请检查后保存。",
   "flow.moveUp": "上移",
   "flow.moveDown": "下移",
@@ -360,7 +360,7 @@
   "flow.redo": "重做",
   "flow.autoLayout": "自动整理布局",
   "flow.library.title": "节点库",
-  "flow.library.v2Document": "V4 流程文档",
+  "flow.library.document": "流程文档",
   "flow.library.available": "可添加",
   "flow.library.fixed": "固定出口",
   "flow.library.resources": "可用资源",
@@ -635,7 +635,6 @@
   "flow.validation.chain_unsupported": "链路节点已不再支持",
   "flow.start.hint": "流量入口",
   "flow.end.hint": "默认出口",
-  "flow.library.v4Document": "V4 流程文档",
   "dashboard.geoip": "GeoIP 数据",
   "dashboard.geoipDescription": "按国家/分类分流需要本地 geoip.dat 与 geosite.dat。",
   "dashboard.updateGeoip": "更新 GeoIP",
@@ -683,5 +682,7 @@
   "groups.editNotice": "在此页编辑节点组会同步到分流编排草稿。需要发布时请打开分流编排并「发布并应用」。",
   "routing.editNotice": "在此页编辑规则会同步到分流编排草稿。需要发布时请打开分流编排并「发布并应用」。",
   "routing.saveDraft": "保存草稿",
-  "routing.draftSaved": "分流草稿已保存"
+  "routing.draftSaved": "分流草稿已保存",
+  "flow.rule.migrateOpen": "迁移 {count} 个…",
+  "flow.rule.migrateSelected": "已选 {count} 个域名"
 }

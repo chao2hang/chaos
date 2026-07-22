@@ -324,7 +324,7 @@
   "flow.saved": "Orchestration changes saved",
   "flow.saveFailed": "Failed to save orchestration",
   "flow.loadFailed": "Failed to load orchestration",
-  "flow.applied": "Configuration saved and applied for {nodes} nodes",
+  "flow.applied": "Configuration saved and applied",
   "flow.groupDeleted": "Group deleted. Related rules now use {replacement}; review and save the draft.",
   "flow.moveUp": "Move up",
   "flow.moveDown": "Move down",
@@ -365,7 +365,7 @@
   "flow.redo": "Redo",
   "flow.autoLayout": "Arrange layout",
   "flow.library.title": "Node library",
-  "flow.library.v2Document": "V4 flow document",
+  "flow.library.document": "Flow document",
   "flow.library.available": "Add to canvas",
   "flow.library.fixed": "Fixed outbound",
   "flow.library.resources": "Resources",
@@ -640,7 +640,6 @@
   "flow.validation.chain_unsupported": "Chain nodes are no longer supported",
   "flow.start.hint": "Traffic entry",
   "flow.end.hint": "Default exit",
-  "flow.library.v4Document": "V4 flow document",
   "dashboard.geoip": "GeoIP data",
   "dashboard.geoipDescription": "Country and category routing need local geoip.dat and geosite.dat files.",
   "dashboard.updateGeoip": "Update GeoIP",
@@ -688,5 +687,7 @@
   "groups.editNotice": "Edits here update the orchestration draft. Open Traffic orchestration and Publish & apply when ready.",
   "routing.editNotice": "Edits here update the orchestration draft. Open Traffic orchestration and Publish & apply when ready.",
   "routing.saveDraft": "Save draft",
-  "routing.draftSaved": "Routing draft saved"
+  "routing.draftSaved": "Routing draft saved",
+  "flow.rule.migrateOpen": "Move {count}…",
+  "flow.rule.migrateSelected": "{count} domains selected"
 }

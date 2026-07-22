@@ -24,12 +24,13 @@ import { AlertTriangle, Link2, LockKeyhole, Plus, Trash2, X } from '@lucide/svel
 			parseDomainList,
 			serializeDomainList
 		} from '$lib/orchestration';
-		import Button from '$lib/components/ui/Button.svelte';
-		import Field from '$lib/components/ui/Field.svelte';
-		import MultiSelect from '$lib/components/ui/MultiSelect.svelte';
-		import SearchInput from '$lib/components/ui/SearchInput.svelte';
-		import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
-		import NodePickList from '$lib/components/features/NodePickList.svelte';
+import { tick } from 'svelte';
+			import Button from '$lib/components/ui/Button.svelte';
+			import Field from '$lib/components/ui/Field.svelte';
+			import MultiSelect from '$lib/components/ui/MultiSelect.svelte';
+			import SearchInput from '$lib/components/ui/SearchInput.svelte';
+			import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
+			import NodePickList from '$lib/components/features/NodePickList.svelte';
 
 		type SourceTab = OrchestrationSource['kind'];
 		type ResourceOption = { kind: SourceTab; id: string; name: string; meta: string };
@@ -84,10 +85,12 @@ import { AlertTriangle, Link2, LockKeyhole, Plus, Trash2, X } from '@lucide/svel
 		let query = $state('');
 		let domainDrafts = $state<string[]>(['']);
 		let selectedDomains = $state<string[]>([]);
-		/** Existing rule id, or `__new__` to create a new domain rule. */
-		let migrateTargetId = $state('');
-		let migrateOutboundId = $state('');
-		let domainEditorRuleId = $state<string | null>(null);
+/** Existing rule id, or `__new__` to create a new domain rule. */
+			let migrateTargetId = $state('');
+			let migrateOutboundId = $state('');
+			let migrateOpen = $state(false);
+			let migrateDialogElement = $state<HTMLDivElement | null>(null);
+			let domainEditorRuleId = $state<string | null>(null);
 
 	const selectedSources = $derived(node?.type === 'node_group' ? node.data.sources : []);
 	const selectedIssues = $derived(
@@ -288,12 +291,13 @@ const domainRuleOptions = $derived(
 				if (domainEditorRuleId !== ruleId) {
 					domainEditorRuleId = ruleId;
 					const parts = parseDomainList(pattern);
-					domainDrafts = parts.length ? parts : [''];
-					selectedDomains = [];
-					migrateTargetId = domainRuleOptions.length ? '' : '__new__';
-					migrateOutboundId = '';
-					return;
-				}
+domainDrafts = parts.length ? parts : [''];
+						selectedDomains = [];
+						migrateTargetId = domainRuleOptions.length ? '' : '__new__';
+						migrateOutboundId = '';
+						migrateOpen = false;
+						return;
+					}
 				const serializedDraft = serializeDomainList(domainDrafts);
 				const serializedPattern = serializeDomainList(parseDomainList(pattern));
 				if (serializedDraft !== serializedPattern) {
@@ -340,30 +344,86 @@ const domainRuleOptions = $derived(
 			}
 		}
 
-function migrateSelectedDomains() {
-				if (node?.type !== 'rule' || !canMigrate) return;
-				const toRuleId = migrateTargetId === '__new__' ? null : migrateTargetId;
-				const outboundId =
-					migrateTargetId === '__new__' ? migrateOutboundId || null : undefined;
-				onmigratedomains?.(node.id, toRuleId, selectedDomains, outboundId);
-				const moving = new Set(selectedDomains);
-				const remaining = domainDrafts.filter((row) => {
-					const domain = parseDomainList(row)[0];
-					return !domain || !moving.has(domain);
+function openMigrateDialog() {
+					if (busy || !selectedDomains.length) return;
+					migrateTargetId = domainRuleOptions.length ? '' : '__new__';
+					migrateOutboundId = '';
+					migrateOpen = true;
+				}
+
+				function closeMigrateDialog() {
+					if (busy) return;
+					migrateOpen = false;
+				}
+
+				function onMigrateDialogKeydown(event: KeyboardEvent) {
+					if (!migrateOpen) return;
+					if (event.key === 'Escape') {
+						event.preventDefault();
+						closeMigrateDialog();
+						return;
+					}
+					if (event.key !== 'Tab' || !migrateDialogElement) return;
+					const focusable = Array.from(
+						migrateDialogElement.querySelectorAll<HTMLElement>(
+							'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+						)
+					);
+					if (!focusable.length) return;
+					const first = focusable[0];
+					const last = focusable.at(-1)!;
+					if (event.shiftKey && document.activeElement === first) {
+						event.preventDefault();
+						last.focus();
+					} else if (!event.shiftKey && document.activeElement === last) {
+						event.preventDefault();
+						first.focus();
+					}
+				}
+
+				$effect(() => {
+					if (!migrateOpen || typeof document === 'undefined') return;
+					const previous = document.activeElement as HTMLElement | null;
+					const previousOverflow = document.body.style.overflow;
+					document.body.style.overflow = 'hidden';
+					void tick().then(() =>
+						migrateDialogElement
+							?.querySelector<HTMLElement>('select, button:not(:disabled)')
+							?.focus()
+					);
+					return () => {
+						document.body.style.overflow = previousOverflow;
+						previous?.focus();
+					};
 				});
-				// Parent mutates source pattern; keep local drafts aligned.
-				domainDrafts = remaining.length ? remaining : [''];
-				selectedDomains = [];
-				if (migrateTargetId !== '__new__') migrateTargetId = '';
-			}
 
-			function selectAllDomains() {
-				selectedDomains = parseDomainList(domainDrafts.join(','));
-			}
+				function migrateSelectedDomains() {
+					if (node?.type !== 'rule' || !canMigrate) return;
+					const toRuleId = migrateTargetId === '__new__' ? null : migrateTargetId;
+					const outboundId =
+						migrateTargetId === '__new__' ? migrateOutboundId || null : undefined;
+					onmigratedomains?.(node.id, toRuleId, selectedDomains, outboundId);
+					const moving = new Set(selectedDomains);
+					const remaining = domainDrafts.filter((row) => {
+						const domain = parseDomainList(row)[0];
+						return !domain || !moving.has(domain);
+					});
+					// Parent mutates source pattern; keep local drafts aligned.
+					domainDrafts = remaining.length ? remaining : [''];
+					selectedDomains = [];
+					migrateTargetId = domainRuleOptions.length ? '' : '__new__';
+					migrateOutboundId = '';
+					migrateOpen = false;
+				}
 
-			function clearDomainSelection() {
-				selectedDomains = [];
-			}
+				function selectAllDomains() {
+					selectedDomains = parseDomainList(domainDrafts.join(','));
+				}
+
+				function clearDomainSelection() {
+					selectedDomains = [];
+					migrateOpen = false;
+				}
 
 	function patchGroup(patch: Partial<OrchestrationNodeGroupData>) {
 		if (node?.type === 'node_group') onupdategroup(node.id, patch);
@@ -543,72 +603,27 @@ function migrateSelectedDomains() {
 										>
 											{t('flow.rule.selectAllDomains')}
 										</Button>
-										{#if selectedDomains.length}
-											<Button
-												variant="ghost"
-												size="sm"
-												disabled={busy}
-												onclick={clearDomainSelection}
-											>
-												{t('flow.rule.clearDomainSelection')}
-											</Button>
+{#if selectedDomains.length}
+												<Button
+													variant="ghost"
+													size="sm"
+													disabled={busy}
+													onclick={clearDomainSelection}
+												>
+													{t('flow.rule.clearDomainSelection')}
+												</Button>
+												<Button
+													variant="primary"
+													size="sm"
+													disabled={busy}
+													onclick={openMigrateDialog}
+												>
+													{t('flow.rule.migrateOpen', { count: selectedDomains.length })}
+												</Button>
+											{/if}
 										{/if}
-									{/if}
-								</div>
-								<div class="domain-migrate">
-									<div class="section-title">
-										<strong>{t('flow.rule.migrateTitle')}</strong>
-										<span>{selectedDomains.length}</span>
 									</div>
-									<p class="domain-hint">{t('flow.rule.migrateHint')}</p>
-									<Field label={t('flow.rule.migrateTo')} forId="flow-rule-migrate-target">
-										<select
-											id="flow-rule-migrate-target"
-											value={migrateTargetId}
-											disabled={busy || !selectedDomains.length}
-											onchange={(event) =>
-												(migrateTargetId = (event.currentTarget as HTMLSelectElement).value)}
-										>
-											<option value="">{t('flow.rule.migratePick')}</option>
-											<option value="__new__">{t('flow.rule.migrateNewRule')}</option>
-											{#each domainRuleOptions as target (target.id)}
-												<option value={target.id}>
-													#{target.data.priority ?? '?'} · {nodeName(target)}
-												</option>
-											{/each}
-										</select>
-									</Field>
-									{#if migrateTargetId === '__new__'}
-										<Field
-											label={t('flow.rule.migrateNewOutbound')}
-											forId="flow-rule-migrate-outbound"
-											hint={t('flow.rule.migrateNewOutboundHint')}
-										>
-											<select
-												id="flow-rule-migrate-outbound"
-												value={migrateOutboundId}
-												disabled={busy || !selectedDomains.length}
-												onchange={(event) =>
-													(migrateOutboundId = (event.currentTarget as HTMLSelectElement)
-														.value)}
-											>
-												<option value="">{t('flow.rule.noTarget')}</option>
-												{#each migrateOutboundOptions as target (target.id)}
-													<option value={target.id}>{nodeName(target)}</option>
-												{/each}
-											</select>
-										</Field>
-									{/if}
-									<Button
-										variant="primary"
-										size="sm"
-										disabled={!canMigrate}
-										onclick={migrateSelectedDomains}
-									>
-										{t('flow.rule.migrateAction', { count: selectedDomains.length || 0 })}
-									</Button>
 								</div>
-							</div>
 					{:else}
 						<Field label={t('flow.rule.pattern')} forId="flow-rule-pattern">
 							<input
@@ -795,9 +810,99 @@ function migrateSelectedDomains() {
 	{/if}
 </aside>
 
+<svelte:window onkeydown={migrateOpen ? onMigrateDialogKeydown : undefined} />
+
+{#if migrateOpen && node?.type === 'rule'}
+	<div class="migrate-dialog-layer" role="presentation">
+		<button
+			class="migrate-dialog-backdrop"
+			type="button"
+			aria-label={t('common.cancel')}
+			onclick={closeMigrateDialog}
+		></button>
+		<div
+			bind:this={migrateDialogElement}
+			class="migrate-dialog"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="flow-rule-migrate-title"
+			aria-describedby="flow-rule-migrate-desc"
+		>
+			<header class="migrate-dialog__header">
+				<div>
+					<h2 id="flow-rule-migrate-title">{t('flow.rule.migrateTitle')}</h2>
+					<p id="flow-rule-migrate-desc">
+						{t('flow.rule.migrateHint')}
+						<span class="migrate-dialog__count"
+							>{t('flow.rule.migrateSelected', { count: selectedDomains.length })}</span
+						>
+					</p>
+				</div>
+				<button
+					class="migrate-dialog__close"
+					type="button"
+					aria-label={t('common.cancel')}
+					title={t('common.cancel')}
+					disabled={busy}
+					onclick={closeMigrateDialog}
+				>
+					<X size={16} strokeWidth={1.8} aria-hidden="true" />
+				</button>
+			</header>
+			<div class="migrate-dialog__body">
+				<Field label={t('flow.rule.migrateTo')} forId="flow-rule-migrate-target">
+					<select
+						id="flow-rule-migrate-target"
+						value={migrateTargetId}
+						disabled={busy}
+						onchange={(event) =>
+							(migrateTargetId = (event.currentTarget as HTMLSelectElement).value)}
+					>
+						<option value="">{t('flow.rule.migratePick')}</option>
+						<option value="__new__">{t('flow.rule.migrateNewRule')}</option>
+						{#each domainRuleOptions as target (target.id)}
+							<option value={target.id}>
+								#{target.data.priority ?? '?'} · {nodeName(target)}
+							</option>
+						{/each}
+					</select>
+				</Field>
+				{#if migrateTargetId === '__new__'}
+					<Field
+						label={t('flow.rule.migrateNewOutbound')}
+						forId="flow-rule-migrate-outbound"
+						hint={t('flow.rule.migrateNewOutboundHint')}
+					>
+						<select
+							id="flow-rule-migrate-outbound"
+							value={migrateOutboundId}
+							disabled={busy}
+							onchange={(event) =>
+								(migrateOutboundId = (event.currentTarget as HTMLSelectElement).value)}
+						>
+							<option value="">{t('flow.rule.noTarget')}</option>
+							{#each migrateOutboundOptions as target (target.id)}
+								<option value={target.id}>{nodeName(target)}</option>
+							{/each}
+						</select>
+					</Field>
+				{/if}
+			</div>
+			<footer class="migrate-dialog__footer">
+				<Button variant="ghost" disabled={busy} onclick={closeMigrateDialog}>
+					{t('common.cancel')}
+				</Button>
+				<Button variant="primary" disabled={!canMigrate} onclick={migrateSelectedDomains}>
+					{t('flow.rule.migrateAction', { count: selectedDomains.length || 0 })}
+				</Button>
+			</footer>
+		</div>
+	</div>
+{/if}
+
 <style>
 	.inspector { display: flex; min-width: 0; height: 100%; min-height: 0; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); overflow-y: auto; }
-	.panel-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 4rem; padding: .7rem var(--space-4); border-bottom: 1px solid var(--line-strong); background: var(--surface); }
+	.panel-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 4rem; padding: .7rem var(--space-4); border-bottom: 1px solid var(--line); background: var(--surface); }
 	.panel-header span, .panel-header strong { display: block; }
 	.panel-header span { color: var(--ink-faint); font-family: var(--font-mono); font-size: .58rem; font-weight: 700; text-transform: uppercase; }
 	.panel-header strong { overflow: hidden; max-width: 13rem; margin-top: .12rem; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -891,13 +996,92 @@ function migrateSelectedDomains() {
 	}
 	.domain-actions {
 		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		align-items: center;
 	}
-	.domain-migrate {
+	.migrate-dialog-layer {
+		position: fixed;
+		inset: 0;
+		z-index: 100;
+		display: grid;
+		place-items: center;
+		padding: var(--space-4);
+	}
+	.migrate-dialog-backdrop {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		border: 0;
+		background: var(--overlay);
+		cursor: default;
+	}
+	.migrate-dialog {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		width: min(28rem, 100%);
+		flex-direction: column;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
+		box-shadow: var(--shadow-float);
+	}
+	.migrate-dialog__header {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: var(--space-3);
+		padding: var(--space-5);
+		border-bottom: 1px solid var(--line);
+	}
+	.migrate-dialog__header h2 {
+		margin: 0;
+		font-size: 0.95rem;
+		font-weight: 700;
+	}
+	.migrate-dialog__header p {
+		margin: var(--space-1) 0 0;
+		color: var(--ink-muted);
+		font-size: 0.8rem;
+		line-height: 1.45;
+	}
+	.migrate-dialog__count {
+		display: block;
+		margin-top: 0.35rem;
+		color: var(--ink);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		font-weight: 650;
+	}
+	.migrate-dialog__close {
+		display: inline-grid;
+		place-items: center;
+		width: 1.75rem;
+		height: 1.75rem;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--ink-muted);
+	}
+	.migrate-dialog__close:hover:not(:disabled) {
+		background: var(--surface-subtle);
+		color: var(--ink);
+	}
+	.migrate-dialog__body {
 		display: flex;
 		flex-direction: column;
+		gap: var(--space-3);
+		padding: var(--space-5);
+	}
+	.migrate-dialog__footer {
+		display: flex;
+		justify-content: flex-end;
 		gap: var(--space-2);
-		padding-top: var(--space-1);
-		border-top: 1px dashed var(--line);
+		padding: var(--space-4) var(--space-5);
+		border-top: 1px solid var(--line);
 	}
 		.issue-list { display: flex; flex-direction: column; gap: .45rem; background: var(--danger-surface); }
 	.issue-list > div { display: flex; align-items: flex-start; gap: var(--space-2); font-size: .7rem; }
