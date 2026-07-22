@@ -25,23 +25,32 @@
 	import LogPanel from '$lib/components/LogPanel.svelte';
 	import DiagnosticsPanel from '$lib/components/DiagnosticsPanel.svelte';
 	import Metric from '$lib/components/ui/Metric.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import Status from '$lib/components/ui/Status.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);
 	let latency = $state<LatencyDto[]>([]);
-	let error = $state('');
-	let message = $state('');
 	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | 'geoip' | ''>('');
 	let loaded = $state(false);
 	let confirmStop = $state(false);
 
+	function syncNeedsRepublishToast(active: boolean | undefined) {
+		if (active) {
+			toast.warning({
+				id: 'needs-republish',
+				title: t('dashboard.needsRepublish'),
+				duration: 0
+			});
+		} else if (active === false) {
+			toast.dismiss('needs-republish');
+		}
+	}
+
 	async function refresh() {
 		busy = 'refresh';
-		error = '';
 		try {
 			const [healthResult, runtimeResult, latencyResult] = await Promise.all([
 				health(),
@@ -51,8 +60,11 @@
 			healthInfo = healthResult;
 			runtime = runtimeResult;
 			latency = latencyResult.results;
+			syncNeedsRepublishToast(runtimeResult.needs_republish === true);
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.loadFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.loadFailed')
+			});
 		} finally {
 			busy = '';
 			loaded = true;
@@ -65,15 +77,17 @@
 
 	async function runAllLatency() {
 		busy = 'latency';
-		error = '';
-		message = '';
 		try {
 			const response = await testLatency(null);
 			latency = response.results;
 			const alive = response.results.filter((result) => result.alive).length;
-			message = t('dashboard.latencyFinished', { alive, total: response.results.length });
+			toast.success({
+				title: t('dashboard.latencyFinished', { alive, total: response.results.length })
+			});
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.latencyFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.latencyFailed')
+			});
 		} finally {
 			busy = '';
 		}
@@ -81,8 +95,6 @@
 
 	async function onApply() {
 		busy = 'apply';
-		error = '';
-		message = '';
 		try {
 			const response = await applyRuntime();
 			const methodLabel = response.reload_method === 'hot' 
@@ -90,15 +102,20 @@
 				: response.reload_method === 'cold_start'
 					? t('dashboard.reloadColdStart')
 					: t('dashboard.reloadCold');
-			message = t('dashboard.appliedWithMethod', {
-				nodes: response.nodes,
-				path: response.config_path,
-				running: String(response.running),
-				method: methodLabel
+			toast.success({
+				title: t('dashboard.appliedWithMethod', {
+					nodes: response.nodes,
+					path: response.config_path,
+					running: String(response.running),
+					method: methodLabel
+				})
 			});
 			runtime = await getRuntime();
+			syncNeedsRepublishToast(runtime.needs_republish === true);
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.applyFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.applyFailed')
+			});
 		} finally {
 			busy = '';
 		}
@@ -106,14 +123,15 @@
 
 	async function onStop() {
 		busy = 'stop';
-		error = '';
-		message = '';
 		try {
 			runtime = await stopRuntime();
-			message = t('dashboard.stopRequested');
+			toast.success({ title: t('dashboard.stopRequested') });
 			confirmStop = false;
+			syncNeedsRepublishToast(runtime.needs_republish === true);
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.stopFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.stopFailed')
+			});
 		} finally {
 			busy = '';
 		}
@@ -121,14 +139,14 @@
 
 	async function onUpdateGeoIp() {
 		busy = 'geoip';
-		error = '';
-		message = '';
 		try {
 			const result = await updateGeoIpData();
 			if (runtime) runtime = { ...runtime, geoip_data: result };
-			message = t('dashboard.geoipUpdated');
+			toast.success({ title: t('dashboard.geoipUpdated') });
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.geoipUpdateFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.geoipUpdateFailed')
+			});
 		} finally {
 			busy = '';
 		}
@@ -167,13 +185,9 @@
 				onclick={refresh}
 			/>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-	{#if runtime?.needs_republish}<Notice message={t('dashboard.needsRepublish')} />{/if}
-
-	{#if !loaded}
+		{#if !loaded}
 		<LoadingState label={t('dashboard.loading')} />
 	{:else}
 		<section class="metrics" aria-label={t('dashboard.title')}>

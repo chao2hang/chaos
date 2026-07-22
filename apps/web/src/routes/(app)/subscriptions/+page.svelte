@@ -17,19 +17,17 @@
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import ResourceToolbar from '$lib/components/ui/ResourceToolbar.svelte';
 	import Section from '$lib/components/ui/Section.svelte';
 	import Status from '$lib/components/ui/Status.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let subscriptions = $state<SubscriptionDto[]>([]);
 	let url = $state('');
 	let tag = $state('');
 	let query = $state('');
-	let error = $state('');
-	let message = $state('');
 	let loaded = $state(false);
 	let importOpen = $state(false);
 	let importing = $state(false);
@@ -37,13 +35,27 @@
 	let deleteTarget = $state<SubscriptionDto | null>(null);
 	let deleting = $state(false);
 
+	function syncNeedsRepublishToast(active: boolean) {
+		if (active) {
+			toast.warning({
+				id: 'needs-republish',
+				title: t('subscriptions.needsRepublish'),
+				duration: 0
+			});
+		} else {
+			toast.dismiss('needs-republish');
+		}
+	}
+
 	async function load() {
-		error = '';
 		try {
 			const response = await listSubscriptions();
 			subscriptions = response.subscriptions;
+			syncNeedsRepublishToast(subscriptions.some((subscription) => subscription.needs_republish));
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.loadFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.loadFailed')
+			});
 		} finally {
 			loaded = true;
 		}
@@ -54,24 +66,26 @@
 	});
 
 	async function onImport() {
-		error = '';
-		message = '';
 		const value = url.trim();
 		if (!value) {
-			error = t('subscriptions.urlRequired');
+			toast.error({ title: t('subscriptions.urlRequired') });
 			return;
 		}
 
 		importing = true;
 		try {
 			const response = await importSubscription(value, tag.trim() || undefined);
-			message = t('subscriptions.imported', { count: response.subscription.node_count });
+			toast.success({
+				title: t('subscriptions.imported', { count: response.subscription.node_count })
+			});
 			url = '';
 			tag = '';
 			importOpen = false;
 			await load();
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.importFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.importFailed')
+			});
 		} finally {
 			importing = false;
 		}
@@ -79,14 +93,16 @@
 
 	async function onRefresh(id: string) {
 		refreshingId = id;
-		error = '';
-		message = '';
 		try {
 			const response = await refreshSubscription(id);
-			message = t('subscriptions.refreshed', { count: response.subscription.node_count });
+			toast.success({
+				title: t('subscriptions.refreshed', { count: response.subscription.node_count })
+			});
 			await load();
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed')
+			});
 		} finally {
 			refreshingId = null;
 		}
@@ -97,22 +113,26 @@
 			await setSubscriptionRefresh(id, hours);
 			await load();
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.refreshFailed')
+			});
 		}
 	}
 
 	async function confirmDelete() {
 		if (!deleteTarget) return;
 		deleting = true;
-		error = '';
 		try {
 			const id = deleteTarget.id;
 			await deleteSubscription(id);
 			subscriptions = subscriptions.filter((subscription) => subscription.id !== id);
 			deleteTarget = null;
-			message = t('subscriptions.deleted');
+			toast.success({ title: t('subscriptions.deleted') });
+			syncNeedsRepublishToast(subscriptions.some((subscription) => subscription.needs_republish));
 		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.deleteFailed');
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('subscriptions.deleteFailed')
+			});
 		} finally {
 			deleting = false;
 		}
@@ -138,7 +158,6 @@
 	});
 
 	const totalNodes = $derived(subscriptions.reduce((total, subscription) => total + subscription.node_count, 0));
-	const needsRepublish = $derived(subscriptions.some((subscription) => subscription.needs_republish));
 </script>
 
 <AppPage>
@@ -152,13 +171,9 @@
 				{importOpen ? t('common.close') : t('subscriptions.importAction')}
 			</Button>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-	{#if needsRepublish}<Notice message={t('subscriptions.needsRepublish')} />{/if}
-
-	{#if importOpen}
+		{#if importOpen}
 		<Section title={t('subscriptions.importTitle')} description={t('subscriptions.importDescription')}>
 			<form class="form-stack" onsubmit={(event) => { event.preventDefault(); void onImport(); }}>
 				<div class="form-grid">
