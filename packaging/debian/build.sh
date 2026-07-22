@@ -146,11 +146,27 @@ EOF
 cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
-mkdir -p /var/lib/chaos/dae
+mkdir -p /var/lib/chaos/dae /var/lib/chaos/backups
 chmod 700 /var/lib/chaos || true
-systemctl daemon-reload
-systemctl enable chaos.service || true
-echo "chaos installed. Start with: sudo systemctl start chaos"
+
+# Containers / cloud images often have no systemd as PID 1.
+have_systemd=0
+if command -v systemctl >/dev/null 2>&1; then
+  if [ -d /run/systemd/system ] || [ "$(cat /proc/1/comm 2>/dev/null)" = "systemd" ]; then
+    have_systemd=1
+  fi
+fi
+
+if [ "$have_systemd" = 1 ]; then
+  systemctl daemon-reload || true
+  systemctl enable chaos.service || true
+  echo "chaos installed. Start with: sudo systemctl start chaos"
+else
+  echo "chaos installed (no systemd detected)."
+  echo "Start manually:"
+  echo "  set -a; . /etc/chaos/chaos.env; set +a"
+  echo "  /usr/lib/chaos/bin/chaos-api"
+fi
 echo "Dashboard: http://127.0.0.1:2030"
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/postinst"
@@ -158,8 +174,10 @@ chmod 755 "$PKG_DIR/DEBIAN/postinst"
 cat > "$PKG_DIR/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-systemctl stop chaos.service 2>/dev/null || true
-systemctl disable chaos.service 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl stop chaos.service 2>/dev/null || true
+  systemctl disable chaos.service 2>/dev/null || true
+fi
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/prerm"
 
@@ -167,7 +185,9 @@ cat > "$PKG_DIR/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
 if [ "$1" = "purge" ]; then
-  systemctl daemon-reload 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload 2>/dev/null || true
+  fi
   echo "Note: /var/lib/chaos was left in place. Remove manually if desired."
 fi
 EOF
