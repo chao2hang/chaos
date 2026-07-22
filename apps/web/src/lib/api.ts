@@ -735,3 +735,31 @@ export function putDns(doc: DnsDocument) {
 		body: JSON.stringify(doc)
 	});
 }
+
+export type NetworkDocument = {
+	wan_interfaces: string[];
+	lan_interfaces: string[];
+	auto_config_kernel_parameter: boolean;
+};
+
+export type NetworkInterfaceInfo = {
+	name: string;
+	ips: string[];
+	up: boolean;
+	is_default_route: boolean;
+};
+
+export function getNetwork() {
+	return api<NetworkDocument>('/api/v1/network');
+}
+
+export function putNetwork(doc: NetworkDocument) {
+	return api<NetworkDocument>('/api/v1/network', {
+		method: 'PUT',
+		body: JSON.stringify(doc)
+	});
+}
+
+export function getNetworkInterfaces() {
+	return api<{ interfaces: NetworkInterfaceInfo[] }>('/api/v1/network/interfaces');
+}

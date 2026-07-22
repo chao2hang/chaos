@@ -2,20 +2,21 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import {
-		Boxes,
-		LayoutDashboard,
-		LogOut,
-		Menu,
-		Network,
-		RadioTower,
-		Route,
-		Server,
-		Settings,
-		Unplug,
-		Workflow,
-		X
-	} from '@lucide/svelte';
+import {
+			Boxes,
+			Cable,
+			LayoutDashboard,
+			LogOut,
+			Menu,
+			Network,
+			RadioTower,
+			Route,
+			Server,
+			Settings,
+			Unplug,
+			Workflow,
+			X
+		} from '@lucide/svelte';
 	import { setToken } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 	import AppLogo from '$lib/components/ui/AppLogo.svelte';
@@ -78,10 +79,11 @@
 		{
 			label: t('nav.section.policies'),
 			links: [
-				{ href: '/groups', label: t('nav.groups'), icon: Boxes },
-				{ href: '/routing', label: t('nav.routing'), icon: Route },
-				{ href: '/dns', label: t('nav.dns'), icon: Network },
-				{ href: '/settings', label: t('nav.settings'), icon: Settings }
+{ href: '/groups', label: t('nav.groups'), icon: Boxes },
+					{ href: '/routing', label: t('nav.routing'), icon: Route },
+					{ href: '/dns', label: t('nav.dns'), icon: Network },
+					{ href: '/network', label: t('nav.network'), icon: Cable },
+					{ href: '/settings', label: t('nav.settings'), icon: Settings }
 			]
 		}
 	]);
@@ -159,23 +161,35 @@
 {/if}
 
 <style>
+	/*
+	  App shell is viewport-fixed. Document-level scroll is intentionally disabled
+	  (see html/body overflow); only .content scrolls. Fixed + inset avoids the
+	  classic grid min-height:auto blowout that makes 100dvh shells still overflow.
+	*/
 	.shell {
-		min-height: 100vh;
+		position: fixed;
+		inset: 0;
 		display: grid;
 		grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr);
+		width: 100%;
+		height: 100%;
+		min-height: 0;
+		overflow: hidden;
+		background: var(--canvas);
 	}
 
 	.sidebar {
-		position: sticky;
-		top: 0;
 		z-index: 30;
 		display: flex;
-		height: 100vh;
+		min-width: 0;
 		min-height: 0;
+		height: 100%;
 		flex-direction: column;
 		padding: var(--space-4) var(--space-3);
 		border-right: 1px solid var(--line);
 		background: var(--surface);
+		overflow: hidden;
 	}
 
 	.brand-row {
@@ -270,16 +284,30 @@
 	}
 
 	.main-column {
+		display: flex;
 		min-width: 0;
+		min-height: 0;
+		flex-direction: column;
+		height: 100%;
+		max-height: 100%;
+		overflow: hidden;
 	}
 
 	.mobile-bar {
 		display: none;
+		flex-shrink: 0;
 	}
 
 	.content {
+		display: flex;
 		width: 100%;
+		min-height: 0;
+		/* 0 basis so padding + header cannot inflate past the shell. */
+		flex: 1 1 0;
+		flex-direction: column;
 		padding: var(--space-8) var(--space-8) var(--space-12);
+		overflow-x: hidden;
+		overflow-y: auto;
 	}
 
 	.scrim {
@@ -292,7 +320,8 @@
 
 	@media (max-width: 900px) {
 		.shell {
-			display: block;
+			display: flex;
+			flex-direction: column;
 		}
 
 		.sidebar {
@@ -300,6 +329,7 @@
 			left: 0;
 			top: 0;
 			width: min(var(--sidebar-width), 88vw);
+			height: 100%;
 			transform: translateX(-102%);
 			transition: transform 180ms ease;
 			box-shadow: var(--shadow-float);
