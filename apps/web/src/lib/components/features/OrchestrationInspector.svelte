@@ -585,25 +585,26 @@ function openMigrateDialog() {
 								{/each}
 							</div>
 <div class="domain-actions">
-									<Button
-										variant="ghost"
-										size="sm"
-										icon={Plus}
-										disabled={busy}
-										onclick={addDomainRow}
-									>
-										{t('flow.rule.addDomain')}
-									</Button>
-									{#if parseDomainList(domainDrafts.join(',')).length}
+									<div class="domain-actions__row">
 										<Button
 											variant="ghost"
 											size="sm"
+											icon={Plus}
 											disabled={busy}
-											onclick={selectAllDomains}
+											onclick={addDomainRow}
 										>
-											{t('flow.rule.selectAllDomains')}
+											{t('flow.rule.addDomain')}
 										</Button>
-{#if selectedDomains.length}
+										{#if parseDomainList(domainDrafts.join(',')).length}
+											<Button
+												variant="ghost"
+												size="sm"
+												disabled={busy}
+												onclick={selectAllDomains}
+											>
+												{t('flow.rule.selectAllDomains')}
+											</Button>
+											{#if selectedDomains.length}
 												<Button
 													variant="ghost"
 													size="sm"
@@ -612,17 +613,22 @@ function openMigrateDialog() {
 												>
 													{t('flow.rule.clearDomainSelection')}
 												</Button>
-												<Button
-													variant="primary"
-													size="sm"
-													disabled={busy}
-													onclick={openMigrateDialog}
-												>
-													{t('flow.rule.migrateOpen', { count: selectedDomains.length })}
-												</Button>
 											{/if}
 										{/if}
 									</div>
+									{#if selectedDomains.length}
+										<Button
+											class="domain-migrate-trigger"
+											variant="primary"
+											size="sm"
+											full
+											disabled={busy}
+											onclick={openMigrateDialog}
+										>
+											{t('flow.rule.migrateOpen', { count: selectedDomains.length })}
+										</Button>
+									{/if}
+								</div>
 								</div>
 					{:else}
 						<Field label={t('flow.rule.pattern')} forId="flow-rule-pattern">
@@ -996,9 +1002,31 @@ function openMigrateDialog() {
 	}
 	.domain-actions {
 		display: flex;
-		flex-wrap: wrap;
+		flex-direction: column;
+		align-items: stretch;
 		gap: var(--space-2);
+		min-width: 0;
+	}
+	.domain-actions__row {
+		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+	.domain-actions__row :global(.ui-command) {
+		flex: 0 0 auto;
+	}
+	.domain-actions :global(.domain-migrate-trigger),
+	.domain-actions :global(.domain-migrate-trigger .ui-command__label) {
+		overflow: visible;
+		text-overflow: clip;
+		white-space: nowrap;
+	}
+	.domain-actions :global(.domain-migrate-trigger) {
+		justify-content: center;
+		min-width: 0;
+		width: 100%;
 	}
 	.migrate-dialog-layer {
 		position: fixed;

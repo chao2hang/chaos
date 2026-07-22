@@ -688,6 +688,6 @@
   "routing.editNotice": "Edits here update the orchestration draft. Open Traffic orchestration and Publish & apply when ready.",
   "routing.saveDraft": "Save draft",
   "routing.draftSaved": "Routing draft saved",
-  "flow.rule.migrateOpen": "Move {count}…",
+  "flow.rule.migrateOpen": "Move {count}",
   "flow.rule.migrateSelected": "{count} domains selected"
 }

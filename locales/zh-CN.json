@@ -683,6 +683,6 @@
   "routing.editNotice": "在此页编辑规则会同步到分流编排草稿。需要发布时请打开分流编排并「发布并应用」。",
   "routing.saveDraft": "保存草稿",
   "routing.draftSaved": "分流草稿已保存",
-  "flow.rule.migrateOpen": "迁移 {count} 个…",
+  "flow.rule.migrateOpen": "迁移 {count} 个",
   "flow.rule.migrateSelected": "已选 {count} 个域名"
 }
