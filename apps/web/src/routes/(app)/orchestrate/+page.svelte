@@ -55,8 +55,7 @@
 	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import Notice from '$lib/components/ui/Notice.svelte';
-	import { toast } from '$lib/toast.svelte';
+import { toast } from '$lib/toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
 	import OrchestrationCanvas from '$lib/components/features/OrchestrationCanvas.svelte';
@@ -74,10 +73,8 @@
 	let selectedNodeId = $state<string | null>(null);
 	let selectedEdgeId = $state<string | null>(null);
 	let loaded = $state(false);
-	let busy = $state<'load' | 'save' | 'publish' | ''>('');
-	let error = $state('');
-	let message = $state('');
-	let confirmReload = $state(false);
+let busy = $state<'load' | 'save' | 'publish' | ''>('');
+		let confirmReload = $state(false);
 	let savedSnapshot = $state('');
 	let undoStack = $state<string[]>([]);
 	let redoStack = $state<string[]>([]);
@@ -189,22 +186,33 @@
 		restoreSnapshot(next);
 	}
 
-	async function load() {
-		busy = 'load';
-		error = '';
-		message = '';
-		try {
-			const [document, nodeResult, subscriptionResult, groupResult] = await Promise.all([
-				getOrchestration(),
-				listNodes(),
-				listSubscriptions(),
-				listGroups()
-			]);
-			inventoryNodes = nodeResult.nodes;
-			subscriptions = subscriptionResult.subscriptions;
-			groups = groupResult.groups.map((group) => ({ ...group, members: group.members ?? [] }));
-			needsRepublish = document.needs_republish === true;
-			setDocument(document);
+function syncNeedsRepublishToast(active: boolean) {
+			if (active) {
+				toast.warning({
+					id: 'needs-republish',
+					title: t('flow.needsRepublish'),
+					duration: 0
+				});
+			} else {
+				toast.dismiss('needs-republish');
+			}
+		}
+
+		async function load() {
+			busy = 'load';
+			try {
+				const [document, nodeResult, subscriptionResult, groupResult] = await Promise.all([
+					getOrchestration(),
+					listNodes(),
+					listSubscriptions(),
+					listGroups()
+				]);
+				inventoryNodes = nodeResult.nodes;
+				subscriptions = subscriptionResult.subscriptions;
+				groups = groupResult.groups.map((group) => ({ ...group, members: group.members ?? [] }));
+				needsRepublish = document.needs_republish === true;
+				syncNeedsRepublishToast(needsRepublish);
+				setDocument(document);
 			const requestedGroup = page.url.searchParams.get('group');
 			if (requestedGroup) {
 				const target = flowNodes.find(
@@ -225,13 +233,15 @@
 			undoStack = [];
 			redoStack = [];
 			confirmReload = false;
-		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.loadFailed');
-		} finally {
-			busy = '';
-			loaded = true;
+} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.loadFailed')
+				});
+			} finally {
+				busy = '';
+				loaded = true;
+			}
 		}
-	}
 
 	onMount(() => {
 		void load();
@@ -414,60 +424,63 @@
 		pushHistory(before, 'layout');
 	}
 
-	async function saveDraft() {
-		error = '';
-		message = '';
-		busy = 'save';
-		try {
-			const saved = await putOrchestration(currentDocument());
-			setDocument(saved);
-			savedSnapshot = currentSnapshot();
-			undoStack = [];
-			redoStack = [];
-			message = t('flow.draftSaved');
-		} catch (cause) {
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed');
-		} finally {
-			busy = '';
-		}
-	}
-
-	async function publishAndApply() {
-		error = '';
-		message = '';
-		if (!validation.dae_compatible) {
-			error = validation.issues
-				.slice(0, 6)
-				.map((issue) => t(`flow.validation.${issue.code}`))
-				.join('\n');
-			return;
-		}
-
-		busy = 'publish';
-		try {
-			const result = await publishOrchestration(currentDocument());
-			setDocument(result.document);
-			savedSnapshot = currentSnapshot();
-			undoStack = [];
-			redoStack = [];
-			groups = (await listGroups()).groups.map((group) => ({
-				...group,
-				members: group.members ?? []
-			}));
-			message = t('flow.applied', { nodes: result.applied.nodes });
-			needsRepublish = false;
-		} catch (cause) {
-			if (cause instanceof ApiClientError && cause.draftSaved) {
+async function saveDraft() {
+			busy = 'save';
+			try {
+				const saved = await putOrchestration(currentDocument());
+				setDocument(saved);
 				savedSnapshot = currentSnapshot();
 				undoStack = [];
 				redoStack = [];
-				message = t('flow.draftSavedApplyFailed');
+				toast.success({ title: t('flow.draftSaved') });
+			} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed')
+				});
+			} finally {
+				busy = '';
 			}
-			error = cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed');
-		} finally {
-			busy = '';
 		}
-	}
+
+		async function publishAndApply() {
+			if (!validation.dae_compatible) {
+				toast.error({
+					title: validation.issues
+						.slice(0, 6)
+						.map((issue) => t(`flow.validation.${issue.code}`))
+						.join('\n')
+				});
+				return;
+			}
+
+			busy = 'publish';
+			try {
+				const result = await publishOrchestration(currentDocument());
+				setDocument(result.document);
+				savedSnapshot = currentSnapshot();
+				undoStack = [];
+				redoStack = [];
+				groups = (await listGroups()).groups.map((group) => ({
+					...group,
+					members: group.members ?? []
+				}));
+				toast.success({ title: t('flow.applied', { nodes: result.applied.nodes }) });
+				needsRepublish = false;
+				syncNeedsRepublishToast(false);
+			} catch (cause) {
+				if (cause instanceof ApiClientError && cause.draftSaved) {
+					savedSnapshot = currentSnapshot();
+					undoStack = [];
+					redoStack = [];
+					toast.warning({ title: t('flow.draftSavedApplyFailed') });
+				}
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed')
+				});
+			} finally {
+				busy = '';
+			}
+		}
 
 	function onBeforeUnload(event: BeforeUnloadEvent) {
 		if (!dirty || isSessionRedirectPending()) return;
@@ -537,13 +550,9 @@
 				{t('flow.publishApply')}
 			</Button>
 		{/snippet}
-	</PageHeader>
+</PageHeader>
 
-	{#if error}<Notice tone="error" message={error} ondismiss={() => (error = '')} />{/if}
-	{#if message}<Notice tone="success" message={message} ondismiss={() => (message = '')} />{/if}
-	{#if needsRepublish}<Notice message={t('flow.needsRepublish')} />{/if}
-
-	{#if !loaded}
+		{#if !loaded}
 		<LoadingState label={t('common.loading')} />
 		{:else}
 			<div class="mobile-panel-switch">
