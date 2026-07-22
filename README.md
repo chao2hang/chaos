@@ -1,135 +1,171 @@
 # chaos
 
-Modern control plane for [dae](https://github.com/daeuniverse/dae): **Rust API + SvelteKit UI + vendored dae**.
+**[English](README.en.md)** · 中文
 
-> Status: **MVP on branch `feat/mvp`**. Design: [product design](docs/superpowers/specs/2026-07-18-chaos-product-design.md). Plan: [MVP plan](docs/superpowers/plans/2026-07-18-chaos-mvp.md).
+面向 [dae](https://github.com/daeuniverse/dae) 的现代控制面：**Rust API + SvelteKit 控制台 + 内置 dae 数据面**。
 
-## Goals
+一次安装即可使用，无需再单独装 daed / dae-wing。
 
-- Full replacement for daed as a product experience (phased)
-- Single install ships `chaos` and `dae` (no separate dae/daed/dae-wing required for the product path)
-- REST JSON API; SvelteKit console
+[![Release](https://img.shields.io/github/v/release/chao2hang/chaos?display_name=tag&sort=semver)](https://github.com/chao2hang/chaos/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](Cargo.toml)
 
-## Layout
+---
 
-```text
-apps/web              SvelteKit console
-crates/chaos-api      REST server (127.0.0.1:2030)
-crates/chaos-core     domain + latency + config render
-crates/chaos-dae      dae binary integration
-crates/chaos-store    SQLite
-scripts/dev.sh        run API + web together
-scripts/fetch-dae.sh  download pinned dae into third_party/
-third_party/dae/      VERSION pin + current/dae (gitignored binary)
-data/                 gitignored SQLite, jwt secret, dae work dir
-```
+## 特性一览
 
-## Prerequisites
+| 模块 | 能力 |
+|------|------|
+| **节点 / 订阅** | 分享链接导入、订阅拉取与定时刷新、延迟探测 |
+| **分流编排** | 可视化画布：规则 → 节点组 / DIRECT，校验、模拟、发布并 Apply |
+| **DNS / 网络** | DNS 上游与规则；WAN/LAN 网卡与内核参数选项 |
+| **运行时** | Apply / 重载 / 停止、日志、诊断（权限 / eBPF / 内核） |
+| **权限** | 首个账号为 **admin**；运行时变更、发布、备份等需管理员 |
+| **备份** | 创建 / 列表 / 下载 / 恢复（数据库与 `config.dae`） |
+| **安装包** | **amd64** 与 **arm64** 的 `.deb` + FHS `.tar.gz`，tag 推送自动发版 |
 
-- Linux (data plane matches dae)
-- Rust stable (`cargo`, `rustc` 1.97+ tested)
-- Node 20+ and **pnpm** 10+
-- Optional: network access for `scripts/fetch-dae.sh`
+默认只监听 **`127.0.0.1:2030`**，与系统 daed（常见 `:2023`）可并存。
 
-## Quick start (dev)
+---
+
+## 安装（推荐）
+
+从 [Releases](https://github.com/chao2hang/chaos/releases/latest) 下载对应架构包。
+
+### Debian / Ubuntu
 
 ```bash
-cd /home/chaos/projects/personal/chaos
-git checkout feat/mvp   # if needed
+# x86_64
+curl -fL -O https://github.com/chao2hang/chaos/releases/download/v0.1.0/chaos_0.1.0_amd64.deb
+sudo dpkg -i chaos_0.1.0_amd64.deb
+# 若依赖提示，可: sudo apt-get install -f
 
-# JS deps
+# aarch64
+# curl -fL -O https://github.com/chao2hang/chaos/releases/download/v0.1.0/chaos_0.1.0_arm64.deb
+# sudo dpkg -i chaos_0.1.0_arm64.deb
+
+sudo systemctl enable --now chaos
+```
+
+### Arch / CachyOS 等（非 Debian 系）
+
+`.deb` 的 `Depends: libc6` 可能无法直接配置，请用 FHS tar：
+
+```bash
+curl -fL -O https://github.com/chao2hang/chaos/releases/download/v0.1.0/chaos_0.1.0_linux_amd64.tar.gz
+sudo tar -xzf chaos_0.1.0_linux_amd64.tar.gz -C /
+sudo systemctl enable --now chaos
+```
+
+### 打开控制台
+
+浏览器访问：**http://127.0.0.1:2030**
+
+1. **首次运行** → 创建管理员账号（永久为 `admin`）
+2. 导入节点 / 订阅 → 测延迟
+3. **分流编排** 中设计规则 → **发布并应用**
+4. **仪表盘** 查看状态、重载 / 停止 dae
+
+```bash
+systemctl status chaos
+journalctl -u chaos -f
+```
+
+| 路径 | 说明 |
+|------|------|
+| `/etc/chaos/chaos.env` | 环境变量（conffile） |
+| `/var/lib/chaos/` | 数据库、JWT、dae 工作目录、备份 |
+| `/usr/lib/chaos/bin/` | `chaos-api`、`dae` |
+| `/usr/share/chaos/web/` | 静态控制台 |
+
+---
+
+## 自动发版
+
+推送 **`v*`** 标签会触发 GitHub Actions：在 **amd64** 与 **arm64** runner 上打包，并发布到 Release。
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+工作流：[`.github/workflows/release.yml`](.github/workflows/release.yml)
+
+---
+
+## 开发
+
+### 依赖
+
+- Linux（数据面与 dae 一致）
+- Rust stable、Node 20+、**pnpm** 10+
+
+### 启动
+
+```bash
 pnpm install
-
-# Optional: vendored dae (enables real apply; needs privileges for eBPF)
-./scripts/fetch-dae.sh
-
-# One process: API on :2030 + web on :5173
-./scripts/dev.sh
-# or: pnpm dev
+./scripts/fetch-dae.sh          # 可选，真实 Apply 需要
+./scripts/dev.sh                # API :2030 + Web :5173
+# 或: pnpm dev
 ```
 
-Open **http://127.0.0.1:5173**
-
-1. **Setup** — first run only: create the **first account** (this user is always **admin**)
-2. **Login** with that account (or later accounts, if any)
-3. **Nodes** / **Subscriptions** / **Flow** — import & orchestrate
-4. **Dashboard** — Test latency, Apply config, Stop dae
-
-### Auth system rule
-
-- On a **fresh install** (`users` empty), only `/api/v1/auth/setup` may create the first user.
-- That first user is stored with **`role = admin`** and is the system administrator.
-- After setup, `/setup` is closed (`already_initialized`); further accounts (future multi-user) default to `role = user`.
-- JWT includes `role` for admin-gated APIs later.
-
-### Split terminals
+打开 **http://127.0.0.1:5173**（开发态由 Vite 代理 `/api`）。
 
 ```bash
-pnpm dev:api    # cargo run -p chaos-api  → http://127.0.0.1:2030
-pnpm dev:web    # SvelteKit               → http://127.0.0.1:5173 (proxies /api)
+pnpm dev:api    # cargo run -p chaos-api
+pnpm dev:web    # SvelteKit
 ```
 
-### Environment
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `CHAOS_BIND` | `127.0.0.1:2030` | API listen address |
-| `CHAOS_DATABASE_URL` | `sqlite:./data/chaos.db?mode=rwc` | SQLite |
-| `CHAOS_JWT_SECRET` | auto `./data/jwt.secret` | JWT HMAC secret |
-| `CHAOS_DAE_BIN` | `third_party/dae/current/dae` if present | dae binary path |
-| `CHAOS_DAE_WORK_DIR` | `./data/dae` | config + pid dir |
-
-## Ports vs system daed
-
-| Service | Port |
-|---------|------|
-| **chaos API** | **2030** |
-| system **daed** (if installed) | **2023** |
-
-They can run side by side. chaos does **not** use dae-wing GraphQL.
-
-## Apply / dae notes
-
-- **Latency tests** are TCP connect probes; dae does not need to be running.
-- **Apply** writes `data/dae/config.dae` (mode **0600** — dae rejects world-readable configs) and runs  
-  `dae run -c <config.dae> --disable-pidfile [--disable-sudo]` (MVP restart strategy).
-- Real transparent proxy needs **root / CAP_NET_ADMIN / eBPF** and a suitable kernel. Without privileges Apply returns `dae_permission_denied` or `dae_start_failed` with a log excerpt (not a generic 500).
-- By default **sudo is disabled** so the API never hangs on a password prompt. Options:
-  - run `chaos-api` as root, or
-  - set `CHAOS_DAE_ALLOW_SUDO=1` with **passwordless** sudo for the dae binary, or
-- use `CHAOS_DAE_BIN=crates/chaos-dae/tests/fixtures/fake-dae.sh` for UI-only apply tests.
-
-### Platform boundaries
-
-The bundled `dae` data plane is Linux-only. Windows builds keep the control
-plane and orchestration editor available, but runtime apply reports
-`windows_data_plane_unavailable` until the independent Wintun + sing-box/mihomo
-backend is installed. See [docs/platform/windows-data-plane.md](docs/platform/windows-data-plane.md)
-for the implementation boundary and native verification requirements.
-
-V2 combined groups are member selection, not serial forwarding. Ordered
-multi-hop source hiding is tracked as the separate
-[Orchestration V3 hop-chain design](docs/platform/orchestration-v3-hops.md).
-
-GeoIP lookups send node addresses to a third-party service and are disabled by
-default. Set `CHAOS_GEOIP_ENABLED=1` only when that is acceptable.
-- Inspect last run: `data/dae/dae.log`.
-
-## i18n
-
-Shared catalogs live at repo root:
+### 仓库结构
 
 ```text
-locales/en.json
-locales/zh-CN.json
+apps/web              SvelteKit 控制台
+crates/chaos-api      REST（默认 127.0.0.1:2030）
+crates/chaos-core     领域逻辑 / 延迟 / 配置渲染
+crates/chaos-dae      dae 进程与配置
+crates/chaos-store    SQLite
+packaging/debian/     deb / tar 构建
+scripts/fetch-dae.sh  拉取固定版本 dae
+locales/              en + zh-CN 共用文案
 ```
 
-- **Web:** `$lib/i18n` + language switcher; choice stored in `localStorage.chaos_locale`; API calls send `Accept-Language`.
-- **API:** `chaos-i18n` embeds the same JSON; `error.message` is localized; `error.code` stays stable.
-- Default / fallback: **`en`**. Browser language is used on first visit when no stored preference.
-- Design: [i18n design](docs/superpowers/specs/2026-07-18-chaos-i18n-design.md).
+### 常用环境变量
 
-## Tests
+| 变量 | 默认（开发） | 含义 |
+|------|----------------|------|
+| `CHAOS_BIND` | `127.0.0.1:2030` | 监听地址 |
+| `CHAOS_DATABASE_URL` | `sqlite:./data/chaos.db?mode=rwc` | SQLite |
+| `CHAOS_JWT_SECRET` | 自动生成 `./data/jwt.secret` | 密钥字符串，或**密钥文件路径** |
+| `CHAOS_DAE_BIN` | `third_party/dae/current/dae` | dae 可执行文件 |
+| `CHAOS_DAE_WORK_DIR` | `./data/dae` | 配置 / pid / 日志 |
+| `CHAOS_WEB_DIR` | （未设置则不托管静态站） | 发布包中的控制台目录 |
+| `CHAOS_BACKUP_DIR` | `./data/backups` | 备份目录（包内多为 `/var/lib/chaos/backups`） |
+| `CHAOS_AUTOSTART_DAE` | — | 为 `1` 时尝试恢复上次配置 |
+| `CHAOS_GEOIP_ENABLED` | 关 | 为 `1` 时才向第三方查 GeoIP |
+
+### 鉴权规则
+
+- 空库时仅 **`POST /api/v1/auth/setup`** 可建首个用户，角色固定为 **admin**
+- 之后 `/setup` 关闭；新建用户默认为 `user`
+- **Apply / 停止 / 重载、发布编排、改 DNS/网络、备份** 等需 **admin**（否则 `403 admin_required`）
+
+### Apply 与权限
+
+- 延迟测试为 TCP 探测，**不依赖** dae 已运行
+- Apply 写入 `config.dae`（模式 **0600**）并启动 / 重载 dae
+- 透明代理通常需要 **root 或 CAP_NET_ADMIN / CAP_BPF** 与合适内核
+- 默认不走会卡住的交互式 sudo；可用 root 跑服务，或 `CHAOS_DAE_ALLOW_SUDO=1`（需免密）
+
+### 本地打包
+
+```bash
+./scripts/fetch-dae.sh
+CHAOS_VERSION=0.1.0 CHAOS_ARCH=amd64 ./packaging/debian/build.sh
+# arm64（需交叉或 aarch64 主机）:
+# CHAOS_DAE_ARCH=arm64 ./scripts/fetch-dae.sh
+# CHAOS_VERSION=0.1.0 CHAOS_ARCH=arm64 ./packaging/debian/build.sh
+```
+
+### 测试
 
 ```bash
 cargo test --workspace
@@ -137,24 +173,31 @@ pnpm --dir apps/web check
 pnpm --dir apps/web build
 ```
 
-## Debian / Ubuntu package
+### 国际化
 
-Build a self-contained Linux package (the pinned `dae` binary must be fetched
-first):
+`locales/en.json` 与 `locales/zh-CN.json` 由 Web 与 `chaos-i18n` 共用；控制台可切换语言，API 错误文案跟随 `Accept-Language`。
 
-```bash
-./scripts/fetch-dae.sh
-./packaging/debian/build.sh
-sudo dpkg -i dist/chaos_0.1.0_amd64.deb
-sudo systemctl enable --now chaos
-```
+---
 
-The service exposes the console and API only on `http://127.0.0.1:2030`.
-Persistent state lives in `/var/lib/chaos`; package configuration overrides
-are in `/etc/chaos/chaos.env`. On boot it restores the last successfully
-rendered `dae` configuration. Inspect it with `systemctl status chaos` and
-`journalctl -u chaos -f`.
+## 端口对照
 
-## License
+| 服务 | 端口 |
+|------|------|
+| **chaos** | **2030** |
+| daed（若本机已装） | 2023 |
 
-TBD before public release (coordinate with dae AGPL components in packaging).
+chaos **不使用** dae-wing GraphQL。
+
+---
+
+## 平台说明
+
+- 内置 **dae** 数据面为 **Linux**。Windows 上控制面可编译，Apply 会提示数据面不可用，见 [docs/platform/windows-data-plane.md](docs/platform/windows-data-plane.md)
+- GeoIP 查询会把节点地址发往第三方服务，**默认关闭**
+- 产品设计：[docs/superpowers/specs/2026-07-18-chaos-product-design.md](docs/superpowers/specs/2026-07-18-chaos-product-design.md)
+
+---
+
+## 许可证
+
+当前工作区声明为 **MIT**（见 `Cargo.toml`）。打包内嵌的 **dae** 遵循其上游 **AGPL** 许可，分发时请一并遵守。
