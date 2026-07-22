@@ -2,13 +2,14 @@ name: Release packages
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: Package version (default: tag or 0.1.0)
+        description: "Package version without leading v (default: 0.1.0)"
         required: false
-        default: ""
+        default: "0.1.0"
 
 permissions:
   contents: write
@@ -49,19 +50,26 @@ jobs:
       - name: Fetch dae (${{ matrix.dae_arch }})
         run: CHAOS_DAE_ARCH=${{ matrix.dae_arch }} ./scripts/fetch-dae.sh
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${VERSION#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version $VERSION for ${{ matrix.arch }}"
+
       - name: Build package
         env:
           CHAOS_ARCH: ${{ matrix.arch }}
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION="${{ github.ref_name }}"
-          else
-            VERSION="0.1.0"
-          fi
-          VERSION="${VERSION#v}"
-          CHAOS_VERSION="$VERSION" CHAOS_ARCH="${{ matrix.arch }}" ./packaging/debian/build.sh
+          CHAOS_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./packaging/debian/build.sh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -70,6 +78,7 @@ jobs:
             dist/chaos_*.deb
             dist/chaos_*.tar.gz
             dist/SHA256SUMS
+          if-no-files-found: error
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -84,7 +93,7 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name 'chaos_*.deb' -o -name 'chaos_*.tar.gz' -o -name 'SHA256SUMS' \) -exec cp -v {} release/ \;
+          find artifacts -type f \( -name 'chaos_*.deb' -o -name 'chaos_*.tar.gz' \) -exec cp -v {} release/ \;
           cd release
           sha256sum chaos_*.deb chaos_*.tar.gz > SHA256SUMS
           ls -la
@@ -93,5 +102,6 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
