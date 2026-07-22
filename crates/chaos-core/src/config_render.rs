@@ -2,17 +2,62 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 pub const MAX_DAE_IDENTIFIER_LENGTH: usize = 128;
 
-/// LAN gateway mode configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct LanConfig {
-    /// Enable LAN gateway mode (allow LAN devices to use this proxy).
-    pub enabled: bool,
-    /// LAN interface name (e.g., "eth0", "br-lan").
-    pub lan_interface: Option<String>,
-    /// Disable SNAT (for advanced routing setups).
-    pub disable_snat: bool,
+/// Host network binding for dae `global {}` (WAN / LAN / kernel params).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// WAN interfaces to bind (proxy localhost). Use `"auto"` to detect.
+    pub wan_interfaces: Vec<String>,
+    /// LAN interfaces to bind (proxy LAN traffic). Empty = omit `lan_interface`.
+    pub lan_interfaces: Vec<String>,
+    /// Whether dae should auto-configure kernel parameters (ip_forward, etc.).
+    pub auto_config_kernel_parameter: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            wan_interfaces: vec!["auto".into()],
+            lan_interfaces: vec![],
+            auto_config_kernel_parameter: true,
+        }
+    }
+}
+
+/// Normalize a single interface token. Returns `None` if empty or illegal.
+/// The special value `auto` is lowercased; other names keep case.
+pub fn normalize_interface_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > 64 {
+        return None;
+    }
+    if name.eq_ignore_ascii_case("auto") {
+        return Some("auto".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Trim, drop invalid/empty, lowercase `auto`, and dedupe preserving order.
+pub fn normalize_interface_list(raw: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let Some(name) = normalize_interface_name(item) else {
+            continue;
+        };
+        if !out.iter().any(|existing| existing == &name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// Node fields needed to render a dae `node { ... }` entry.
@@ -102,38 +147,52 @@ impl Default for ConfigPlane {
     }
 }
 
-/// Render a full dae config from nodes + config plane.
+/// Render a full dae config from nodes + config plane (default network binding).
 pub fn render_dae_config(nodes: &[NodeForConfig], plane: &ConfigPlane) -> String {
-    render_dae_config_with_lan(nodes, plane, None)
+    render_dae_config_with_network(nodes, plane, &NetworkConfig::default())
 }
 
-/// Render a full dae config with optional LAN gateway mode.
-pub fn render_dae_config_with_lan(
+/// Render a full dae config with host network binding (WAN / LAN / kernel).
+pub fn render_dae_config_with_network(
     nodes: &[NodeForConfig],
     plane: &ConfigPlane,
-    lan_config: Option<&LanConfig>,
+    network: &NetworkConfig,
 ) -> String {
     let mut out = String::with_capacity(1024 + nodes.len() * 64);
     let mut used_keys: HashSet<String> = HashSet::new();
+
+    let wan_list = normalize_interface_list(&network.wan_interfaces);
+    let wan = if wan_list.is_empty() {
+        "auto".to_string()
+    } else {
+        wan_list.join(",")
+    };
+    let lan_list = normalize_interface_list(&network.lan_interfaces);
+    // `auto` is WAN-only; strip it from LAN at render time as a safety net.
+    let lan_list: Vec<String> = lan_list
+        .into_iter()
+        .filter(|name| name != "auto")
+        .collect();
 
     // Global section
     out.push_str("global {\n");
     out.push_str("  log_level: info\n");
     out.push_str("  tproxy_port: 12345\n");
     out.push_str("  allow_insecure: false\n");
-    out.push_str("  wan_interface: auto\n");
-    out.push_str("  auto_config_kernel_parameter: true\n");
-
-    // LAN gateway mode configuration
-    if let Some(lan) = lan_config {
-        if lan.enabled {
-            if let Some(ref iface) = lan.lan_interface {
-                out.push_str(&format!("  lan_interface: {}\n", iface));
-            }
-            if lan.disable_snat {
-                out.push_str("  disable_snat: true\n");
-            }
-        }
+    out.push_str("  wan_interface: ");
+    out.push_str(&wan);
+    out.push('\n');
+    out.push_str("  auto_config_kernel_parameter: ");
+    out.push_str(if network.auto_config_kernel_parameter {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('\n');
+    if !lan_list.is_empty() {
+        out.push_str("  lan_interface: ");
+        out.push_str(&lan_list.join(","));
+        out.push('\n');
     }
     out.push_str("}\n\n");
 
@@ -547,5 +606,55 @@ mod tests {
         assert!(rendered.contains("cloud_flare: 'udp://1.1.1.1:53 injected'"));
         assert!(rendered.contains("qname(example.com) -> cloud_flare"));
         assert!(rendered.contains("fallback: cloud_flare"));
+    }
+
+    #[test]
+    fn default_network_emits_wan_auto_and_kernel_true() {
+        let rendered = render_dae_config(&[], &ConfigPlane::default());
+        assert!(rendered.contains("wan_interface: auto\n"));
+        assert!(rendered.contains("auto_config_kernel_parameter: true\n"));
+        assert!(!rendered.contains("lan_interface:"));
+    }
+
+    #[test]
+    fn network_config_renders_multi_wan_lan_and_kernel_false() {
+        let network = NetworkConfig {
+            wan_interfaces: vec!["eth0".into(), "wlan0".into()],
+            lan_interfaces: vec!["docker0".into(), "br-lan".into()],
+            auto_config_kernel_parameter: false,
+        };
+        let rendered = render_dae_config_with_network(&[], &ConfigPlane::default(), &network);
+        assert!(rendered.contains("wan_interface: eth0,wlan0\n"));
+        assert!(rendered.contains("lan_interface: docker0,br-lan\n"));
+        assert!(rendered.contains("auto_config_kernel_parameter: false\n"));
+    }
+
+    #[test]
+    fn empty_lan_omits_lan_interface_line() {
+        let network = NetworkConfig {
+            wan_interfaces: vec!["auto".into()],
+            lan_interfaces: vec![],
+            auto_config_kernel_parameter: true,
+        };
+        let rendered = render_dae_config_with_network(&[], &ConfigPlane::default(), &network);
+        assert!(!rendered.contains("lan_interface:"));
+    }
+
+    #[test]
+    fn normalize_interface_list_trims_dedupes_and_lowercases_auto() {
+        let list =
+            normalize_interface_list(&[" AUTO ".into(), "eth0".into(), "eth0".into(), "".into()]);
+        assert_eq!(list, vec!["auto".to_string(), "eth0".to_string()]);
+    }
+
+    #[test]
+    fn empty_wan_falls_back_to_auto_at_render() {
+        let network = NetworkConfig {
+            wan_interfaces: vec![],
+            lan_interfaces: vec![],
+            auto_config_kernel_parameter: true,
+        };
+        let rendered = render_dae_config_with_network(&[], &ConfigPlane::default(), &network);
+        assert!(rendered.contains("wan_interface: auto\n"));
     }
 }
