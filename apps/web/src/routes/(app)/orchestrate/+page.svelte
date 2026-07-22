@@ -930,21 +930,21 @@ onupdaterule={updateRule}
 		gap: var(--space-2);
 	}
 
-	.palette-node,
-	.fixed-outbound {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		min-height: 3.5rem;
-		padding: 0.55rem 0.6rem;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-md);
-		background: var(--surface);
-		color: var(--ink);
-		text-align: left;
-	}
+		.palette-node,
+		.fixed-outbound {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr) auto;
+			align-items: center;
+			gap: var(--space-2);
+			width: 100%;
+			min-height: 3.5rem;
+			padding: 0.55rem 0.6rem;
+			border: 1px solid var(--line);
+			border-radius: var(--radius-md);
+			background: var(--surface);
+			color: var(--ink);
+			text-align: left;
+		}
 
 	.palette-node:hover,
 	.fixed-outbound:hover:not(:disabled) {

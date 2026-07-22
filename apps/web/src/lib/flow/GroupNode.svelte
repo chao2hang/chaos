@@ -33,7 +33,7 @@
 		width: 13.5rem;
 		height: 7.25rem;
 		padding: 0.7rem 0.8rem;
-		border: 1px solid var(--line-strong);
+		border: 1px solid var(--line);
 		border-radius: var(--radius-md);
 		background: var(--surface);
 		color: var(--ink);

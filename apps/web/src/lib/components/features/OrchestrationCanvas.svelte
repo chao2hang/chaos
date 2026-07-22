@@ -188,9 +188,9 @@
 		--xy-connectionline-stroke: var(--ink);
 		--xy-connectionline-stroke-default: var(--ink);
 		--xy-minimap-background-color: var(--flow-minimap);
-		--xy-minimap-node-background-color: var(--surface-subtle);
-		--xy-minimap-node-stroke-color: var(--line-strong);
-		--xy-controls-button-background-color: var(--surface);
+			--xy-minimap-node-background-color: var(--surface-subtle);
+			--xy-minimap-node-stroke-color: var(--line);
+			--xy-controls-button-background-color: var(--surface);
 		--xy-controls-button-background-color-hover: var(--surface-subtle);
 		--xy-controls-button-color: var(--ink);
 		--xy-controls-button-color-hover: var(--ink);
@@ -262,9 +262,9 @@
 		stroke: var(--ink);
 	}
 
-	.flow-canvas :global(.svelte-flow__minimap-node) {
-		stroke: var(--line-strong);
-	}
+		.flow-canvas :global(.svelte-flow__minimap-node) {
+			stroke: var(--line);
+		}
 
 	.flow-canvas :global(.svelte-flow__attribution) {
 		display: none;
