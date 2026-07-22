@@ -71,7 +71,7 @@ Spacing follows a 4px base through `--space-1` to `--space-12`.
 | `Field` | Label, control, hint, and validation ownership | Default, optional, hint, invalid |
 | `LoadingState` | Section or page loading feedback | Label and reduced-motion-safe spinner |
 | `Metric` | Dashboard summary value | Positive, negative, neutral |
-| `Notice` | Inline feedback | Info, success, error, dismissible |
+| `Notice` | Optional inline feedback (prefer Toast for operation results) | Info, success, error, dismissible |
 | `PageHeader` | Page identity and primary commands | Metadata, title, description, actions |
 | `PasswordInput` | Password entry with visibility control | Hidden, visible, disabled |
 | `ResourceToolbar` | Search, resource count, and refresh controls | Empty search, filtered search, refresh, disabled |
@@ -81,6 +81,7 @@ Spacing follows a 4px base through `--space-1` to `--space-12`.
 | `Status` | Textual operational state | Positive, negative, warning, neutral |
 | `TableFrame` | Stable table boundary and overflow | Desktop table, responsive row blocks |
 | `Toggle` | Binary setting | On, off, focused, disabled |
+| `Toast` / `ToastViewport` | Global operation and status notifications | Info, success, warning, error, dismissible, optional action, auto-dismiss by tone |
 
 ## Feature Components
 
@@ -99,7 +100,10 @@ Feature components must use the UI primitives above. They do not introduce indep
 
 - Loading state is scoped to the affected control or row when possible.
 - A row refresh must not disable unrelated rows.
-- Success and failure feedback use `Notice` and remain dismissible.
+- Success and failure feedback use global `Toast` (`toast.success` / `toast.error` / `toast.warning` / `toast.info`) via `ToastViewport` in the root layout.
+- Success toasts auto-dismiss (~4s). Warning and error toasts default to manual dismiss (`duration: 0`).
+- Durable conditions (e.g. needs republish) use a stable toast `id` and are dismissed when the condition clears.
+- `Notice` remains available for rare page-local inline copy but is not the default for save/apply/delete outcomes.
 - User input is preserved after a failed request.
 - A bulk import keeps failed links in the editor for correction and retry.
 
