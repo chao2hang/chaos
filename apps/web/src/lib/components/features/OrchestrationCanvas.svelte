@@ -169,7 +169,8 @@
 		position: relative;
 		min-width: 0;
 		height: 100%;
-		min-height: 34rem;
+		/* Parent (.canvas-body / .editor-shell) owns sizing; avoid min-height forcing page overflow. */
+		min-height: 0;
 		background: var(--flow-canvas);
 		/* Keep wheel events inside the canvas so the page does not scroll. */
 		overscroll-behavior: contain;
@@ -189,12 +190,12 @@
 		--xy-connectionline-stroke-default: var(--ink);
 		--xy-minimap-background-color: var(--flow-minimap);
 			--xy-minimap-node-background-color: var(--surface-subtle);
-			--xy-minimap-node-stroke-color: var(--line);
+			--xy-minimap-node-stroke-color: var(--line-strong);
 			--xy-controls-button-background-color: var(--surface);
 		--xy-controls-button-background-color-hover: var(--surface-subtle);
 		--xy-controls-button-color: var(--ink);
 		--xy-controls-button-color-hover: var(--ink);
-		--xy-controls-border-color: var(--line-strong);
+		--xy-controls-border-color: var(--line);
 	}
 
 	.flow-canvas :global(.svelte-flow__node) {
@@ -230,13 +231,13 @@
 		stroke-width: 0.6;
 	}
 
-	.flow-canvas :global(.svelte-flow__controls) {
-		margin: 0.75rem;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-md);
-		box-shadow: none;
-		overflow: hidden;
-	}
+		.flow-canvas :global(.svelte-flow__controls) {
+			margin: 0.75rem;
+			border: 1px solid var(--line);
+			border-radius: var(--radius-md);
+			box-shadow: none;
+			overflow: hidden;
+		}
 
 	.flow-canvas :global(.svelte-flow__controls-button) {
 		border-bottom-color: var(--line);
@@ -248,14 +249,14 @@
 		background: var(--surface-subtle);
 	}
 
-	.flow-canvas :global(.svelte-flow__minimap) {
-		margin: 0.75rem;
-		overflow: hidden;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-md);
-		background: var(--flow-minimap) !important;
-		box-shadow: none;
-	}
+		.flow-canvas :global(.svelte-flow__minimap) {
+			margin: 0.75rem;
+			overflow: hidden;
+			border: 1px solid var(--line);
+			border-radius: var(--radius-md);
+			background: var(--flow-minimap) !important;
+			box-shadow: none;
+		}
 
 	.flow-canvas :global(.svelte-flow__minimap-mask) {
 		fill: color-mix(in srgb, var(--ink) 12%, transparent);
@@ -263,7 +264,7 @@
 	}
 
 		.flow-canvas :global(.svelte-flow__minimap-node) {
-			stroke: var(--line);
+			stroke: var(--line-strong);
 		}
 
 	.flow-canvas :global(.svelte-flow__attribution) {

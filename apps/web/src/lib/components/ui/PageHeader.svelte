@@ -28,6 +28,7 @@
 		display: flex;
 		align-items: flex-end;
 		justify-content: space-between;
+		flex-shrink: 0;
 		gap: var(--space-6);
 		padding-bottom: var(--space-5);
 		border-bottom: 1px solid var(--line-strong);

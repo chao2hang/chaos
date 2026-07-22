@@ -1,40 +1,42 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Activity, Download, Gauge, Play, Power, RefreshCw, Square } from '@lucide/svelte';
-	import {
-		health,
-		getRuntime,
-		testLatency,
-		applyRuntime,
-		stopRuntime,
-		updateGeoIpData,
-		updateGeositeData,
-		listLatency,
-		ApiClientError,
-		type HealthResponse,
-		type RuntimeStatus,
-		type LatencyDto
-	} from '$lib/api';
-	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
-	import { sortByLatency } from '$lib/latencySessionCore';
-	import { apiErrorText, t } from '$lib/i18n.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import AppPage from '$lib/components/ui/AppPage.svelte';
-	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
-	import EmptyState from '$lib/components/ui/EmptyState.svelte';
-	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-	import LogPanel from '$lib/components/LogPanel.svelte';
-	import DiagnosticsPanel from '$lib/components/DiagnosticsPanel.svelte';
-	import Metric from '$lib/components/ui/Metric.svelte';
-	import PageHeader from '$lib/components/ui/PageHeader.svelte';
-	import Section from '$lib/components/ui/Section.svelte';
-	import Status from '$lib/components/ui/Status.svelte';
-	import { toast } from '$lib/toast.svelte';
+import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } from '@lucide/svelte';
+		import {
+			health,
+			getRuntime,
+			testLatency,
+			applyRuntime,
+			reloadRuntime,
+			stopRuntime,
+			updateGeoIpData,
+			updateGeositeData,
+			listLatency,
+			ApiClientError,
+			type HealthResponse,
+			type RuntimeStatus,
+			type LatencyDto
+		} from '$lib/api';
+		import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
+		import { sortByLatency } from '$lib/latencySessionCore';
+		import { apiErrorText, t } from '$lib/i18n.svelte';
+		import Button from '$lib/components/ui/Button.svelte';
+		import AppPage from '$lib/components/ui/AppPage.svelte';
+		import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+		import EmptyState from '$lib/components/ui/EmptyState.svelte';
+		import LoadingState from '$lib/components/ui/LoadingState.svelte';
+		import LogPanel from '$lib/components/LogPanel.svelte';
+		import DiagnosticsPanel from '$lib/components/DiagnosticsPanel.svelte';
+		import Metric from '$lib/components/ui/Metric.svelte';
+		import Notice from '$lib/components/ui/Notice.svelte';
+		import PageHeader from '$lib/components/ui/PageHeader.svelte';
+		import Section from '$lib/components/ui/Section.svelte';
+		import Status from '$lib/components/ui/Status.svelte';
+		import { toast } from '$lib/toast.svelte';
 
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);
 	let latency = $state<LatencyDto[]>([]);
-	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | 'geoip' | 'geosite' | ''>('');
+	let busy = $state<'refresh' | 'latency' | 'apply' | 'reload' | 'stop' | 'geoip' | 'geosite' | ''>('');
 	let loaded = $state(false);
 	let confirmStop = $state(false);
 
@@ -122,21 +124,45 @@
 		}
 	}
 
-	async function onStop() {
-		busy = 'stop';
-		try {
-			runtime = await stopRuntime();
-			toast.success({ title: t('dashboard.stopRequested') });
-			confirmStop = false;
-			syncNeedsRepublishToast(runtime.needs_republish === true);
-		} catch (cause) {
-			toast.error({
-				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.stopFailed')
-			});
-		} finally {
-			busy = '';
+async function onReload() {
+			busy = 'reload';
+			try {
+				const response = await reloadRuntime();
+				const methodLabel =
+					response.reload_method === 'hot'
+						? t('dashboard.reloadHot')
+						: response.reload_method === 'cold_start'
+							? t('dashboard.reloadColdStart')
+							: t('dashboard.reloadCold');
+				toast.success({
+					title: t('dashboard.reloadedWithMethod', { method: methodLabel })
+				});
+				runtime = await getRuntime();
+				syncNeedsRepublishToast(runtime.needs_republish === true);
+			} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.reloadFailed')
+				});
+			} finally {
+				busy = '';
+			}
 		}
-	}
+
+		async function onStop() {
+			busy = 'stop';
+			try {
+				runtime = await stopRuntime();
+				toast.success({ title: t('dashboard.stopRequested') });
+				confirmStop = false;
+				syncNeedsRepublishToast(runtime.needs_republish === true);
+			} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.stopFailed')
+				});
+			} finally {
+				busy = '';
+			}
+		}
 
 
 	async function onUpdateGeoIp() {
@@ -208,6 +234,12 @@
 		{#if !loaded}
 		<LoadingState label={t('dashboard.loading')} />
 	{:else}
+		{#if runtime?.needs_republish}
+			<div class="republish-banner">
+				<Notice message={t('dashboard.needsRepublish')} tone="error" />
+				<a class="republish-link" href="/orchestrate">{t('dashboard.openOrchestrate')}</a>
+			</div>
+		{/if}
 		<section class="metrics" aria-label={t('dashboard.title')}>
 			<Metric
 				label={t('dashboard.field.running')}
@@ -246,6 +278,14 @@
 					<div class="inline-actions">
 							<Button variant="primary" icon={Play} loading={busy === 'apply'} disabled={!!busy || !!runtime?.needs_republish} onclick={onApply}>
 								{busy === 'apply' ? t('dashboard.applying') : t('dashboard.apply')}
+							</Button>
+							<Button
+								icon={RotateCcw}
+								loading={busy === 'reload'}
+								disabled={!!busy || !runtime?.running || !!runtime?.needs_republish}
+								onclick={onReload}
+							>
+								{busy === 'reload' ? t('dashboard.reloading') : t('dashboard.reload')}
 							</Button>
 							<Button
 								icon={Square}
@@ -494,6 +534,37 @@
 		.latency-list li:nth-child(2n) {
 			border-right: 0;
 		}
+	}
+
+	.republish-banner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+	}
+
+	.republish-banner :global(.notice) {
+		flex: 1 1 16rem;
+	}
+
+	.republish-link {
+		display: inline-flex;
+		align-items: center;
+		min-height: 2.25rem;
+		padding: 0 0.85rem;
+		border: 1px solid var(--ink);
+		border-radius: var(--radius-md);
+		background: var(--surface-inverse);
+		color: var(--ink-inverse);
+		font-size: 0.8rem;
+		font-weight: 650;
+		text-decoration: none;
+	}
+
+	.republish-link:hover {
+		background: var(--surface-inverse-hover);
 	}
 
 	@media (max-width: 680px) {

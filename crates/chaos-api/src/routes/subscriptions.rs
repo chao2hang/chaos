@@ -40,6 +40,9 @@ pub struct SubscriptionDto {
     pub status: String,
     pub node_count: usize,
     pub needs_republish: bool,
+    pub refresh_interval_hours: i64,
+    pub last_refreshed_at: Option<String>,
+    pub next_refresh_at: Option<String>,
 }
 
 impl SubscriptionDto {
@@ -52,6 +55,9 @@ impl SubscriptionDto {
             status: s.status,
             node_count,
             needs_republish,
+            refresh_interval_hours: s.refresh_interval_hours,
+            last_refreshed_at: s.last_refreshed_at,
+            next_refresh_at: s.next_refresh_at,
         }
     }
 }

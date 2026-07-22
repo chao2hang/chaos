@@ -433,6 +433,16 @@ export function importNodes(links: { link: string; tag?: string }[]) {
 	});
 }
 
+export function updateNode(
+	id: string,
+	body: { link: string; name?: string; tag?: string }
+) {
+	return api<NodeDto>(`/api/v1/nodes/${encodeURIComponent(id)}`, {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
 export function deleteNode(id: string) {
 	return api<{ deleted: boolean }>(`/api/v1/nodes/${encodeURIComponent(id)}`, {
 		method: 'DELETE'
@@ -716,13 +726,6 @@ export function setGroupMemberWeight(id: string, node_id: string, weight: number
 
 export function getRouting() {
 	return api<RoutingDocument>('/api/v1/routing');
-}
-
-export function putRouting(doc: RoutingDocument) {
-	return api<RoutingDocument>('/api/v1/routing', {
-		method: 'PUT',
-		body: JSON.stringify(doc)
-	});
 }
 
 export function getDns() {

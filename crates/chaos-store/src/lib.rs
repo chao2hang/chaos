@@ -30,8 +30,8 @@ pub use models::{
     RoutingRule, Subscription, User,
 };
 pub use nodes::{
-    delete_node, get_node, insert_node, insert_node_with_id, list_nodes, update_node_country_code,
-    NewNode,
+    delete_node, get_node, insert_node, insert_node_with_id, list_nodes, update_node,
+    update_node_country_code, NewNode, UpdateNode,
 };
 pub use subscriptions::{
     delete_subscription, get_subscription, insert_subscription, list_subscriptions,

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { interceptDirtyNavigation } from '$lib/dirtyNavigation.svelte';
 	import { RefreshCw, Save } from '@lucide/svelte';
 	import {
 		getNetwork,
@@ -65,14 +66,14 @@
 		void load();
 	});
 
-	beforeNavigate(({ cancel }) => {
+	beforeNavigate(({ cancel, to }) => {
 		if (!dirty || typeof window === 'undefined') return;
 		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
+		interceptDirtyNavigation({
+			dirty: true,
+			cancel,
+			href: to?.url.href ?? null
+		});
 	});
 
 	$effect(() => {
@@ -113,17 +114,20 @@
 				lan_interfaces: lanInterfaces,
 				auto_config_kernel_parameter: autoConfigKernel
 			});
-			applyDocument(saved);
-			savedSnapshot = snapshot();
-			toast.success({ title: t('network.saved') });
-		} catch (cause) {
-			toast.error({
-				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('network.saveFailed')
-			});
-		} finally {
-			busy = false;
+applyDocument(saved);
+				savedSnapshot = snapshot();
+				toast.success({
+					title: t('network.saved'),
+					description: t('network.applyHint')
+				});
+			} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('network.saveFailed')
+				});
+			} finally {
+				busy = false;
+			}
 		}
-	}
 
 	function requestReload() {
 		if (!dirty) {

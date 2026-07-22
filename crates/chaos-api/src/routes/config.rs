@@ -7,15 +7,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use chaos_core::config_render::{
-    render_dae_config_with_network, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig,
-    GroupForConfig, GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
-};
+use chaos_core::config_render::{render_dae_config_with_network, NodeForConfig};
 
-use crate::auth::AuthUser;
+use crate::auth::AdminUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::network::load_network_config;
+use crate::routes::runtime::load_config_plane;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -37,9 +35,9 @@ pub struct ImportConfigResponse {
     pub message: String,
 }
 
-/// Export the current rendered dae configuration.
+/// Export the currently published dae configuration plane (same path as apply).
 async fn export_config(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Response, ApiError> {
@@ -53,12 +51,10 @@ async fn export_config(
         })
         .collect();
 
-    // Build a minimal config plane from published orchestration or defaults
-    let plane = ConfigPlane::default();
+    let plane = load_config_plane(&state, locale).await?;
     let network = load_network_config(&state).await?;
     let content = render_dae_config_with_network(&for_config, &plane, &network);
 
-    // Return as downloadable file
     let filename = format!(
         "chaos_config_{}.dae",
         chrono::Utc::now().format("%Y%m%d_%H%M%S")
@@ -77,33 +73,18 @@ async fn export_config(
         .into_response())
 }
 
-/// Import a dae configuration file (placeholder - full parsing not implemented).
+/// Import is not implemented yet — return 501 instead of a false success.
 async fn import_config(
-    _user: AuthUser,
+    _admin: AdminUser,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<ImportConfigRequest>,
 ) -> Result<Json<ImportConfigResponse>, ApiError> {
-    // Basic validation: check if it looks like a dae config
     let content = body.content.trim();
     if content.is_empty() {
         return Err(ApiError::bad_request("empty_config", locale));
     }
 
-    // Check for basic dae config structure
-    let has_global = content.contains("global {") || content.contains("global{");
-    let has_node = content.contains("node {") || content.contains("node{");
-
-    if !has_global && !has_node {
-        return Err(ApiError::bad_request("invalid_dae_config", locale));
-    }
-
-    // Full parsing would extract nodes, groups, routing rules, DNS settings
-    // For now, return a message that import is partially supported
-    Ok(Json(ImportConfigResponse {
-        ok: true,
-        nodes_imported: 0,
-        message: "Config validated. Full node extraction requires manual import via share links.".to_string(),
-    }))
+    Err(ApiError::not_implemented("not_implemented", locale))
 }
 
 pub fn config_router() -> Router<AppState> {

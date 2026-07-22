@@ -158,17 +158,35 @@ pub fn auth_router() -> Router<AppState> {
 }
 
 /// Load JWT secret from `CHAOS_JWT_SECRET` or `./data/jwt.secret`.
-/// Creates a random 32-byte hex secret file if missing.
+///
+/// `CHAOS_JWT_SECRET` may be either:
+/// - a raw secret string (≥ 32 bytes), or
+/// - a filesystem path (contains `/` or `\\`, or exists as a file) whose contents are the secret.
+/// Packaging sets a path under `/var/lib/chaos/jwt.secret`.
 pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
-    if let Ok(secret) = std::env::var("CHAOS_JWT_SECRET") {
-        let secret = secret.trim().to_string();
-        if secret.len() >= MIN_JWT_SECRET_BYTES {
-            return Ok(secret);
+    if let Ok(raw) = std::env::var("CHAOS_JWT_SECRET") {
+        let raw = raw.trim().to_string();
+        let as_path = Path::new(&raw);
+        let looks_like_path = raw.contains('/')
+            || raw.contains('\\')
+            || as_path.exists()
+            || raw.starts_with('.')
+            || raw.starts_with('~');
+        if looks_like_path {
+            return load_or_create_jwt_secret_file(as_path);
         }
-        anyhow::bail!("CHAOS_JWT_SECRET must contain at least {MIN_JWT_SECRET_BYTES} bytes");
+        if raw.len() >= MIN_JWT_SECRET_BYTES {
+            return Ok(raw);
+        }
+        anyhow::bail!(
+            "CHAOS_JWT_SECRET must be a secret of at least {MIN_JWT_SECRET_BYTES} bytes or a path to a secret file"
+        );
     }
 
-    let path = Path::new("./data/jwt.secret");
+    load_or_create_jwt_secret_file(Path::new("./data/jwt.secret"))
+}
+
+fn load_or_create_jwt_secret_file(path: &Path) -> anyhow::Result<String> {
     if path.exists() {
         let secret = fs::read_to_string(path)?.trim().to_string();
         #[cfg(unix)]
@@ -186,11 +204,13 @@ pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
     }
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
         }
     }
 
@@ -199,8 +219,7 @@ pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        fs::set_permissions(path, perms)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(secret)
 }
@@ -246,6 +265,17 @@ fn verify_password_locale(
 #[cfg(test)]
 pub fn issue_token(user_id: &str, username: &str, secret: &str) -> Result<String, ApiError> {
     issue_token_with_role(user_id, username, "admin", secret, Locale::En)
+}
+
+/// Issue a JWT with an explicit role (used by login/setup and tests).
+#[cfg(test)]
+pub fn issue_token_role(
+    user_id: &str,
+    username: &str,
+    role: &str,
+    secret: &str,
+) -> Result<String, ApiError> {
+    issue_token_with_role(user_id, username, role, secret, Locale::En)
 }
 
 fn issue_token_with_role(

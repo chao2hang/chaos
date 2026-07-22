@@ -420,12 +420,12 @@
 		font-size: 0.8rem;
 	}
 
-	.error {
-		margin: 0;
-		color: var(--danger, #b42318);
-		font-size: 0.78rem;
-		line-height: 1.4;
-	}
+.error {
+			margin: 0;
+			color: var(--ink);
+			font-size: 0.78rem;
+			line-height: 1.4;
+		}
 
 	.result {
 		display: flex;

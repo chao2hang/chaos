@@ -7,9 +7,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/lib/chaos/bin/chaos-api
-EnvironmentFile=/etc/chaos/chaos.env
+EnvironmentFile=-/etc/chaos/chaos.env
+WorkingDirectory=/var/lib/chaos
+StateDirectory=chaos
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
+LimitMEMLOCK=infinity
 
 # Data plane needs elevated privileges for eBPF
 # Option A: run as root (simplest)

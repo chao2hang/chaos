@@ -27,6 +27,19 @@
 	.app-page.editor {
 		width: 100%;
 		max-width: var(--editor-max-width);
+		/* Fill remaining content height; 0 basis avoids min-content blowout. */
+		flex: 1 1 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	/* Below the 3-column editor, shell height is content-driven — let .content scroll. */
+	@media (max-width: 980px) {
+		.app-page.editor {
+			flex: 0 0 auto;
+			min-height: 0;
+			overflow: visible;
+		}
 	}
 
 	@media (max-width: 700px) {

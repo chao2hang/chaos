@@ -1,4 +1,4 @@
-//! Node list / import / delete routes (auth required).
+//! Node list / import / update / delete routes (auth required).
 
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -7,14 +7,16 @@ use chaos_i18n::error_message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use chaos_store::{delete_node, insert_node_with_id, list_nodes, NewNode, Node};
+use chaos_store::{
+    delete_node, get_node, insert_node_with_id, list_nodes, update_node, NewNode, Node, UpdateNode,
+};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::orchestration::{
     active_plan_references_any_node, mark_republish_if_published_node_added,
-    orchestration_references_source,
+    mark_republish_if_published_source_changed, orchestration_references_source,
 };
 use crate::state::AppState;
 
@@ -93,10 +95,23 @@ pub struct DeleteNodeResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateNodeRequest {
+    /// Optional display name override. When omitted (or blank), name is derived from link tag / protocol.
+    pub name: Option<String>,
+    /// Optional tag. When omitted, derived from the link fragment when present.
+    pub tag: Option<String>,
+    /// Replacement share link (required).
+    pub link: String,
+}
+
 pub fn nodes_router() -> Router<AppState> {
     Router::new()
         .route("/nodes", get(list_nodes_handler).post(import_nodes))
-        .route("/nodes/{id}", axum::routing::delete(delete_node_handler))
+        .route(
+            "/nodes/{id}",
+            axum::routing::patch(update_node_handler).delete(delete_node_handler),
+        )
 }
 
 async fn list_nodes_handler(
@@ -238,6 +253,104 @@ async fn import_nodes(
     Ok(Json(ImportNodesResponse { results }))
 }
 
+async fn update_node_handler(
+    _user: AuthUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateNodeRequest>,
+) -> Result<Json<NodeDto>, ApiError> {
+    let raw = body.link.trim();
+    if raw.is_empty() {
+        return Err(ApiError::bad_request("link_required", locale));
+    }
+
+    let protocol = chaos_core::link::detect_protocol(raw).ok_or_else(|| {
+        ApiError::bad_request("unrecognized_scheme", locale)
+    })?;
+    let address = chaos_core::link::detect_address(raw);
+
+    let existing = get_node(&state.pool, &id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("not_found", locale))?;
+
+    let explicit_name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let explicit_tag = body
+        .tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    // Prefer explicit tag, else link fragment, else keep previous tag.
+    let tag_owned: Option<String> = explicit_tag
+        .or_else(|| chaos_core::link::detect_tag(raw))
+        .or_else(|| existing.tag.clone());
+
+    let name = if let Some(name) = explicit_name {
+        name
+    } else {
+        chaos_core::link::node_name(
+            tag_owned.as_deref(),
+            None,
+            Some(protocol.as_str()),
+            &id,
+        )
+    };
+
+    let address_changed = existing.address.as_deref() != address.as_deref();
+    let link_changed = existing.link != raw;
+
+    let _runtime_guard = state.runtime_lock.lock().await;
+
+    let node = update_node(
+        &state.pool,
+        &id,
+        UpdateNode {
+            name: &name,
+            tag: tag_owned.as_deref(),
+            link: raw,
+            protocol: Some(protocol.as_str()),
+            address: address.as_deref(),
+            clear_country_code: address_changed,
+        },
+    )
+    .await?
+    .ok_or_else(|| ApiError::not_found("not_found", locale))?;
+
+    let mut dto = NodeDto::from(node);
+
+    if link_changed {
+        let _ = mark_republish_if_published_source_changed(&state, "node", &id).await?;
+        let _ = mark_republish_if_published_node_added(
+            &state,
+            &dto.id,
+            dto.subscription_id.as_deref(),
+            dto.tag.as_deref(),
+        )
+        .await?;
+    }
+
+    drop(_runtime_guard);
+
+    if address_changed && chaos_core::geoip::enabled() {
+        if let Some(addr) = dto.address.clone() {
+            let geo = chaos_core::geoip::batch_lookup_country(&[(dto.id.clone(), addr)]).await;
+            if let Some(cc) = geo.get(&dto.id) {
+                let _ = chaos_store::update_node_country_code(&state.pool, &dto.id, cc).await;
+                dto.country_code = Some(cc.clone());
+            }
+        }
+    }
+
+    Ok(Json(dto))
+}
+
 async fn delete_node_handler(
     _user: AuthUser,
     State(state): State<AppState>,
@@ -312,7 +425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn import_list_delete_nodes() {
+    async fn import_list_update_delete_nodes() {
         let (app, state) = test_app().await;
         let token = issue_token("u1", "admin", &state.jwt_secret).unwrap();
 
@@ -357,6 +470,30 @@ mod tests {
         assert_eq!(list.status(), StatusCode::OK);
         let listed = json_body(list).await;
         assert_eq!(listed["nodes"].as_array().unwrap().len(), 1);
+
+        let patch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/nodes/{id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"renamed","tag":"sg","link":"hysteria2://u@9.9.9.9:8443#sg"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch.status(), StatusCode::OK);
+        let patched = json_body(patch).await;
+        assert_eq!(patched["id"], id);
+        assert_eq!(patched["name"], "renamed");
+        assert_eq!(patched["tag"], "sg");
+        assert_eq!(patched["protocol"], "hysteria2");
+        assert_eq!(patched["address"], "9.9.9.9:8443");
+        assert_eq!(patched["link"], "hysteria2://u@9.9.9.9:8443#sg");
 
         let del = app
             .oneshot(

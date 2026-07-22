@@ -5,7 +5,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::state::AppState;
@@ -70,7 +70,7 @@ async fn get_dns(
 }
 
 async fn put_dns(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<DnsDocument>,

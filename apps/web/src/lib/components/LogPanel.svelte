@@ -11,38 +11,45 @@
 	let error = $state('');
 	let logContainer: HTMLDivElement | undefined = $state();
 
-	let eventSource: EventSource | null = null;
+	// Poll with Bearer auth instead of EventSource (cannot set Authorization).
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollInFlight = false;
 
 	async function loadLogs() {
 		try {
 			const response = await getLogs(200);
 			logs = response.lines;
 			error = '';
+			if (autoScroll && logContainer) {
+				// Defer so DOM updates first.
+				requestAnimationFrame(() => {
+					if (logContainer) logContainer.scrollTop = logContainer.scrollHeight;
+				});
+			}
 		} catch {
 			error = t('logs.loadFailed');
+			if (streaming) stopStreaming();
 		}
 	}
 
 	function startStreaming() {
-		if (eventSource) return;
+		if (pollTimer) return;
 		streaming = true;
-		eventSource = new EventSource('/api/v1/runtime/logs/stream');
-		eventSource.onmessage = (event) => {
-			logs = [...logs.slice(-499), event.data];
-			if (autoScroll && logContainer) {
-				logContainer.scrollTop = logContainer.scrollHeight;
-			}
-		};
-		eventSource.onerror = () => {
-			stopStreaming();
-		};
+		void loadLogs();
+		pollTimer = setInterval(() => {
+			if (pollInFlight) return;
+			pollInFlight = true;
+			void loadLogs().finally(() => {
+				pollInFlight = false;
+			});
+		}, 2000);
 	}
 
 	function stopStreaming() {
 		streaming = false;
-		if (eventSource) {
-			eventSource.close();
-			eventSource = null;
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
 		}
 	}
 
@@ -56,12 +63,6 @@
 
 	function clearLogs() {
 		logs = [];
-	}
-
-	function scrollToBottom() {
-		if (logContainer) {
-			logContainer.scrollTop = logContainer.scrollHeight;
-		}
 	}
 
 	onMount(() => {

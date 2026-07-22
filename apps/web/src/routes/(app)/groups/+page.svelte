@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { interceptDirtyNavigation, requestDiscard } from '$lib/dirtyNavigation.svelte';
 	import { Boxes, ExternalLink, Pencil, Plus, Trash2, X } from '@lucide/svelte';
 	import {
 		ApiClientError,
@@ -134,14 +135,14 @@
 	const dirty = $derived(loaded && currentSnapshot() !== savedSnapshot);
 	const formDirty = $derived(formOpen && formStateSnapshot() !== formSnapshot);
 
-	beforeNavigate(({ cancel }) => {
+	beforeNavigate(({ cancel, to }) => {
 		if ((!dirty && !formDirty) || typeof window === 'undefined') return;
 		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
+		interceptDirtyNavigation({
+			dirty: true,
+			cancel,
+			href: to?.url.href ?? null
+		});
 	});
 
 	$effect(() => {
@@ -170,14 +171,15 @@
 		formSnapshot = formStateSnapshot();
 	}
 
-	function closeForm() {
-		if (busy) return;
-		if (formDirty && typeof window !== 'undefined' && !window.confirm(t('common.discardDescription'))) {
-			return;
+async function closeForm() {
+			if (busy) return;
+			if (formDirty) {
+				const ok = await requestDiscard();
+				if (!ok) return;
+			}
+			formOpen = false;
+			editId = null;
 		}
-		formOpen = false;
-		editId = null;
-	}
 
 	function toggleNodeSource(node: NodeDto, checked: boolean) {
 		if (checked) {

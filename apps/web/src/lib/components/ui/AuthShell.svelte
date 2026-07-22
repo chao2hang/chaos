@@ -28,7 +28,10 @@
 	.auth-shell {
 		display: grid;
 		grid-template-rows: auto 1fr;
-		min-height: 100vh;
+		/* Document overflow is hidden globally; this shell owns auth-page scrolling. */
+		height: 100%;
+		min-height: 100%;
+		overflow-y: auto;
 		background: var(--canvas);
 	}
 

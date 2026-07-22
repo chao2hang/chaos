@@ -18,7 +18,7 @@
 	.flow-node {
 		min-width: 9rem;
 		padding: 0.6rem 0.7rem;
-		border: 1px solid var(--line);
+		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
 		background: var(--surface-subtle);
 		color: var(--ink);

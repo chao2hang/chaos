@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Gauge, Import, Plus, Server, Trash2, X } from '@lucide/svelte';
+	import { Gauge, Import, Pencil, Plus, Server, Trash2, X } from '@lucide/svelte';
 	import {
 		listNodes,
 		importNodes,
+		updateNode,
 		deleteNode,
 		listLatency,
 		testLatency,
@@ -38,6 +39,11 @@
 	let testing = $state<string | null>(null);
 	let deleting = $state(false);
 	let deleteTarget = $state<NodeDto | null>(null);
+	let editTarget = $state<NodeDto | null>(null);
+	let editName = $state('');
+	let editTag = $state('');
+	let editLink = $state('');
+	let saving = $state(false);
 
 	function mergeLatency(results: LatencyDto[]) {
 		const next = { ...latencyById };
@@ -140,6 +146,52 @@
 			: Array.from(new Set([...selectedIds, ...visibleIds]));
 	}
 
+	function openEdit(node: NodeDto) {
+		importOpen = false;
+		editTarget = node;
+		editName = node.name ?? '';
+		editTag = node.tag ?? '';
+		editLink = node.link ?? '';
+	}
+
+	function closeEdit() {
+		if (saving) return;
+		editTarget = null;
+		editName = '';
+		editTag = '';
+		editLink = '';
+	}
+
+	async function onSaveEdit() {
+		if (!editTarget) return;
+		const link = editLink.trim();
+		if (!link) {
+			toast.error({ title: t('nodes.linkRequired') });
+			return;
+		}
+
+		saving = true;
+		try {
+			const updated = await updateNode(editTarget.id, {
+				link,
+				name: editName.trim() || undefined,
+				tag: editTag.trim() || undefined
+			});
+			nodes = nodes.map((node) => (node.id === updated.id ? updated : node));
+			editTarget = null;
+			editName = '';
+			editTag = '';
+			editLink = '';
+			toast.success({ title: t('nodes.saved') });
+		} catch (cause) {
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.saveFailed')
+			});
+		} finally {
+			saving = false;
+		}
+	}
+
 	async function confirmDelete() {
 		if (!deleteTarget) return;
 		deleting = true;
@@ -150,6 +202,7 @@
 			selectedIds = selectedIds.filter((selected) => selected !== id);
 			const { [id]: _removed, ...rest } = latencyById;
 			latencyById = rest;
+			if (editTarget?.id === id) closeEdit();
 			deleteTarget = null;
 			toast.success({ title: t('nodes.deleted') });
 		} catch (cause) {
@@ -187,7 +240,14 @@
 					? t('nodes.testSelected', { count: selectedIds.length })
 					: t('dashboard.testAll')}
 			</Button>
-			<Button variant="primary" icon={importOpen ? X : Plus} onclick={() => (importOpen = !importOpen)}>
+			<Button
+				variant="primary"
+				icon={importOpen ? X : Plus}
+				onclick={() => {
+					if (!importOpen) closeEdit();
+					importOpen = !importOpen;
+				}}
+			>
 				{importOpen ? t('common.close') : t('nodes.importAction')}
 			</Button>
 		{/snippet}
@@ -214,6 +274,62 @@
 			</form>
 		</Section>
 	{/if}
+
+		{#if editTarget}
+			<Section title={t('nodes.editTitle')} description={t('nodes.editDescription')}>
+				<form
+					class="form-stack"
+					onsubmit={(event) => {
+						event.preventDefault();
+						void onSaveEdit();
+					}}
+				>
+					<div class="form-grid">
+						<Field label={t('nodes.nameLabel')} forId="node-name" hint={t('nodes.nameHint')}>
+							<input
+								id="node-name"
+								type="text"
+								placeholder={t('nodes.namePlaceholder')}
+								bind:value={editName}
+								disabled={saving}
+							/>
+						</Field>
+						<Field label={t('nodes.tagLabel')} forId="node-tag" hint={t('nodes.tagHint')}>
+							<input
+								id="node-tag"
+								type="text"
+								placeholder={t('nodes.tagPlaceholder')}
+								bind:value={editTag}
+								disabled={saving}
+							/>
+						</Field>
+					</div>
+					<Field label={t('nodes.linkLabel')} forId="node-link">
+						<textarea
+							id="node-link"
+							rows="3"
+							placeholder={t('nodes.linkPlaceholder')}
+							bind:value={editLink}
+							disabled={saving}
+							required
+						></textarea>
+					</Field>
+					<div class="form-footer">
+						<span class="edit-meta">
+							{editTarget.protocol ?? t('common.emDash')} · {editTarget.address ?? t('common.emDash')}
+						</span>
+						<div class="form-actions">
+							<Button type="button" variant="ghost" disabled={saving} onclick={closeEdit}>
+								{t('common.cancel')}
+							</Button>
+							<Button type="submit" variant="primary" loading={saving}>
+								{t('common.save')}
+							</Button>
+						</div>
+					</div>
+				</form>
+			</Section>
+		{/if}
 
 	{#if !loaded}
 		<LoadingState label={t('common.loading')} />
@@ -283,6 +399,15 @@
 										<Button
 											variant="ghost"
 											size="icon"
+											icon={Pencil}
+											disabled={saving}
+											aria-label={t('nodes.editNode', { name: node.name })}
+											title={t('common.edit')}
+											onclick={() => openEdit(node)}
+										/>
+										<Button
+											variant="ghost"
+											size="icon"
 											icon={Trash2}
 											aria-label={t('nodes.deleteNode', { name: node.name })}
 											title={t('common.delete')}
@@ -331,9 +456,34 @@
 		font-size: 0.76rem;
 	}
 
+	.form-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.85rem 1rem;
+	}
+
+	.form-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		justify-content: flex-end;
+	}
+
+	.edit-meta {
+		color: var(--ink-muted);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+	}
+
 	.select-col {
 		width: 2.75rem;
 		text-align: center;
+	}
+
+	@media (max-width: 720px) {
+		.form-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	tbody tr.selected {

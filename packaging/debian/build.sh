@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Build a self-contained Debian package for chaos.
+# Build a self-contained Debian package (and FHS tar.gz) for chaos.
 #
 # Prerequisites:
 #   - Rust toolchain (cargo)
 #   - Node.js 20+ with pnpm
-#   - dae binary fetched: ./scripts/fetch-dae.sh
+#   - dae binary: CHAOS_DAE_ARCH=... ./scripts/fetch-dae.sh
 #
 # Usage:
-#   ./packaging/debian/build.sh
+#   ./packaging/debian/build.sh              # native arch
+#   CHAOS_ARCH=amd64 ./packaging/debian/build.sh
+#   CHAOS_ARCH=arm64 ./packaging/debian/build.sh   # requires aarch64 runner or target
 #
 # Output:
 #   dist/chaos_<version>_<arch>.deb
+#   dist/chaos_<version>_linux_<arch>.tar.gz
+#   dist/SHA256SUMS (appended)
 
 set -euo pipefail
 
@@ -18,22 +22,58 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 VERSION="${CHAOS_VERSION:-0.1.0}"
-ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+
+# Normalize architecture: debian name (amd64|arm64)
+HOST_DEB="$(dpkg --print-architecture 2>/dev/null || true)"
+if [[ -z "$HOST_DEB" ]]; then
+  case "$(uname -m)" in
+    x86_64|amd64) HOST_DEB=amd64 ;;
+    aarch64|arm64) HOST_DEB=arm64 ;;
+    *) HOST_DEB=amd64 ;;
+  esac
+fi
+ARCH="${CHAOS_ARCH:-$HOST_DEB}"
+case "$ARCH" in
+  amd64|x86_64) ARCH=amd64; DAE_ARCH=x86_64; RUST_TARGET=x86_64-unknown-linux-gnu ;;
+  arm64|aarch64) ARCH=arm64; DAE_ARCH=arm64; RUST_TARGET=aarch64-unknown-linux-gnu ;;
+  *)
+    echo "error: unsupported CHAOS_ARCH=$ARCH (use amd64 or arm64)" >&2
+    exit 1
+    ;;
+esac
 
 PKG_ROOT="$DIST_DIR/pkg-root"
 PKG_NAME="chaos"
 PKG_DIR="$PKG_ROOT/${PKG_NAME}_${VERSION}_${ARCH}"
 
-echo "==> Building chaos $VERSION ($ARCH)"
+echo "==> Building chaos $VERSION ($ARCH / rust $RUST_TARGET)"
 
-# Clean previous build
-rm -rf "$PKG_ROOT"
-mkdir -p "$DIST_DIR"
+rm -rf "$PKG_DIR"
+mkdir -p "$DIST_DIR" "$PKG_DIR"
 
 # --- Step 1: Build Rust binary ---
-echo "==> Compiling chaos-api (release)..."
 cd "$ROOT_DIR"
-cargo build --release -p chaos-api
+if [[ "$ARCH" == "$HOST_DEB" ]]; then
+  echo "==> Compiling chaos-api (release, native)..."
+  cargo build --release -p chaos-api
+  API_BIN="$ROOT_DIR/target/release/chaos-api"
+else
+  echo "==> Compiling chaos-api (release, --target $RUST_TARGET)..."
+  if ! rustup target list --installed 2>/dev/null | grep -qx "$RUST_TARGET"; then
+    if command -v rustup >/dev/null 2>&1; then
+      rustup target add "$RUST_TARGET"
+    else
+      echo "error: rust target $RUST_TARGET not installed and rustup unavailable" >&2
+      exit 1
+    fi
+  fi
+  cargo build --release -p chaos-api --target "$RUST_TARGET"
+  API_BIN="$ROOT_DIR/target/${RUST_TARGET}/release/chaos-api"
+fi
+
+if command -v strip >/dev/null 2>&1; then
+  strip --strip-unneeded "$API_BIN" || true
+fi
 
 # --- Step 2: Build web assets ---
 echo "==> Building web assets..."
@@ -41,35 +81,52 @@ cd "$ROOT_DIR/apps/web"
 pnpm install --frozen-lockfile
 pnpm build
 
-# --- Step 3: Assemble package tree ---
-echo "==> Assembling package..."
-
-# Binary
-install -Dm755 "$ROOT_DIR/target/release/chaos-api" "$PKG_DIR/usr/lib/chaos/bin/chaos-api"
-
-# dae binary
-if [ -f "$ROOT_DIR/third_party/dae/current/dae" ]; then
-    install -Dm755 "$ROOT_DIR/third_party/dae/current/dae" "$PKG_DIR/usr/lib/chaos/bin/dae"
-else
-    echo "WARNING: dae binary not found. Run ./scripts/fetch-dae.sh first."
-    echo "         Package will be built without dae (runtime reports dae_binary_missing)."
+# --- Step 3: Resolve dae binary ---
+DAE_CANDIDATES=(
+  "$ROOT_DIR/third_party/dae/current/${DAE_ARCH}/dae"
+  "$ROOT_DIR/third_party/dae/current/dae"
+)
+DAE_BIN=""
+for candidate in "${DAE_CANDIDATES[@]}"; do
+  if [[ -f "$candidate" ]]; then
+    DAE_BIN="$candidate"
+    break
+  fi
+done
+if [[ -z "$DAE_BIN" ]]; then
+  echo "==> dae binary missing; fetching ${DAE_ARCH}..."
+  CHAOS_DAE_ARCH="$DAE_ARCH" "$ROOT_DIR/scripts/fetch-dae.sh" || true
+  for candidate in "${DAE_CANDIDATES[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      DAE_BIN="$candidate"
+      break
+    fi
+  done
 fi
 
-# Web assets
+# --- Step 4: Assemble package tree ---
+echo "==> Assembling package..."
+
+install -Dm755 "$API_BIN" "$PKG_DIR/usr/lib/chaos/bin/chaos-api"
+
+if [[ -n "$DAE_BIN" ]]; then
+  install -Dm755 "$DAE_BIN" "$PKG_DIR/usr/lib/chaos/bin/dae"
+else
+  echo "WARNING: dae binary not found. Package will report dae_binary_missing at runtime."
+fi
+
 mkdir -p "$PKG_DIR/usr/share/chaos/web"
 cp -r "$ROOT_DIR/apps/web/build/." "$PKG_DIR/usr/share/chaos/web/"
 
-# Locales
 mkdir -p "$PKG_DIR/usr/share/chaos/locales"
 cp "$ROOT_DIR/locales/"*.json "$PKG_DIR/usr/share/chaos/locales/"
 
-# Systemd service
 install -Dm644 "$SCRIPT_DIR/chaos.service" "$PKG_DIR/lib/systemd/system/chaos.service"
-
-# Default config
 install -Dm644 "$SCRIPT_DIR/chaos.env" "$PKG_DIR/etc/chaos/chaos.env"
 
-# DEBIAN control
+# Placeholder for state dir ownership (created by postinst / systemd StateDirectory)
+mkdir -p "$PKG_DIR/var/lib/chaos"
+
 mkdir -p "$PKG_DIR/DEBIAN"
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: $PKG_NAME
@@ -82,9 +139,15 @@ Description: Modern control plane for dae
  + vendored dae data plane. Full replacement for daed as an installable product.
 EOF
 
+cat > "$PKG_DIR/DEBIAN/conffiles" <<'EOF'
+/etc/chaos/chaos.env
+EOF
+
 cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
+mkdir -p /var/lib/chaos/dae
+chmod 700 /var/lib/chaos || true
 systemctl daemon-reload
 systemctl enable chaos.service || true
 echo "chaos installed. Start with: sudo systemctl start chaos"
@@ -100,19 +163,56 @@ systemctl disable chaos.service 2>/dev/null || true
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/prerm"
 
-# --- Step 4: Build package ---
-if command -v dpkg-deb &>/dev/null; then
-    echo "==> Building .deb..."
-    dpkg-deb --build --root-owner-group "$PKG_DIR" "$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-    echo ""
-    echo "==> Done: $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-    echo "    Install: sudo dpkg -i $DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
-    echo "    Start:   sudo systemctl enable --now chaos"
-else
-    echo "==> dpkg-deb not found, building tar.gz..."
-    tar -czf "$DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz" -C "$PKG_ROOT" "${PKG_NAME}_${VERSION}_${ARCH}"
-    echo ""
-    echo "==> Done: $DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz"
-    echo "    Extract: sudo tar -xzf $DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz -C /"
-    echo "    Start:   sudo /usr/lib/chaos/bin/chaos-api"
+cat > "$PKG_DIR/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "purge" ]; then
+  systemctl daemon-reload 2>/dev/null || true
+  echo "Note: /var/lib/chaos was left in place. Remove manually if desired."
 fi
+EOF
+chmod 755 "$PKG_DIR/DEBIAN/postrm"
+
+# --- Step 5: Build .deb and FHS tar.gz ---
+DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+TAR_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz"
+
+if command -v dpkg-deb &>/dev/null; then
+  echo "==> Building .deb..."
+  dpkg-deb --build --root-owner-group "$PKG_DIR" "$DEB_OUT"
+  echo "==> Done: $DEB_OUT"
+else
+  echo "WARNING: dpkg-deb not found; skipping .deb"
+fi
+
+echo "==> Building FHS tar.gz..."
+# Archive root is FHS paths (./usr/..., ./etc/...) so tar -xzf ... -C / works.
+# Exclude DEBIAN control metadata (deb-only).
+tar -czf "$TAR_OUT" -C "$PKG_DIR" --exclude=DEBIAN .
+echo "==> Done: $TAR_OUT"
+
+(
+  cd "$DIST_DIR"
+  : > SHA256SUMS.tmp
+  for f in "${PKG_NAME}_${VERSION}_${ARCH}.deb" "${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz"; do
+    if [[ -f "$f" ]]; then
+      sha256sum "$f" >> SHA256SUMS.tmp
+    fi
+  done
+  if [[ -f SHA256SUMS ]]; then
+    # Drop previous lines for this arch/version, keep others.
+    grep -v " ${PKG_NAME}_${VERSION}_${ARCH}\.deb\$" SHA256SUMS \
+      | grep -v " ${PKG_NAME}_${VERSION}_linux_${ARCH}\.tar\.gz\$" \
+      > SHA256SUMS.keep 2>/dev/null || true
+    cat SHA256SUMS.keep SHA256SUMS.tmp > SHA256SUMS 2>/dev/null || cat SHA256SUMS.tmp > SHA256SUMS
+    rm -f SHA256SUMS.keep SHA256SUMS.tmp
+  else
+    mv SHA256SUMS.tmp SHA256SUMS
+  fi
+  echo "==> Checksums written to dist/SHA256SUMS"
+)
+
+echo ""
+echo "Install (deb): sudo dpkg -i $DEB_OUT"
+echo "Install (tar): sudo tar -xzf $TAR_OUT -C /"
+echo "Start:         sudo systemctl enable --now chaos"

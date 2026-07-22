@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the pinned dae release binary into third_party/dae/current/dae
+# Fetch the pinned dae release binary into third_party/dae/current[/arch]/dae
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,8 +10,6 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 VERSION_FILE="$ROOT/third_party/dae/VERSION"
-DEST_DIR="$ROOT/third_party/dae/current"
-DEST_BIN="$DEST_DIR/dae"
 
 if [[ ! -f "$VERSION_FILE" ]]; then
   echo "error: missing $VERSION_FILE" >&2
@@ -24,8 +22,8 @@ if [[ -z "$VER" ]]; then
   exit 1
 fi
 
-# Map uname -m to dae release asset arch tokens.
-host_arch="$(uname -m)"
+# Prefer explicit override for multi-arch packaging, else host arch.
+host_arch="${CHAOS_DAE_ARCH:-$(uname -m)}"
 case "$host_arch" in
   x86_64|amd64) arch="x86_64" ;;
   aarch64|arm64) arch="arm64" ;;
@@ -42,6 +40,18 @@ case "$host_arch" in
     exit 1
     ;;
 esac
+
+# Layout:
+#   third_party/dae/current/dae              (compat default for native host)
+#   third_party/dae/current/<arch>/dae       (side-by-side multi-arch cache)
+if [[ -n "${CHAOS_DAE_DEST_DIR:-}" ]]; then
+  DEST_DIR="$CHAOS_DAE_DEST_DIR"
+elif [[ -n "${CHAOS_DAE_ARCH:-}" ]]; then
+  DEST_DIR="$ROOT/third_party/dae/current/${arch}"
+else
+  DEST_DIR="$ROOT/third_party/dae/current"
+fi
+DEST_BIN="$DEST_DIR/dae"
 
 asset="dae-linux-${arch}.zip"
 base_url="https://github.com/daeuniverse/dae/releases/download/${VER}"
@@ -93,6 +103,20 @@ fi
 
 mkdir -p "$DEST_DIR"
 install -m 755 "$src_bin" "$DEST_BIN"
+
+# Also keep a host-default copy when building for the current machine arch.
+if [[ -n "${CHAOS_DAE_ARCH:-}" ]]; then
+  native="$(uname -m)"
+  case "$native" in
+    x86_64|amd64) native_arch="x86_64" ;;
+    aarch64|arm64) native_arch="arm64" ;;
+    *) native_arch="" ;;
+  esac
+  if [[ -n "$native_arch" && "$arch" == "$native_arch" ]]; then
+    mkdir -p "$ROOT/third_party/dae/current"
+    install -m 755 "$src_bin" "$ROOT/third_party/dae/current/dae"
+  fi
+fi
 
 echo "Installed: $DEST_BIN"
 "$DEST_BIN" --version 2>/dev/null || "$DEST_BIN" --help 2>&1 | head -n 5 || true

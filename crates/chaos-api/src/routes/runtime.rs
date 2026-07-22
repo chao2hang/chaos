@@ -18,7 +18,7 @@ use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::network::load_network_config;
@@ -220,7 +220,7 @@ async fn download_geo_dataset(
 }
 
 async fn update_geoip_data(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<GeoIpDataStatus>, ApiError> {
@@ -235,7 +235,7 @@ async fn update_geoip_data(
 }
 
 async fn update_geosite_data(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<GeoIpDataStatus>, ApiError> {
@@ -250,7 +250,7 @@ async fn update_geosite_data(
 }
 
 async fn apply_runtime(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<ApplyResponse>, ApiError> {
@@ -333,7 +333,7 @@ pub(crate) async fn apply_current_config_locked(
 }
 
 async fn stop_runtime(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<RuntimeStatus>, ApiError> {
@@ -448,7 +448,10 @@ fn redact_runtime_detail(message: &str) -> String {
         .join("\n")
 }
 
-async fn load_config_plane(state: &AppState, locale: Locale) -> Result<ConfigPlane, ApiError> {
+pub(crate) async fn load_config_plane(
+    state: &AppState,
+    locale: Locale,
+) -> Result<ConfigPlane, ApiError> {
     let (groups, routing_rules, routing_fallback) =
         load_published_or_legacy_routing(state, locale).await?;
     let dns_upstreams = chaos_store::list_dns_upstreams(&state.pool).await?;
@@ -695,7 +698,7 @@ async fn recover_legacy_v2_plan(
 /// Useful when the config file was already written (e.g. by a profile switch)
 /// and only a reload signal is needed.
 async fn reload_runtime(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<ApplyResponse>, ApiError> {
@@ -1013,11 +1016,104 @@ pub fn runtime_router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::auth::{auth_router, issue_token, issue_token_role};
 
     async fn state() -> AppState {
         let pool = chaos_store::connect("sqlite::memory:").await.unwrap();
         chaos_store::migrate(&pool).await.unwrap();
         AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string())
+    }
+
+    async fn test_app() -> (axum::Router, AppState) {
+        let pool = chaos_store::connect("sqlite::memory:").await.unwrap();
+        chaos_store::migrate(&pool).await.unwrap();
+        for (id, username, role) in [("u1", "admin", "admin"), ("u2", "viewer", "user")] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind("test-hash")
+            .bind("now")
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
+        let app = axum::Router::new()
+            .nest("/api/v1/auth", auth_router())
+            .nest("/api/v1", runtime_router())
+            .with_state(state.clone());
+        (app, state)
+    }
+
+    async fn json_body(res: axum::response::Response) -> serde_json::Value {
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_non_admin() {
+        let (app, state) = test_app().await;
+        let token = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/runtime/apply")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], "admin_required");
+    }
+
+    #[tokio::test]
+    async fn stop_rejects_non_admin() {
+        let (app, state) = test_app().await;
+        let token = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/runtime/stop")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(res).await["error"]["code"], "admin_required");
+    }
+
+    #[tokio::test]
+    async fn get_runtime_allows_non_admin() {
+        let (app, state) = test_app().await;
+        let token = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/runtime")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let _ = issue_token("u1", "admin", &state.jwt_secret);
     }
 
     #[tokio::test]

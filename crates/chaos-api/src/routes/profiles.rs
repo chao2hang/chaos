@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::state::AppState;
@@ -86,7 +86,7 @@ async fn list_profiles(
 }
 
 async fn create_profile(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<CreateProfileRequest>,
@@ -122,7 +122,7 @@ async fn create_profile(
 }
 
 async fn update_profile(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -157,7 +157,7 @@ async fn update_profile(
 }
 
 async fn delete_profile(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -171,7 +171,7 @@ async fn delete_profile(
 }
 
 async fn activate_profile(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,

@@ -14,7 +14,7 @@ use chaos_store::{PublishedGroup, PublishedOrchestrationPlan, PublishedRoutingRu
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::runtime::ApplyResponse;
@@ -195,7 +195,7 @@ async fn get_orchestration(
 }
 
 async fn put_orchestration(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,
@@ -221,7 +221,7 @@ async fn validate_document(
 }
 
 async fn publish_document(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,

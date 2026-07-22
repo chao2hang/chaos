@@ -9,7 +9,9 @@
 
 	const colorMode = $derived(getResolvedTheme());
 	const ink = $derived(readCssVar('--ink', colorMode === 'dark' ? '#f0f0f0' : '#111111'));
-	const line = $derived(readCssVar('--line', colorMode === 'dark' ? '#333333' : '#dddddd'));
+	const lineStrong = $derived(
+		readCssVar('--line-strong', colorMode === 'dark' ? '#555555' : '#a8a8a8')
+	);
 	const surface = $derived(
 		readCssVar('--surface', colorMode === 'dark' ? '#141414' : '#ffffff')
 	);
@@ -47,7 +49,7 @@
 	}
 
 	function minimapNodeStroke(node: Node): string {
-		return node.selected ? ink : line;
+		return node.selected ? ink : lineStrong;
 	}
 
 	function onPointerDown(event: PointerEvent) {

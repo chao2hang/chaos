@@ -12,7 +12,7 @@ use chaos_core::config_render::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::state::AppState;
@@ -136,7 +136,7 @@ async fn get_network(
 }
 
 async fn put_network(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<NetworkDocument>,
@@ -463,6 +463,43 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = json_body(res).await;
         assert!(body["interfaces"].is_array());
+    }
+
+    #[tokio::test]
+    async fn network_put_rejects_non_admin() {
+        let (app, state) = test_app().await;
+        // Insert a non-admin user row (role is loaded from DB by AuthUser).
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("u2")
+        .bind("viewer")
+        .bind("test-hash")
+        .bind("now")
+        .bind("user")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let token = crate::auth::issue_token_role("u2", "viewer", "user", &state.jwt_secret)
+            .unwrap();
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/network")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"wan_interfaces":["eth0"],"lan_interfaces":[],"auto_config_kernel_parameter":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], "admin_required");
     }
 
     #[test]

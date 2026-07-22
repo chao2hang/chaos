@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { interceptDirtyNavigation } from '$lib/dirtyNavigation.svelte';
 	import {
 		Copy,
 		ExternalLink,
@@ -39,9 +40,10 @@
 	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
-	import Section from '$lib/components/ui/Section.svelte';
+import Section from '$lib/components/ui/Section.svelte';
+		import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 
-	type RuleNode = OrchestrationRuleNodeDto;
+		type RuleNode = OrchestrationRuleNodeDto;
 	type OutboundNode = Extract<OrchestrationNodeDto, { type: 'node_group' | 'builtin' }>;
 
 	const matcherKinds: OrchestrationRuleMatcher['kind'][] = [
@@ -57,6 +59,7 @@
 	let loaded = $state(false);
 	let busy = $state(false);
 	let savedSnapshot = $state('');
+	let confirmDeleteId = $state<string | null>(null);
 
 	function currentDocument(): OrchestrationDocument {
 		return sanitizeDocument(flowNodes, flowEdges, viewport);
@@ -136,14 +139,14 @@
 
 	const dirty = $derived(loaded && currentSnapshot() !== savedSnapshot);
 
-	beforeNavigate(({ cancel }) => {
+	beforeNavigate(({ cancel, to }) => {
 		if (!dirty || typeof window === 'undefined') return;
 		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
+		interceptDirtyNavigation({
+			dirty: true,
+			cancel,
+			href: to?.url.href ?? null
+		});
 	});
 
 	$effect(() => {
@@ -201,10 +204,17 @@
 		if (target) flowEdges = setRuleTarget(created.id, target, flowNodes, flowEdges);
 	}
 
-	function removeRule(id: string) {
-		flowNodes = flowNodes.filter((node) => node.id !== id);
-		flowEdges = flowEdges.filter((edge) => edge.source !== id && edge.target !== id);
-	}
+function requestRemoveRule(id: string) {
+			confirmDeleteId = id;
+		}
+
+		function confirmRemoveRule() {
+			const id = confirmDeleteId;
+			confirmDeleteId = null;
+			if (!id) return;
+			flowNodes = flowNodes.filter((node) => node.id !== id);
+			flowEdges = flowEdges.filter((edge) => edge.source !== id && edge.target !== id);
+		}
 
 	function setTarget(ruleId: string, targetId: string) {
 		flowEdges = setRuleTarget(ruleId, targetId || null, flowNodes, flowEdges);
@@ -302,7 +312,7 @@
 										disabled={busy}
 										aria-label={t('routing.deleteRule', { index: index + 1 })}
 										title={t('routing.deleteRule', { index: index + 1 })}
-										onclick={() => removeRule(rule.id)}
+										onclick={() => requestRemoveRule(rule.id)}
 									/>
 								</div>
 							</header>
@@ -439,6 +449,19 @@
 		</Section>
 	{/if}
 </AppPage>
+
+<ConfirmDialog
+	open={confirmDeleteId !== null}
+	title={t('routing.deleteRuleTitle')}
+	description={t('routing.deleteRuleDescription')}
+	confirmLabel={t('common.delete')}
+	cancelLabel={t('common.cancel')}
+	danger
+	onconfirm={confirmRemoveRule}
+	oncancel={() => {
+		confirmDeleteId = null;
+	}}
+/>
 
 <style>
 	.dirty-pill {

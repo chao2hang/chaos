@@ -8,8 +8,14 @@ mod routes;
 mod state;
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::Router;
+use tower::ServiceExt;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -26,9 +32,7 @@ use routes::orchestration::orchestration_router;
 use routes::profiles::profiles_router;
 use routes::routing::routing_router;
 use routes::runtime::runtime_router;
-use routes::stats::stats_router;
 use routes::subscriptions::subscriptions_router;
-use routes::update::update_router;
 use routes::users::users_router;
 use state::AppState;
 
@@ -51,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     routes::orchestration::recover_pending_publication(&state).await?;
     routes::runtime::restore_persisted_runtime().await;
 
-    let app = Router::new()
+    let mut app = Router::new()
         .nest("/api/v1/auth", auth_router())
         .nest(
             "/api/v1",
@@ -65,15 +69,30 @@ async fn main() -> anyhow::Result<()> {
                 .merge(orchestration_router())
                 .merge(dns_router())
                 .merge(network_router())
+                // Admin ops: backup/restore + config export. Profiles available for multi-config API.
                 .merge(profiles_router())
                 .merge(backup_router())
-                .merge(update_router())
                 .merge(config_router())
-                .merge(stats_router())
                 .merge(users_router()),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
+
+    // Release installs set CHAOS_WEB_DIR to the packaged SvelteKit static build.
+    if let Some(web_dir) = std::env::var_os("CHAOS_WEB_DIR").map(PathBuf::from) {
+        if web_dir.is_dir() {
+            tracing::info!(path = %web_dir.display(), "serving web UI");
+            app = app.fallback(move |req: Request<Body>| {
+                let web_dir = web_dir.clone();
+                async move { serve_web_ui(web_dir, req).await }
+            });
+        } else {
+            tracing::warn!(
+                path = %web_dir.display(),
+                "CHAOS_WEB_DIR is set but is not a directory; UI will not be served"
+            );
+        }
+    }
 
     // Spawn background subscription auto-refresh task.
     spawn_subscription_refresh_task(state);
@@ -87,6 +106,63 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Serve packaged SvelteKit static assets.
+/// Maps extensionless routes like `/dashboard` → `dashboard.html`, then SPA fallback.
+async fn serve_web_ui(web_dir: PathBuf, req: Request<Body>) -> Response {
+    let path = req.uri().path().to_string();
+    let index = web_dir.join("index.html");
+
+    // Never SPA-fallback API paths (or they look like 200 HTML success).
+    if path == "/api" || path.starts_with("/api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Extensionless app routes: try sibling `.html` first (adapter-static prerender).
+    if path != "/"
+        && !path.ends_with('/')
+        && !Path::new(&path)
+            .extension()
+            .is_some_and(|ext| !ext.is_empty())
+    {
+        let html_uri = format!("{path}.html");
+        if let Ok(uri) = html_uri.parse::<Uri>() {
+            let mut html_req = Request::builder()
+                .method(req.method().clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap_or_else(|_| Request::new(Body::empty()));
+            *html_req.headers_mut() = req.headers().clone();
+            let mut dir = ServeDir::new(&web_dir);
+            if let Ok(res) = dir.oneshot(html_req).await {
+                if res.status() != StatusCode::NOT_FOUND {
+                    return res.into_response();
+                }
+            }
+        }
+    }
+
+    // Exact file / directory / assets
+    let mut dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
+    if let Ok(res) = dir.oneshot(req).await {
+        if res.status() != StatusCode::NOT_FOUND {
+            return res.into_response();
+        }
+    }
+
+    // SPA fallback shell
+    if index.is_file() {
+        let mut file = ServeFile::new(index);
+        if let Ok(res) = file
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+        {
+            return res.into_response();
+        }
+    }
+
+    StatusCode::NOT_FOUND.into_response()
 }
 
 /// Background task that checks for subscriptions due for auto-refresh every 5 minutes.

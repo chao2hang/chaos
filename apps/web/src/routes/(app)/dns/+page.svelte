@@ -2,14 +2,15 @@
 	import { onMount } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
 	import { RefreshCw, Save } from '@lucide/svelte';
-	import {
-		getDns,
-		putDns,
-		ApiClientError,
-		isSessionRedirectPending,
-		type RoutingRuleDto
-	} from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n.svelte';
+import {
+			getDns,
+			putDns,
+			ApiClientError,
+			isSessionRedirectPending,
+			type RoutingRuleDto
+		} from '$lib/api';
+		import { interceptDirtyNavigation } from '$lib/dirtyNavigation.svelte';
+		import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import AppPage from '$lib/components/ui/AppPage.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
@@ -65,15 +66,15 @@
 		void load();
 	});
 
-	beforeNavigate(({ cancel }) => {
-		if (!dirty || typeof window === 'undefined') return;
-		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
-	});
+beforeNavigate(({ cancel, to }) => {
+			if (!dirty || typeof window === 'undefined') return;
+			if (isSessionRedirectPending()) return;
+			interceptDirtyNavigation({
+				dirty: true,
+				cancel,
+				href: to?.url.href ?? null
+			});
+		});
 
 	$effect(() => {
 		if (typeof document === 'undefined') return;
@@ -135,16 +136,19 @@
 				enabled: rule.enabled
 			}));
 			fallback = document.fallback;
-			savedSnapshot = snapshot();
-			toast.success({ title: t('dns.saved') });
-		} catch (cause) {
-			toast.error({
-				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.saveFailed')
-			});
-		} finally {
-			busy = false;
+savedSnapshot = snapshot();
+				toast.success({
+					title: t('dns.saved'),
+					description: t('dns.applyHint')
+				});
+			} catch (cause) {
+				toast.error({
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dns.saveFailed')
+				});
+			} finally {
+				busy = false;
+			}
 		}
-	}
 
 	function onBeforeUnload(event: BeforeUnloadEvent) {
 		if (!dirty || isSessionRedirectPending()) return;

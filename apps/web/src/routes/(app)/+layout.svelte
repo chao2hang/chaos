@@ -2,25 +2,33 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-import {
-			Boxes,
-			Cable,
-			LayoutDashboard,
-			LogOut,
-			Menu,
-			Network,
-			RadioTower,
-			Route,
-			Server,
-			Settings,
-			Unplug,
-			Workflow,
-			X
-		} from '@lucide/svelte';
+	import {
+		Boxes,
+		Cable,
+		LayoutDashboard,
+		LogOut,
+		Menu,
+		Network,
+		RadioTower,
+		Route,
+		Server,
+		Settings,
+		Workflow,
+		X
+	} from '@lucide/svelte';
 	import { setToken } from '$lib/api';
+	import {
+		allowDirtyNavigationOnce,
+		cancelDiscard,
+		confirmDiscard,
+		isDiscardDialogOpen,
+		isDocumentUnsaved,
+		requestDiscard
+	} from '$lib/dirtyNavigation.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import AppLogo from '$lib/components/ui/AppLogo.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import LocaleSwitcher from '$lib/LocaleSwitcher.svelte';
 	import ThemeSwitcher from '$lib/components/ThemeSwitcher.svelte';
@@ -28,6 +36,10 @@ import {
 	let { children } = $props();
 	let ready = $state(false);
 	let navOpen = $state(false);
+	/** Mobile drawer breakpoint — close button must not appear on desktop. */
+	let isMobileNav = $state(false);
+
+	const discardOpen = $derived(isDiscardDialogOpen());
 
 	onMount(() => {
 		const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
@@ -36,15 +48,22 @@ import {
 			return;
 		}
 		ready = true;
+
+		const mq = window.matchMedia('(max-width: 900px)');
+		const syncMobileNav = () => {
+			isMobileNav = mq.matches;
+			if (!mq.matches) navOpen = false;
+		};
+		syncMobileNav();
+		mq.addEventListener('change', syncMobileNav);
+		return () => mq.removeEventListener('change', syncMobileNav);
 	});
 
-	function logout() {
-		if (
-			typeof document !== 'undefined' &&
-			document.documentElement.dataset.chaosUnsaved === 'true'
-		) {
-			if (!window.confirm(t('common.discardDescription'))) return;
-			sessionStorage.setItem('chaos_allow_dirty_navigation', '1');
+	async function logout() {
+		if (isDocumentUnsaved()) {
+			const ok = await requestDiscard();
+			if (!ok) return;
+			allowDirtyNavigationOnce();
 		}
 		setToken(null);
 		void goto('/login');
@@ -63,11 +82,12 @@ import {
 	const navGroups = $derived([
 		{
 			label: t('nav.section.overview'),
-			links: [
-				{ href: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
-				{ href: '/orchestrate', label: t('nav.orchestrate'), icon: Workflow },
-				{ href: '/connections', label: t('nav.connections'), icon: Unplug }
-			]
+links: [
+					{ href: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
+					{ href: '/orchestrate', label: t('nav.orchestrate'), icon: Workflow }
+					// Connections stays at /connections (log-heuristic, experimental) but is
+					// not in primary nav until a real dae connection source exists.
+				]
 		},
 		{
 			label: t('nav.section.resources'),
@@ -92,21 +112,33 @@ import {
 <svelte:window onkeydown={onKeydown} />
 
 {#if ready}
+	<ConfirmDialog
+		open={discardOpen}
+		title={t('common.discardTitle')}
+		description={t('common.discardDescription')}
+		confirmLabel={t('common.discard')}
+		cancelLabel={t('common.cancel')}
+		danger
+		onconfirm={confirmDiscard}
+		oncancel={cancelDiscard}
+	/>
 	<div class="shell" class:nav-open={navOpen}>
 		<aside class="sidebar" aria-label={t('nav.primary')}>
 			<div class="brand-row">
 				<a class="brand" href="/dashboard" onclick={closeNav} aria-label="chaos">
 					<AppLogo />
 				</a>
-				<Button
-					class="close-nav"
-					variant="ghost"
-					size="icon"
-					icon={X}
-					aria-label={t('nav.close')}
-					title={t('nav.close')}
-					onclick={closeNav}
-				/>
+				{#if isMobileNav}
+					<Button
+						class="close-nav"
+						variant="ghost"
+						size="icon"
+						icon={X}
+						aria-label={t('nav.close')}
+						title={t('nav.close')}
+						onclick={closeNav}
+					/>
+				{/if}
 			</div>
 
 			<nav class="side-nav">
@@ -185,10 +217,12 @@ import {
 		min-width: 0;
 		min-height: 0;
 		height: 100%;
+		max-height: 100%;
 		flex-direction: column;
 		padding: var(--space-4) var(--space-3);
 		border-right: 1px solid var(--line);
 		background: var(--surface);
+		/* Never scroll the whole rail — only .side-nav scrolls. */
 		overflow: hidden;
 	}
 
@@ -196,6 +230,7 @@ import {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-shrink: 0;
 		gap: var(--space-2);
 		min-height: 2.75rem;
 		padding: 0 var(--space-2) var(--space-4);
@@ -207,17 +242,23 @@ import {
 		text-decoration: none;
 	}
 
-	:global(.close-nav) {
-		display: none;
+	/*
+	  Mobile-only close control. Must beat global `.ui-command { display: inline-flex }`
+	  (same specificity, load order can flip), so use a more specific selector + !important.
+	*/
+	.sidebar :global(button.close-nav) {
+		display: none !important;
 	}
 
 	.side-nav {
 		display: flex;
 		min-height: 0;
-		flex: 1;
+		flex: 1 1 0;
 		flex-direction: column;
 		gap: var(--space-5);
+		overflow-x: hidden;
 		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 
 	.nav-group {
@@ -266,6 +307,7 @@ import {
 
 	.side-footer {
 		display: flex;
+		flex-shrink: 0;
 		flex-direction: column;
 		gap: var(--space-2);
 		padding-top: var(--space-3);
@@ -339,23 +381,22 @@ import {
 			transform: translateX(0);
 		}
 
-		:global(.close-nav) {
-			display: inline-flex;
+		.sidebar :global(button.close-nav) {
+			display: inline-flex !important;
 		}
 
-		.mobile-bar {
-			position: sticky;
-			top: 0;
-			z-index: 20;
-			display: grid;
-			grid-template-columns: 2.25rem 1fr 2.25rem;
-			align-items: center;
-			height: var(--topbar-height);
-			padding: 0 var(--space-3);
-			border-bottom: 1px solid var(--line);
-			background: var(--surface-frosted);
-			backdrop-filter: blur(8px);
-		}
+.mobile-bar {
+				position: sticky;
+				top: 0;
+				z-index: 20;
+				display: grid;
+				grid-template-columns: 2.25rem 1fr 2.25rem;
+				align-items: center;
+				height: var(--topbar-height);
+				padding: 0 var(--space-3);
+				border-bottom: 1px solid var(--line);
+				background: var(--surface);
+			}
 
 		.mobile-bar > a {
 			justify-self: center;

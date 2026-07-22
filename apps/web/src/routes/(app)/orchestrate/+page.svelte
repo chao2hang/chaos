@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { interceptDirtyNavigation } from '$lib/dirtyNavigation.svelte';
 	import { page } from '$app/state';
 	import type { Connection } from '@xyflow/svelte';
 import {
@@ -249,14 +250,14 @@ import {
 		void load();
 	});
 
-	beforeNavigate(({ cancel }) => {
+	beforeNavigate(({ cancel, to }) => {
 		if (!dirty || typeof window === 'undefined') return;
 		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
+		interceptDirtyNavigation({
+			dirty: true,
+			cancel,
+			href: to?.url.href ?? null
+		});
 	});
 
 	$effect(() => {
@@ -574,7 +575,7 @@ function migrateDomains(
 					...group,
 					members: group.members ?? []
 				}));
-				toast.success({ title: t('flow.applied', { nodes: result.applied.nodes }) });
+				toast.success({ title: t('flow.applied') });
 				needsRepublish = false;
 				syncNeedsRepublishToast(false);
 			} catch (cause) {
@@ -621,7 +622,7 @@ function migrateDomains(
 <svelte:window onbeforeunload={onBeforeUnload} />
 
 <AppPage variant="editor">
-	<PageHeader title={t('flow.title')} meta="FLOW / V4">
+	<PageHeader title={t('flow.title')} meta="chaos / flow">
 		{#snippet actions()}
 			<div class="runtime-state" class:blocked={!validation.dae_compatible}>
 				{#if validation.dae_compatible}
@@ -692,7 +693,7 @@ function migrateDomains(
 			<aside class="node-library" aria-label={t('flow.library.title')}>
 				<header>
 					<span>{t('flow.library.title')}</span>
-					<strong>{t('flow.library.v4Document')}</strong>
+					<strong>{t('flow.library.document')}</strong>
 				</header>
 
 				<section class="library-section">
@@ -843,24 +844,26 @@ onupdaterule={updateRule}
 		gap: 0.35rem;
 		min-height: 2.25rem;
 		padding: 0 0.65rem;
-		border-left: 1px solid var(--line-strong);
-		color: var(--ink-muted);
-		font-family: var(--font-mono);
-		font-size: 0.62rem;
-		font-weight: 700;
-	}
+		border-left: 1px solid var(--line);
+			color: var(--ink-muted);
+			font-family: var(--font-mono);
+			font-size: 0.62rem;
+			font-weight: 700;
+		}
 
-	.runtime-state.blocked {
+		.runtime-state.blocked {
 		color: var(--ink);
 		text-decoration: underline dotted;
 	}
 
-.editor-shell {
+		.editor-shell {
 			display: grid;
 			grid-template-columns: 13.5rem minmax(30rem, 1fr) 20rem;
-			height: max(44rem, calc(100vh - 11.5rem));
+			grid-template-rows: minmax(0, 1fr);
+			/* Consume remaining AppPage height; do not use 100vh magic offsets. */
+			flex: 1 1 0;
 			min-height: 0;
-			border: 1px solid var(--line-strong);
+			border: 1px solid var(--line);
 			border-radius: var(--radius-lg);
 			background: var(--surface);
 			overflow: hidden;
@@ -878,10 +881,10 @@ onupdaterule={updateRule}
 		overflow-y: auto;
 	}
 
-.node-library > header {
+		.node-library > header {
 			min-height: 4rem;
 			padding: 0.7rem var(--space-3);
-			border-bottom: 1px solid var(--line-strong);
+			border-bottom: 1px solid var(--line);
 		}
 
 	.node-library > header span,
@@ -939,7 +942,7 @@ onupdaterule={updateRule}
 			width: 100%;
 			min-height: 3.5rem;
 			padding: 0.55rem 0.6rem;
-			border: 1px solid var(--line);
+			border: 1px solid var(--line-strong);
 			border-radius: var(--radius-md);
 			background: var(--surface);
 			color: var(--ink);
@@ -1041,8 +1044,8 @@ onupdaterule={updateRule}
 		background: var(--surface);
 	}
 
-.canvas-toolbar {
-			border-bottom: 1px solid var(--line-strong);
+		.canvas-toolbar {
+			border-bottom: 1px solid var(--line);
 		}
 
 	.canvas-meta span,
@@ -1115,14 +1118,15 @@ onupdaterule={updateRule}
 	@media (max-width: 980px) {
 		.editor-shell {
 			grid-template-columns: 11.5rem minmax(0, 1fr);
+			flex: 0 0 auto;
 			height: auto;
 			min-height: 42rem;
 		}
 
-.editor-shell :global(.inspector) {
+			.editor-shell :global(.inspector) {
 				grid-column: 1 / -1;
 				max-height: 34rem;
-				border-top: 1px solid var(--line-strong);
+				border-top: 1px solid var(--line);
 				border-left: 0;
 			}
 
@@ -1151,9 +1155,9 @@ onupdaterule={updateRule}
 		.editor-shell.show-inspector .canvas-column { display: none; }
 		.editor-shell.show-inspector :global(.inspector) { display: flex; max-height: min(44rem, 72vh); border-top: 0; }
 
-.node-library {
+			.node-library {
 				border-right: 0;
-				border-bottom: 1px solid var(--line-strong);
+				border-bottom: 1px solid var(--line);
 			}
 
 		.node-library > header,

@@ -122,6 +122,73 @@ pub async fn delete_node(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Erro
     Ok(result.rows_affected() > 0)
 }
 
+/// Fields that can be updated on an existing node row.
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateNode<'a> {
+    pub name: &'a str,
+    pub tag: Option<&'a str>,
+    pub link: &'a str,
+    pub protocol: Option<&'a str>,
+    pub address: Option<&'a str>,
+    /// When true, clears `country_code` (e.g. address changed and GeoIP will re-run).
+    pub clear_country_code: bool,
+}
+
+/// Update editable node fields. Returns the updated row, or `None` if missing.
+pub async fn update_node(
+    pool: &SqlitePool,
+    id: &str,
+    input: UpdateNode<'_>,
+) -> Result<Option<Node>, sqlx::Error> {
+    let UpdateNode {
+        name,
+        tag,
+        link,
+        protocol,
+        address,
+        clear_country_code,
+    } = input;
+
+    let result = if clear_country_code {
+        sqlx::query(
+            r#"
+            UPDATE nodes
+            SET name = ?1, tag = ?2, link = ?3, protocol = ?4, address = ?5, country_code = NULL
+            WHERE id = ?6
+            "#,
+        )
+        .bind(name)
+        .bind(tag)
+        .bind(link)
+        .bind(protocol)
+        .bind(address)
+        .bind(id)
+        .execute(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            UPDATE nodes
+            SET name = ?1, tag = ?2, link = ?3, protocol = ?4, address = ?5
+            WHERE id = ?6
+            "#,
+        )
+        .bind(name)
+        .bind(tag)
+        .bind(link)
+        .bind(protocol)
+        .bind(address)
+        .bind(id)
+        .execute(pool)
+        .await?
+    };
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_node(pool, id).await
+}
+
 /// Update country_code for a single node.
 pub async fn update_node_country_code(
     pool: &SqlitePool,
@@ -167,6 +234,28 @@ mod tests {
         assert_eq!(listed[0].protocol.as_deref(), Some("trojan"));
 
         assert!(get_node(&pool, &created.id).await.unwrap().is_some());
+
+        let updated = update_node(
+            &pool,
+            &created.id,
+            UpdateNode {
+                name: "renamed",
+                tag: Some("new-tag"),
+                link: "hysteria2://u@9.9.9.9:8443#renamed",
+                protocol: Some("hysteria2"),
+                address: Some("9.9.9.9:8443"),
+                clear_country_code: true,
+            },
+        )
+        .await
+        .unwrap()
+        .expect("node updated");
+        assert_eq!(updated.name, "renamed");
+        assert_eq!(updated.tag.as_deref(), Some("new-tag"));
+        assert_eq!(updated.protocol.as_deref(), Some("hysteria2"));
+        assert_eq!(updated.address.as_deref(), Some("9.9.9.9:8443"));
+        assert!(updated.country_code.is_none());
+
         assert!(delete_node(&pool, &created.id).await.unwrap());
         assert!(!delete_node(&pool, &created.id).await.unwrap());
         assert!(list_nodes(&pool).await.unwrap().is_empty());

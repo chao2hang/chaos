@@ -58,26 +58,13 @@ async fn check_update(
     }))
 }
 
-/// Apply an update (placeholder - actual implementation would download and replace binaries).
+/// Apply an update — not implemented yet (honest 501).
 async fn apply_update(
     _user: AdminUser,
     RequestLocale(locale): RequestLocale,
-    Json(body): Json<ApplyUpdateRequest>,
+    Json(_body): Json<ApplyUpdateRequest>,
 ) -> Result<Json<ApplyUpdateResponse>, ApiError> {
-    // This is a placeholder. Real implementation would:
-    // 1. Download the new binary from GitHub releases
-    // 2. Verify checksum
-    // 3. Replace the binary
-    // 4. Trigger systemd restart
-
-    Ok(Json(ApplyUpdateResponse {
-        ok: false,
-        message: format!(
-            "Update for '{}' is not yet implemented. Current version: {}",
-            body.component, CURRENT_VERSION
-        ),
-        restart_required: false,
-    }))
+    Err(ApiError::not_implemented("not_implemented", locale))
 }
 
 fn read_dae_version() -> Option<String> {
