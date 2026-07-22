@@ -17,6 +17,10 @@
 	--focus: #111111;
 	--overlay: rgba(0, 0, 0, 0.46);
 	--danger-surface: #f1f1f1;
+	--flow-canvas: #fafafa;
+	--flow-dot: #d4d4d4;
+	--flow-minimap: #f7f7f7;
+	--selection-ring: color-mix(in srgb, var(--ink) 16%, transparent);
 
 	--font-ui: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
 		"Noto Sans SC", "Microsoft YaHei", sans-serif;
@@ -78,26 +82,30 @@
 	color-scheme: light;
 }
 
-/* Dark theme */
+/* Dark theme — borders sit above surface so panels and nodes stay legible */
 [data-theme="dark"] {
 	--canvas: #0a0a0a;
 	--surface: #141414;
-	--surface-subtle: #1e1e1e;
-	--surface-hover: #282828;
+	--surface-subtle: #1c1c1c;
+	--surface-hover: #262626;
 	--surface-pressed: #333333;
-	--surface-inverse: #f5f5f5;
+	--surface-inverse: #f0f0f0;
 	--surface-inverse-hover: #e0e0e0;
 	--surface-row-hover: #1a1a1a;
 	--surface-frosted: rgba(20, 20, 20, 0.96);
 	--ink: #f0f0f0;
-	--ink-muted: #a0a0a0;
-	--ink-faint: #707070;
+	--ink-muted: #a8a8a8;
+	--ink-faint: #7a7a7a;
 	--ink-inverse: #111111;
-	--line: #2a2a2a;
-	--line-strong: #444444;
+	--line: #333333;
+	--line-strong: #555555;
 	--focus: #f0f0f0;
 	--overlay: rgba(0, 0, 0, 0.7);
 	--danger-surface: #2a1a1a;
+	--flow-canvas: #101010;
+	--flow-dot: #3a3a3a;
+	--flow-minimap: #161616;
+	--selection-ring: color-mix(in srgb, var(--ink) 22%, transparent);
 
 	--shadow-float: 0 18px 48px rgba(0, 0, 0, 0.5);
 	--shadow-sticky: 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -115,22 +123,26 @@
 	:root:not([data-theme="light"]) {
 		--canvas: #0a0a0a;
 		--surface: #141414;
-		--surface-subtle: #1e1e1e;
-		--surface-hover: #282828;
+		--surface-subtle: #1c1c1c;
+		--surface-hover: #262626;
 		--surface-pressed: #333333;
-		--surface-inverse: #f5f5f5;
+		--surface-inverse: #f0f0f0;
 		--surface-inverse-hover: #e0e0e0;
 		--surface-row-hover: #1a1a1a;
 		--surface-frosted: rgba(20, 20, 20, 0.96);
 		--ink: #f0f0f0;
-		--ink-muted: #a0a0a0;
-		--ink-faint: #707070;
+		--ink-muted: #a8a8a8;
+		--ink-faint: #7a7a7a;
 		--ink-inverse: #111111;
-		--line: #2a2a2a;
-		--line-strong: #444444;
+		--line: #333333;
+		--line-strong: #555555;
 		--focus: #f0f0f0;
 		--overlay: rgba(0, 0, 0, 0.7);
 		--danger-surface: #2a1a1a;
+		--flow-canvas: #101010;
+		--flow-dot: #3a3a3a;
+		--flow-minimap: #161616;
+		--selection-ring: color-mix(in srgb, var(--ink) 22%, transparent);
 
 		--shadow-float: 0 18px 48px rgba(0, 0, 0, 0.5);
 		--shadow-sticky: 0 8px 24px rgba(0, 0, 0, 0.4);

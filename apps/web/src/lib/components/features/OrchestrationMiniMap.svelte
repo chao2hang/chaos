@@ -1,30 +1,55 @@
 <script lang="ts">
 	import { MiniMap, useSvelteFlow, type Node } from '@xyflow/svelte';
 	import { t } from '$lib/i18n.svelte';
+	import { getResolvedTheme, readCssVar } from '$lib/theme.svelte';
 
 	const { setCenter, getViewport } = useSvelteFlow();
 
 	let pointerDown: { x: number; y: number } | null = null;
 
+	const colorMode = $derived(getResolvedTheme());
+	const ink = $derived(readCssVar('--ink', colorMode === 'dark' ? '#f0f0f0' : '#111111'));
+	const lineStrong = $derived(
+		readCssVar('--line-strong', colorMode === 'dark' ? '#555555' : '#a8a8a8')
+	);
+	const surface = $derived(
+		readCssVar('--surface', colorMode === 'dark' ? '#141414' : '#ffffff')
+	);
+	const surfaceSubtle = $derived(
+		readCssVar('--surface-subtle', colorMode === 'dark' ? '#1c1c1c' : '#f5f5f5')
+	);
+	const surfaceInverse = $derived(
+		readCssVar('--surface-inverse', colorMode === 'dark' ? '#f0f0f0' : '#111111')
+	);
+	const inkMuted = $derived(
+		readCssVar('--ink-muted', colorMode === 'dark' ? '#a8a8a8' : '#5f5f5f')
+	);
+	const minimapBg = $derived(
+		readCssVar('--flow-minimap', colorMode === 'dark' ? '#161616' : '#f7f7f7')
+	);
+	const maskColor = $derived(
+		colorMode === 'dark' ? 'rgba(0, 0, 0, 0.45)' : 'rgba(17, 17, 17, 0.1)'
+	);
+
 	function minimapNodeColor(node: Node): string {
 		switch (node.type) {
 			case 'start':
-				return '#111111';
+				return surfaceInverse;
 			case 'end':
-				return '#4a4a4a';
+				return inkMuted;
 			case 'rule':
-				return '#f0f0f0';
+				return surface;
 			case 'node_group':
-				return '#ffffff';
+				return surface;
 			case 'builtin':
-				return '#d0d0d0';
+				return surfaceSubtle;
 			default:
-				return '#e8e8e8';
+				return surfaceSubtle;
 		}
 	}
 
 	function minimapNodeStroke(node: Node): string {
-		return node.selected ? '#111111' : '#8a8a8a';
+		return node.selected ? ink : lineStrong;
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -73,10 +98,10 @@
 	nodeStrokeColor={minimapNodeStroke}
 	nodeStrokeWidth={2}
 	nodeBorderRadius={2}
-	maskColor="rgba(17, 17, 17, 0.1)"
-	maskStrokeColor="#111111"
+	maskColor={maskColor}
+	maskStrokeColor={ink}
 	maskStrokeWidth={1.25}
-	bgColor="#f7f7f7"
+	bgColor={minimapBg}
 	onpointerdown={onPointerDown}
 	onpointerup={onPointerUp}
 	onpointercancel={onPointerCancel}

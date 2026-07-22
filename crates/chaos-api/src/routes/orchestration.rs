@@ -7,11 +7,11 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chaos_core::orchestration::{
-    FlowNode, FlowNodeKind, GroupSource, OrchestrationDocument, ValidationReport,
-    ORCHESTRATION_VERSION,
+    FlowNode, FlowNodeKind, GroupSource, OrchestrationDocument, RouteProbe, RouteSimulation,
+    ValidationReport, ORCHESTRATION_VERSION,
 };
 use chaos_store::{PublishedGroup, PublishedOrchestrationPlan, PublishedRoutingRule};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -132,6 +132,28 @@ pub fn orchestration_router() -> Router<AppState> {
         )
         .route("/orchestration/validate", post(validate_document))
         .route("/orchestration/publish", post(publish_document))
+        .route("/orchestration/simulate", post(simulate_document))
+}
+
+#[derive(Debug, Deserialize)]
+struct SimulateRequest {
+    document: OrchestrationDocument,
+    #[serde(default)]
+    probe: RouteProbe,
+}
+
+async fn simulate_document(
+    _user: AuthUser,
+    RequestLocale(locale): RequestLocale,
+    Json(body): Json<SimulateRequest>,
+) -> Result<Json<RouteSimulation>, ApiError> {
+    let document = normalize_document(body.document);
+    check_document_limits(&document, locale)?;
+    let compiled = document.compile().map_err(|report| {
+        tracing::debug!(issues = ?report.issues, "simulate rejected invalid document");
+        ApiError::bad_request("orchestration_invalid", locale)
+    })?;
+    Ok(Json(compiled.simulate(&body.probe)))
 }
 
 async fn get_orchestration(

@@ -36,8 +36,8 @@ pub struct GroupForConfig {
     pub policy: String,
     /// When set, emits `filter: subtag(tag)` style filter (legacy).
     pub filter_tag: Option<String>,
-    /// Explicit members: when non-empty, emit `filter: name(a, b)` and
-    /// `policy: fixed(a, b)` with optional weights via fixed(...) when policy is fixed/random.
+    /// Explicit members: when non-empty, emit `filter: name(node.a, node.b)` and
+    /// `policy: fixed(node.a, node.b)` (names match the `node.<key>:` dialer tags).
     pub members: Vec<GroupMemberForConfig>,
 }
 
@@ -198,13 +198,17 @@ pub fn render_dae_config_with_lan(
         out.push_str("'\n");
     }
 
-    // Map node id -> rendered key for group membership filters.
-    let mut id_to_key: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Map node id -> rendered dialer name used by group filters.
+    // Node lines are emitted as `node.<key>: 'link'`. dae stores that as
+    // KeyableString `node.<key>:link`, so Property.Name becomes `node.<key>`.
+    // `filter: name(...)` must match that full name, not the bare `<key>`.
+    let mut id_to_filter_name: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     {
         let mut used_keys2: HashSet<String> = HashSet::new();
         for n in nodes {
             let key = unique_node_key(&n.name, &n.id, &mut used_keys2);
-            id_to_key.insert(n.id.clone(), key);
+            id_to_filter_name.insert(n.id.clone(), format!("node.{key}"));
         }
     }
 
@@ -218,40 +222,40 @@ pub fn render_dae_config_with_lan(
         out.push_str(" {\n");
 
         // Prefer explicit members; fall back to subtag filter.
-        let member_keys: Vec<(String, u32)> = g
+        let member_names: Vec<(String, u32)> = g
             .members
             .iter()
             .filter_map(|m| {
-                id_to_key
+                id_to_filter_name
                     .get(&m.node_id)
                     .cloned()
-                    .map(|k| (k, m.weight.max(1)))
+                    .map(|name| (name, m.weight.max(1)))
             })
             .collect();
 
-        if !member_keys.is_empty() {
+        if !member_names.is_empty() {
             out.push_str("    filter: name(");
-            for (i, (k, _)) in member_keys.iter().enumerate() {
+            for (i, (name, _)) in member_names.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(k);
+                out.push_str(name);
             }
             out.push_str(")\n");
             let policy = g.policy.trim();
-            // Weighted fixed/random: repeat node keys by weight → fixed(a, a, b).
+            // Weighted fixed/random: repeat dialer names by weight → fixed(a, a, b).
             if policy == "fixed" || policy == "random" {
                 out.push_str("    policy: ");
                 out.push_str(policy);
                 out.push('(');
                 let mut first = true;
-                for (k, w) in &member_keys {
+                for (name, w) in &member_names {
                     for _ in 0..*w {
                         if !first {
                             out.push_str(", ");
                         }
                         first = false;
-                        out.push_str(k);
+                        out.push_str(name);
                     }
                 }
                 out.push_str(")\n");
@@ -497,8 +501,10 @@ mod tests {
         };
         let s = render_dae_config(&nodes, &plane);
         assert!(s.contains("home {"));
-        assert!(s.contains("filter: name(hk)"));
-        assert!(s.contains("policy: fixed(hk, hk)"));
+        // Node is declared as `node.hk:`; filter/policy must use the same dialer name.
+        assert!(s.contains("node.hk:"));
+        assert!(s.contains("filter: name(node.hk)"));
+        assert!(s.contains("policy: fixed(node.hk, node.hk)"));
         assert!(s.contains("domain(example.com) -> home"));
         assert!(s.contains("fallback: direct"));
         assert!(s.contains("cloudflare: 'udp://1.1.1.1:53'"));

@@ -18,12 +18,47 @@ import type {
 	SubscriptionDto
 } from '$lib/api';
 
-const EDGE_MARKER = { type: MarkerType.ArrowClosed, color: '#111111', width: 18, height: 18 };
+// Omit marker color so xyflow falls through to defaultMarkerColor / --xy-edge-stroke.
+const EDGE_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 18 };
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 0.85 };
 const DEFAULT_GROUP_POLICY = 'min_moving_avg';
 const GROUP_POLICIES = new Set(['min_moving_avg', 'min', 'random', 'fixed']);
 const MAX_RULE_PRIORITY = 9_999;
 const RESERVED_NAMES = new Set(['direct', 'must_direct', 'block']);
+
+/** Evaluation band: domain → geosite → IP/geoip → other. Lower is earlier. */
+export type RuleMatcherBand = 0 | 1 | 2 | 3;
+
+export function ruleMatcherBand(kind: OrchestrationRuleMatcher['kind']): RuleMatcherBand {
+	switch (kind) {
+		case 'domain_suffix':
+		case 'domain_full':
+		case 'domain_keyword':
+			return 0;
+		case 'geosite':
+			return 1;
+		case 'geoip':
+		case 'destination_cidr':
+		case 'source_cidr':
+		case 'ip_version':
+			return 2;
+		default:
+			return 3;
+	}
+}
+
+/** Sort key for routing evaluation: band first, then user priority, then id. */
+export function compareRulesByEvaluationOrder(
+	left: { id: string; data: { matcher: OrchestrationRuleMatcher; priority?: number } },
+	right: { id: string; data: { matcher: OrchestrationRuleMatcher; priority?: number } }
+): number {
+	const bandDelta = ruleMatcherBand(left.data.matcher.kind) - ruleMatcherBand(right.data.matcher.kind);
+	if (bandDelta !== 0) return bandDelta;
+	const leftPriority = left.data.priority ?? Number.MAX_SAFE_INTEGER;
+	const rightPriority = right.data.priority ?? Number.MAX_SAFE_INTEGER;
+	if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+	return left.id.localeCompare(right.id);
+}
 
 export type OrchestrationResources = {
 	nodes: NodeDto[];
@@ -194,22 +229,19 @@ export function sanitizeDocument(
 }
 
 function sanitizeNode(node: OrchestrationNodeDto): OrchestrationNodeDto {
-	const base = { id: node.id, type: node.type, position: safePosition(node.position) };
-	if (node.type === 'rule') {
-		return {
-			...base,
-			data: {
-				matcher: {
-					kind: node.data.matcher.kind,
-					pattern:
-						node.data.matcher.kind === 'domain_suffix'
-							? normalizeDomainSuffix(node.data.matcher.pattern)
-							: node.data.matcher.pattern.trim()
-				},
-				...(validPriority(node.data.priority) ? { priority: Math.floor(node.data.priority!) } : {})
-			}
-		} as OrchestrationRuleNodeDto;
-	}
+		const base = { id: node.id, type: node.type, position: safePosition(node.position) };
+		if (node.type === 'rule') {
+			return {
+				...base,
+				data: {
+					matcher: {
+						kind: node.data.matcher.kind,
+						pattern: normalizeMatcherPattern(node.data.matcher.kind, node.data.matcher.pattern)
+					},
+					...(validPriority(node.data.priority) ? { priority: Math.floor(node.data.priority!) } : {})
+				}
+			} as OrchestrationRuleNodeDto;
+		}
 	if (node.type === 'builtin') {
 		return { ...base, data: { builtin: 'direct' } } as OrchestrationBuiltinNodeDto;
 	}
@@ -363,7 +395,9 @@ export function decorateEdge(edge: OrchestrationEdgeDto): OrchestrationEdgeDto {
 		type: 'smoothstep',
 		deletable: true,
 		markerEnd: EDGE_MARKER,
-		style: `stroke: #111111; stroke-width: ${edge.selected ? 2.25 : 1.35};`
+		// Inline stroke uses the theme token so dark/light both stay readable (CSS-only
+		// defaults are too dim on our dark canvas: xyflow dark stroke is ~#3e3e3e).
+		style: `stroke: var(--ink); stroke-width: ${edge.selected ? 2.25 : 1.45};`
 	};
 }
 
@@ -445,15 +479,11 @@ function edgeAllowed(
 		return edge ? [...withoutCurrent, edge] : withoutCurrent;
 	}
 
-	export function autoLayout(document: OrchestrationDocument): OrchestrationDocument {
-		const migrated = migrateDocument(document);
-		const rules = migrated.nodes
-			.filter((node): node is OrchestrationRuleNodeDto => node.type === 'rule')
-			.sort(
-				(left, right) =>
-					(left.data.priority ?? Number.MAX_SAFE_INTEGER) -
-					(right.data.priority ?? Number.MAX_SAFE_INTEGER)
-			);
+export function autoLayout(document: OrchestrationDocument): OrchestrationDocument {
+			const migrated = migrateDocument(document);
+			const rules = migrated.nodes
+				.filter((node): node is OrchestrationRuleNodeDto => node.type === 'rule')
+				.sort(compareRulesByEvaluationOrder);
 		const outbounds = [
 			...migrated.nodes.filter((node) => node.type === 'node_group'),
 			...migrated.nodes.filter((node) => node.type === 'builtin')
@@ -556,11 +586,10 @@ function edgeAllowed(
 					graph('duplicate_rule_priority', node.id);
 				}
 				if (node.data.priority !== undefined) rulePriorities.add(node.data.priority);
-				const matcherKey = `${node.data.matcher.kind}:${
-					node.data.matcher.kind === 'domain_suffix'
-						? normalizeDomainSuffix(node.data.matcher.pattern)
-						: node.data.matcher.pattern.trim().toLowerCase()
-				}`;
+				const matcherKey = `${node.data.matcher.kind}:${normalizeMatcherPattern(
+					node.data.matcher.kind,
+					node.data.matcher.pattern
+				).toLowerCase()}`;
 				if (ruleMatchers.has(matcherKey)) graph('duplicate_rule_matcher', node.id);
 				ruleMatchers.add(matcherKey);
 			}
@@ -694,35 +723,111 @@ function validateGroupSourceCycles(
 }
 
 function matcherValid(matcher: OrchestrationRuleMatcher): boolean {
-	return matcher.kind === 'domain_suffix'
-		? validDomainSuffix(matcher.pattern)
-		: validCidr(matcher.pattern);
-}
+			switch (matcher.kind) {
+				case 'domain_suffix':
+				case 'domain_full': {
+					const parts = parseDomainList(matcher.pattern);
+					return parts.length > 0 && parts.every((part) => validDomainSuffix(part));
+				}
+				case 'destination_cidr':
+				case 'source_cidr':
+					return validCidr(matcher.pattern);
+				case 'geosite':
+					return validGeosite(matcher.pattern);
+				case 'geoip':
+					return validGeoip(matcher.pattern);
+				default:
+					// Advanced kinds are accepted by the backend; keep UI permissive if they appear.
+					return matcher.pattern.trim().length > 0 && matcher.pattern.trim().length <= 253;
+			}
+		}
+	
+		export function normalizeDomainSuffix(value: string): string {
+			return value.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+		}
 
-export function normalizeDomainSuffix(value: string): string {
-	return value.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
-}
+		/** Split multi-domain patterns (comma / whitespace / newline). */
+		export function parseDomainList(value: string): string[] {
+			const seen = new Set<string>();
+			const out: string[] = [];
+			for (const raw of value.split(/[\s,;]+/)) {
+				const domain = normalizeDomainSuffix(raw);
+				if (!domain || seen.has(domain)) continue;
+				seen.add(domain);
+				out.push(domain);
+			}
+			return out;
+		}
 
-function validDomainSuffix(value: string): boolean {
-	const domain = normalizeDomainSuffix(value);
-	if (!domain || domain.length > 253) return false;
-	return domain.split('.').every(
-		(label) =>
-			label.length > 0 &&
-			label.length <= 63 &&
-			/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
-	);
-}
+		export function serializeDomainList(domains: string[]): string {
+			return parseDomainList(domains.join(', ')).join(', ');
+		}
+	
+		function normalizeMatcherPattern(
+			kind: OrchestrationRuleMatcher['kind'],
+			pattern: string
+		): string {
+			if (kind === 'domain_suffix' || kind === 'domain_full' || kind === 'domain_keyword') {
+				return serializeDomainList(parseDomainList(pattern));
+			}
+			if (kind === 'geosite' || kind === 'geoip') {
+				return parseGeoCodes(pattern).join(', ');
+			}
+			return pattern.trim();
+		}
+	
+		function validDomainSuffix(value: string): boolean {
+			const domain = normalizeDomainSuffix(value);
+			if (!domain || domain.length > 253) return false;
+			return domain.split('.').every(
+				(label) =>
+					label.length > 0 &&
+					label.length <= 63 &&
+					/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+			);
+		}
 
-function validCidr(value: string): boolean {
-	const parts = value.trim().split('/');
-	if (parts.length !== 2) return false;
-	const [address, prefix] = parts;
-	if (!address || !prefix || !/^\d{1,3}$/.test(prefix)) return false;
-	const bits = Number(prefix);
-	if (validIpv4(address)) return bits <= 32;
-	return bits <= 128 && validIpv6(address);
-}
+	function validCidr(value: string): boolean {
+		const parts = value.trim().split('/');
+		if (parts.length !== 2) return false;
+		const [address, prefix] = parts;
+		if (!address || !prefix || !/^\d{1,3}$/.test(prefix)) return false;
+		const bits = Number(prefix);
+		if (validIpv4(address)) return bits <= 32;
+		return bits <= 128 && validIpv6(address);
+	}
+
+	function parseGeoCodes(value: string): string[] {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const part of value.split(/[,\s]+/)) {
+			const code = part.trim().toLowerCase();
+			if (!code || seen.has(code)) continue;
+			seen.add(code);
+			out.push(code);
+		}
+		return out;
+	}
+
+	/** Geosite codes: single or multi, e.g. cn / cn, category-ads. */
+	function validGeosite(value: string): boolean {
+		const parts = parseGeoCodes(value);
+		return (
+			parts.length > 0 &&
+			parts.length <= 32 &&
+			parts.every((part) => part.length <= 128 && /^[a-z0-9][a-z0-9_!@-]*$/i.test(part))
+		);
+	}
+
+	/** GeoIP codes: single or multi, e.g. cn / cn, private. */
+	function validGeoip(value: string): boolean {
+		const parts = parseGeoCodes(value);
+		return (
+			parts.length > 0 &&
+			parts.length <= 32 &&
+			parts.every((part) => part.length <= 64 && /^[a-z0-9][a-z0-9_-]*$/i.test(part))
+		);
+	}
 
 function validIpv4(address: string): boolean {
 	const parts = address.split('.');

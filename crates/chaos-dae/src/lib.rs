@@ -163,24 +163,38 @@ impl DaeManager {
         self.work_dir.join("geoip.dat")
     }
 
+    /// dae searches the config directory for Geosite data before global paths.
+    pub fn geosite_path(&self) -> PathBuf {
+        self.work_dir.join("geosite.dat")
+    }
+
     /// Atomically replace the GeoIP dataset used by dae routing rules.
     pub async fn write_geoip_data(&self, content: &[u8]) -> Result<PathBuf> {
+        self.write_geo_dataset("geoip.dat", content).await
+    }
+
+    /// Atomically replace the Geosite dataset used by dae routing rules.
+    pub async fn write_geosite_data(&self, content: &[u8]) -> Result<PathBuf> {
+        self.write_geo_dataset("geosite.dat", content).await
+    }
+
+    async fn write_geo_dataset(&self, filename: &str, content: &[u8]) -> Result<PathBuf> {
         if content.len() < 1024 {
-            bail!("geoip dataset is unexpectedly small");
+            bail!("{filename} dataset is unexpectedly small");
         }
         tokio::fs::create_dir_all(&self.work_dir)
             .await
             .with_context(|| format!("create work_dir {}", self.work_dir.display()))?;
         secure_work_dir(&self.work_dir)?;
-        let path = self.geoip_path();
+        let path = self.work_dir.join(filename);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let temp = self.work_dir.join(format!("geoip.dat.tmp-{nonce}"));
+        let temp = self.work_dir.join(format!("{filename}.tmp-{nonce}"));
         tokio::fs::write(&temp, content)
             .await
-            .with_context(|| format!("write geoip data {}", temp.display()))?;
+            .with_context(|| format!("write geo data {}", temp.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -193,7 +207,7 @@ impl DaeManager {
         }
         tokio::fs::rename(&temp, &path)
             .await
-            .with_context(|| format!("replace geoip data {}", path.display()))?;
+            .with_context(|| format!("replace geo data {}", path.display()))?;
         Ok(path)
     }
 

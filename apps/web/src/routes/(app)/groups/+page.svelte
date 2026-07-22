@@ -1,337 +1,209 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { beforeNavigate } from '$app/navigation';
-	import { Boxes, Pencil, Plus, Trash2, X } from '@lucide/svelte';
+	import { Boxes, ExternalLink, Layers3, RadioTower, Server } from '@lucide/svelte';
 	import {
-		listGroups,
-		listNodes,
-		createGroup,
-		updateGroup,
-		deleteGroup,
-		replaceGroupMembers,
 		ApiClientError,
-		isSessionRedirectPending,
-		type GroupDto,
-		type GroupMemberDto,
-		type NodeDto
+		getOrchestration,
+		listNodes,
+		listSubscriptions,
+		type NodeDto,
+		type OrchestrationDocument,
+		type OrchestrationNodeDto,
+		type OrchestrationSource,
+		type SubscriptionDto
 	} from '$lib/api';
+	import { decorateDocument } from '$lib/orchestration';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
+	import ActionLink from '$lib/components/ui/ActionLink.svelte';
 	import AppPage from '$lib/components/ui/AppPage.svelte';
-	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
-	import Field from '$lib/components/ui/Field.svelte';
 	import LoadingState from '$lib/components/ui/LoadingState.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import ResourceToolbar from '$lib/components/ui/ResourceToolbar.svelte';
-	import Section from '$lib/components/ui/Section.svelte';
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
-	import NodePickList from '$lib/components/features/NodePickList.svelte';
 	import { toast } from '$lib/toast.svelte';
 
-	const policies = ['min_moving_avg', 'fixed', 'random', 'min'];
+	type OrchestrationGroupRow = {
+		id: string;
+		name: string;
+		policy: string;
+		routeCount: number;
+		runtimeGroupId: string | null;
+		sources: OrchestrationSource[];
+		nodeCount: number;
+		subscriptionCount: number;
+		groupSourceCount: number;
+		sourceLabels: string[];
+	};
 
-	let groups = $state<GroupDto[]>([]);
-	let nodes = $state<NodeDto[]>([]);
+	let document = $state<OrchestrationDocument | null>(null);
+	let inventoryNodes = $state<NodeDto[]>([]);
+	let subscriptions = $state<SubscriptionDto[]>([]);
 	let query = $state('');
 	let loaded = $state(false);
-	let formOpen = $state(false);
 	let busy = $state(false);
-	let editId = $state<string | null>(null);
-	let name = $state('');
-	let policy = $state('min_moving_avg');
-	let filterTag = $state('');
-	let deleteTarget = $state<GroupDto | null>(null);
-	let members = $state<GroupMemberDto[]>([]);
-	let formSnapshot = $state('');
 
-	function currentFormSnapshot() {
-		return JSON.stringify({ editId, name, policy, filterTag, members });
+	function sourceLabel(source: OrchestrationSource, nodes: OrchestrationNodeDto[]): string {
+		if (source.kind === 'node') {
+			return inventoryNodes.find((item) => item.id === source.id)?.name ?? source.id.slice(0, 8);
+		}
+		if (source.kind === 'subscription') {
+			return (
+				subscriptions.find((item) => item.id === source.id)?.tag || t('subscriptions.untagged')
+			);
+		}
+		const draft = nodes.find(
+			(item) =>
+				item.type === 'node_group' &&
+				(item.id === source.id || item.data.runtime_group_id === source.id)
+		);
+		if (draft?.type === 'node_group') {
+			return draft.data.name || t('flow.node.unnamedGroup');
+		}
+		return source.id.slice(0, 8);
+	}
+
+	function buildRows(doc: OrchestrationDocument): OrchestrationGroupRow[] {
+		const decorated = decorateDocument(doc);
+		const nodes = decorated.nodes;
+		return nodes
+			.filter((node): node is Extract<OrchestrationNodeDto, { type: 'node_group' }> =>
+				node.type === 'node_group'
+			)
+			.map((node) => {
+				const sources = node.data.sources ?? [];
+				return {
+					id: node.id,
+					name: node.data.name?.trim() || t('flow.node.unnamedGroup'),
+					policy: node.data.policy || 'min_moving_avg',
+					routeCount: node.data.route_count ?? 0,
+					runtimeGroupId: node.data.runtime_group_id ?? null,
+					sources,
+					nodeCount: sources.filter((s) => s.kind === 'node').length,
+					subscriptionCount: sources.filter((s) => s.kind === 'subscription').length,
+					groupSourceCount: sources.filter((s) => s.kind === 'group').length,
+					sourceLabels: sources.map((source) => sourceLabel(source, nodes))
+				};
+			})
+			.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 	}
 
 	async function load() {
+		busy = true;
 		try {
-			const [groupResult, nodeResult] = await Promise.all([listGroups(), listNodes()]);
-			groups = groupResult.groups;
-			nodes = nodeResult.nodes;
+			const [orchestration, nodeResult, subResult] = await Promise.all([
+				getOrchestration(),
+				listNodes(),
+				listSubscriptions()
+			]);
+			inventoryNodes = nodeResult.nodes;
+			subscriptions = subResult.subscriptions;
+			document = decorateDocument(orchestration);
+			toast.info({
+				id: 'groups-readonly',
+				title: t('groups.readOnlyNotice'),
+				duration: 0
+			});
 		} catch (cause) {
 			toast.error({
 				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.loadFailed')
 			});
 		} finally {
+			busy = false;
 			loaded = true;
 		}
 	}
+
 
 	onMount(() => {
 		void load();
 	});
 
-	beforeNavigate(({ cancel }) => {
-		if (!formDirty || typeof window === 'undefined') return;
-		if (isSessionRedirectPending()) return;
-		if (sessionStorage.getItem('chaos_allow_dirty_navigation') === '1') {
-			sessionStorage.removeItem('chaos_allow_dirty_navigation');
-			return;
-		}
-		if (!window.confirm(t('common.discardDescription'))) cancel();
-	});
-
-	$effect(() => {
-		if (typeof document === 'undefined') return;
-		document.documentElement.dataset.chaosUnsaved = formDirty ? 'true' : 'false';
-		return () => {
-			delete document.documentElement.dataset.chaosUnsaved;
-		};
-	});
-
-	function openCreate() {
-		editId = null;
-		name = '';
-		policy = 'min_moving_avg';
-		filterTag = '';
-		members = [];
-formOpen = true;
-			formSnapshot = currentFormSnapshot();
-		}
-
-		function openEdit(group: GroupDto) {
-			editId = group.id;
-			name = group.name;
-			policy = group.policy;
-			filterTag = group.filter_tag ?? '';
-			members = (group.members ?? []).map((member) => ({ ...member }));
-			formOpen = true;
-			formSnapshot = currentFormSnapshot();
-		}
-
-	function closeForm() {
-		if (busy) return;
-		if (formDirty && typeof window !== 'undefined' && !window.confirm(t('common.discardDescription'))) return;
-		formOpen = false;
-		editId = null;
-	}
-
-	async function onSave() {
-		const normalizedName = name.trim();
-		if (!normalizedName) {
-			toast.error({ title: t('groups.nameRequired') });
-			return;
-		}
-		const duplicate = groups.some(
-			(group) => group.id !== editId && group.name.toLowerCase() === normalizedName.toLowerCase()
-		);
-		if (duplicate) {
-			toast.error({ title: t('groups.nameDuplicate') });
-			return;
-		}
-
-		busy = true;
-		let savedGroup: GroupDto | null = null;
-		let saveFailed = false;
-		try {
-			if (editId) {
-				savedGroup = await updateGroup(editId, {
-					name: normalizedName,
-					policy,
-					filter_tag: filterTag.trim() || null
-				});
-				toast.success({ title: t('groups.updated') });
-			} else {
-				savedGroup = await createGroup({
-					name: normalizedName,
-					policy,
-					filter_tag: filterTag.trim() || undefined
-				});
-				toast.success({ title: t('groups.created') });
-			}
-			await replaceGroupMembers(
-				savedGroup.id,
-				members.map((member) => ({ node_id: member.node_id, weight: member.weight }))
-			);
-			closeForm();
-			await load();
-		} catch (cause) {
-			saveFailed = true;
-			if (savedGroup) {
-				editId = savedGroup.id;
-				formOpen = true;
-				toast.error({ title: t('groups.membersSaveFailed') });
-			} else {
-				toast.error({
-					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.saveFailed')
-				});
-			}
-		} finally {
-			busy = false;
-			if (!saveFailed) formOpen = false;
-		}
-	}
-
-	function toggleMember(node: NodeDto, checked: boolean) {
-		if (checked) {
-			if (members.some((member) => member.node_id === node.id)) return;
-			members = [
-				...members,
-				{
-					node_id: node.id,
-					weight: 1,
-					sort_order: members.length,
-					name: node.name,
-					tag: node.tag,
-					protocol: node.protocol,
-					address: node.address
-				}
-			];
-		} else {
-			members = members.filter((member) => member.node_id !== node.id);
-		}
-	}
-
-	function setMemberWeight(nodeId: string, value: number) {
-		const weight = Math.max(1, Math.min(99, Math.floor(value) || 1));
-		members = members.map((member) => (member.node_id === nodeId ? { ...member, weight } : member));
-	}
-
-	async function confirmDelete() {
-		if (!deleteTarget) return;
-		busy = true;
-		try {
-			const id = deleteTarget.id;
-			await deleteGroup(id);
-			groups = groups.filter((group) => group.id !== id);
-			deleteTarget = null;
-			toast.success({ title: t('groups.deleted') });
-		} catch (cause) {
-			toast.error({
-				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('groups.deleteFailed')
-			});
-		} finally {
-			busy = false;
-		}
-	}
-
-	const filteredGroups = $derived.by(() => {
+	const rows = $derived(document ? buildRows(document) : []);
+	const filteredRows = $derived.by(() => {
 		const normalized = query.trim().toLowerCase();
-		if (!normalized) return groups;
-		return groups.filter((group) =>
-			[group.name, group.policy, group.filter_tag]
+		if (!normalized) return rows;
+		return rows.filter((row) =>
+			[row.name, row.policy, ...row.sourceLabels]
 				.filter(Boolean)
 				.some((value) => String(value).toLowerCase().includes(normalized))
 		);
 	});
-	const formDirty = $derived(formOpen && currentFormSnapshot() !== formSnapshot);
 </script>
 
 <AppPage>
-	<PageHeader title={t('groups.title')} description={t('groups.subtitle')} meta="policy / groups">
+	<PageHeader title={t('groups.title')} description={t('groups.subtitle')} meta="node groups / flow">
 		{#snippet actions()}
-			<Button variant="primary" icon={formOpen ? X : Plus} onclick={formOpen ? closeForm : openCreate}>
-				{formOpen ? t('common.close') : t('groups.addAction')}
-			</Button>
+			<ActionLink variant="primary" icon={ExternalLink} href="/orchestrate">
+				{t('groups.openOrchestrate')}
+			</ActionLink>
 		{/snippet}
-</PageHeader>
-
-		{#if formOpen}
-		<Section
-			title={editId ? t('groups.editTitle') : t('groups.createTitle')}
-			description={t('groups.formDescription')}
-		>
-			<form onsubmit={(event) => { event.preventDefault(); void onSave(); }}>
-				<div class="form-grid">
-					<Field label={t('groups.name')} forId="group-name">
-						<input id="group-name" type="text" bind:value={name} disabled={busy} required />
-					</Field>
-					<Field label={t('groups.policy')} forId="group-policy">
-						<select id="group-policy" bind:value={policy} disabled={busy}>
-							{#each policies as option}
-								<option value={option}>{option}</option>
-							{/each}
-						</select>
-					</Field>
-					<Field label={t('groups.filterTag')} forId="group-filter" optional>
-						<input
-							id="group-filter"
-							type="text"
-							bind:value={filterTag}
-							disabled={busy}
-							placeholder={t('groups.filterPlaceholder')}
-						/>
-					</Field>
-				</div>
-				<div class="member-editor">
-					<div class="member-editor-header">
-						<div>
-							<strong>{t('groups.members')}</strong>
-							<span>{t('groups.memberCount', { count: members.length })}</span>
-						</div>
-					</div>
-					<NodePickList
-						{nodes}
-						{busy}
-						isChecked={(node) => members.some((item) => item.node_id === node.id)}
-						onToggle={toggleMember}
-						showWeight={true}
-						getWeight={(node) => members.find((item) => item.node_id === node.id)?.weight ?? 1}
-						onWeight={(node, weight) => setMemberWeight(node.id, weight)}
-					/>
-				</div>
-				<div class="form-actions">
-					<Button type="button" variant="ghost" disabled={busy} onclick={closeForm}>{t('common.cancel')}</Button>
-					<Button type="submit" variant="primary" loading={busy}>
-						{busy ? t('common.saving') : t('common.save')}
-					</Button>
-				</div>
-			</form>
-		</Section>
-	{/if}
+	</PageHeader>
 
 	{#if !loaded}
 		<LoadingState label={t('common.loading')} />
 	{:else}
+
 		<ResourceToolbar
 			bind:value={query}
 			placeholder={t('groups.searchPlaceholder')}
-			meta={t('groups.count', { count: groups.length })}
+			meta={t('groups.count', { count: rows.length })}
 			refreshLabel={t('common.refresh')}
-			onrefresh={load}
+			onrefresh={() => void load()}
+			disabled={busy}
 		/>
 
-		{#if filteredGroups.length}
+		{#if filteredRows.length}
 			<TableFrame>
 				<table>
 					<thead>
 						<tr>
 							<th>{t('groups.name')}</th>
 							<th>{t('groups.policy')}</th>
-							<th>{t('groups.filterTag')}</th>
+							<th>{t('groups.sources')}</th>
+							<th>{t('groups.routeCount')}</th>
 							<th>{t('groups.members')}</th>
-							<th class="actions-col">{t('common.actions')}</th>
 						</tr>
 					</thead>
 					<tbody>
-						{#each filteredGroups as group (group.id)}
+						{#each filteredRows as group (group.id)}
 							<tr>
-								<td data-label={t('groups.name')}><strong>{group.name}</strong></td>
-								<td data-label={t('groups.policy')}><code>{group.policy}</code></td>
-								<td data-label={t('groups.filterTag')} class="data-meta">{group.filter_tag ?? t('common.none')}</td>
-								<td data-label={t('groups.members')} class="member-count">
-									{t('groups.memberCount', { count: group.members?.length ?? 0 })}
+								<td data-label={t('groups.name')}>
+									<strong>{group.name}</strong>
+									{#if group.runtimeGroupId}
+										<small class="mono-id">{group.runtimeGroupId.slice(0, 8)}</small>
+									{/if}
 								</td>
-								<td data-label={t('common.actions')}>
-									<div class="row-actions">
-									<Button variant="ghost" size="sm" icon={Pencil} onclick={() => openEdit(group)}>
-										{t('groups.configure')}
-									</Button>
-										<Button
-											variant="ghost"
-											size="icon"
-											icon={Trash2}
-											aria-label={t('groups.deleteNamed', { name: group.name })}
-											title={t('common.delete')}
-											onclick={() => (deleteTarget = group)}
-										/>
+								<td data-label={t('groups.policy')}><code>{group.policy}</code></td>
+								<td data-label={t('groups.sources')}>
+									<div class="source-meta">
+										<span title={t('flow.source.nodes')}
+											><Server size={12} strokeWidth={1.8} aria-hidden="true" />{group.nodeCount}</span
+										>
+										<span title={t('flow.source.subscriptions')}
+											><RadioTower size={12} strokeWidth={1.8} aria-hidden="true" />{group.subscriptionCount}</span
+										>
+										<span title={t('flow.source.groups')}
+											><Layers3 size={12} strokeWidth={1.8} aria-hidden="true" />{group.groupSourceCount}</span
+										>
 									</div>
+								</td>
+								<td data-label={t('groups.routeCount')}>
+									{t('groups.routeCountValue', { count: group.routeCount })}
+								</td>
+								<td data-label={t('groups.members')}>
+									{#if group.sourceLabels.length}
+										<div class="member-chips" title={group.sourceLabels.join(' · ')}>
+											{#each group.sourceLabels.slice(0, 4) as label, index (`${group.id}-${index}`)}
+												<span>{label}</span>
+											{/each}
+											{#if group.sourceLabels.length > 4}
+												<span class="more">+{group.sourceLabels.length - 4}</span>
+											{/if}
+										</div>
+									{:else}
+										<span class="empty-members">{t('groups.noSources')}</span>
+									{/if}
 								</td>
 							</tr>
 						{/each}
@@ -339,105 +211,72 @@ formOpen = true;
 				</table>
 			</TableFrame>
 		{:else}
-			<Section flush>
-				<EmptyState
-					icon={Boxes}
-					title={query ? t('common.noSearchResults') : t('groups.empty')}
-					description={query ? t('common.tryDifferentSearch') : t('groups.emptyDescription')}
-				>
-					{#snippet actions()}
-						{#if !query}<Button icon={Plus} onclick={openCreate}>{t('groups.addAction')}</Button>{/if}
-					{/snippet}
-				</EmptyState>
-			</Section>
+			<EmptyState icon={Boxes} title={t('groups.empty')} description={t('groups.emptyDescription')}>
+				{#snippet actions()}
+					<ActionLink variant="primary" icon={ExternalLink} href="/orchestrate">
+						{t('groups.openOrchestrate')}
+					</ActionLink>
+				{/snippet}
+			</EmptyState>
 		{/if}
 	{/if}
 </AppPage>
 
-<ConfirmDialog
-	open={!!deleteTarget}
-	title={t('groups.deleteTitle')}
-	description={t('groups.deleteDescription', { name: deleteTarget?.name ?? '' })}
-	confirmLabel={t('common.delete')}
-	cancelLabel={t('common.cancel')}
-	busy={busy}
-	danger
-	onconfirm={confirmDelete}
-	oncancel={() => (deleteTarget = null)}
-/>
-
 <style>
-	form {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-5);
+	.mono-id {
+		display: block;
+		margin-top: 0.15rem;
+		color: var(--ink-faint);
+		font-family: var(--font-mono);
+		font-size: 0.62rem;
 	}
 
-	.form-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: var(--space-4);
-	}
-
-	.form-actions {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-	}
-
-	.form-actions {
-		justify-content: flex-end;
-	}
-
-	.member-editor {
-		border: 1px solid var(--line);
-		border-radius: var(--radius-md);
-		overflow: hidden;
-	}
-
-	.member-editor-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		padding: var(--space-3);
-		border-bottom: 1px solid var(--line);
-		background: var(--surface-subtle);
-	}
-
-	.member-editor-header > div {
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
-	}
-
-	.member-editor-header strong {
-		font-size: 0.78rem;
-	}
-
-	.member-editor-header span {
+	.source-meta {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
 		color: var(--ink-muted);
-		font-size: 0.68rem;
-	}
-
-	.member-editor :global(.node-pick-list) {
-		padding: var(--space-3);
-	}
-
-	.member-count {
-		color: var(--ink-muted);
+		font-family: var(--font-mono);
 		font-size: 0.72rem;
 	}
 
-	@media (max-width: 760px) {
-		.form-grid {
-			grid-template-columns: 1fr;
-		}
+	.source-meta span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
 
-		.member-editor-header {
-			align-items: stretch;
-			flex-direction: column;
-		}
+	.member-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+		max-width: 22rem;
+	}
+
+	.member-chips span {
+		display: inline-block;
+		max-width: 8rem;
+		overflow: hidden;
+		padding: 0.12rem 0.4rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		font-size: 0.68rem;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.member-chips .more {
+		border-style: dashed;
+		color: var(--ink-muted);
+	}
+
+	.empty-members {
+		color: var(--ink-faint);
+		font-size: 0.72rem;
+	}
+
+	code {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
 	}
 </style>

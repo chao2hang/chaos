@@ -71,6 +71,7 @@ Spacing follows a 4px base through `--space-1` to `--space-12`.
 | `Field` | Label, control, hint, and validation ownership | Default, optional, hint, invalid |
 | `LoadingState` | Section or page loading feedback | Label and reduced-motion-safe spinner |
 | `Metric` | Dashboard summary value | Positive, negative, neutral |
+| `MultiSelect` | Compact multi-value picker with chips and searchable list | Empty, selected chips, open panel, search, clear, disabled |
 | `Notice` | Optional inline feedback (prefer Toast for operation results) | Info, success, error, dismissible |
 | `PageHeader` | Page identity and primary commands | Metadata, title, description, actions |
 | `PasswordInput` | Password entry with visibility control | Hidden, visible, disabled |

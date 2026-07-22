@@ -48,9 +48,9 @@
 		border-color: var(--ink);
 	}
 
-	.group-node.selected {
-		box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.14);
-	}
+.group-node.selected {
+			box-shadow: 0 0 0 3px var(--selection-ring);
+		}
 
 	header {
 		display: flex;

@@ -8,6 +8,7 @@
 		applyRuntime,
 		stopRuntime,
 		updateGeoIpData,
+		updateGeositeData,
 		listLatency,
 		ApiClientError,
 		type HealthResponse,
@@ -33,7 +34,7 @@
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);
 	let latency = $state<LatencyDto[]>([]);
-	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | 'geoip' | ''>('');
+	let busy = $state<'refresh' | 'latency' | 'apply' | 'stop' | 'geoip' | 'geosite' | ''>('');
 	let loaded = $state(false);
 	let confirmStop = $state(false);
 
@@ -137,6 +138,7 @@
 		}
 	}
 
+
 	async function onUpdateGeoIp() {
 		busy = 'geoip';
 		try {
@@ -151,6 +153,22 @@
 			busy = '';
 		}
 	}
+
+	async function onUpdateGeosite() {
+		busy = 'geosite';
+		try {
+			const result = await updateGeositeData();
+			if (runtime) runtime = { ...runtime, geosite_data: result };
+			toast.success({ title: t('dashboard.geositeUpdated') });
+		} catch (cause) {
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.geositeUpdateFailed')
+			});
+		} finally {
+			busy = '';
+		}
+	}
+
 
 	function formatBytes(value: number): string {
 		if (value < 1024) return `${value} B`;
@@ -251,6 +269,14 @@
 						>
 							{t('dashboard.updateGeoip')}
 						</Button>
+								<Button
+									icon={Download}
+									loading={busy === 'geosite'}
+									disabled={!!busy}
+									onclick={onUpdateGeosite}
+								>
+									{t('dashboard.updateGeosite')}
+								</Button>
 					</div>
 					<dl class="details">
 						<div>

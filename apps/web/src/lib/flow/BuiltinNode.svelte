@@ -30,9 +30,9 @@
 		border-color: var(--ink);
 	}
 
-	.flow-node.selected {
-		box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.14);
-	}
+.flow-node.selected {
+			box-shadow: 0 0 0 3px var(--selection-ring);
+		}
 
 	span,
 	small {

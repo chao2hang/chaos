@@ -227,6 +227,7 @@ export type RuntimeStatus = {
 	data_plane: string;
 	data_plane_ready: boolean;
 	geoip_data: GeoIpDataStatus;
+	geosite_data: GeoIpDataStatus;
 };
 
 export type ApplyResponse = {
@@ -513,6 +514,10 @@ export function updateGeoIpData() {
 	return api<GeoIpDataStatus>('/api/v1/runtime/geoip/update', { method: 'POST' });
 }
 
+export function updateGeositeData() {
+	return api<GeoIpDataStatus>('/api/v1/runtime/geosite/update', { method: 'POST' });
+}
+
 export function applyRuntime() {
 	return api<ApplyResponse>('/api/v1/runtime/apply', { method: 'POST' });
 }
@@ -539,6 +544,46 @@ export function publishOrchestration(document: OrchestrationDocument) {
 	return api<PublishOrchestrationResponse>('/api/v1/orchestration/publish', {
 		method: 'POST',
 		body: JSON.stringify(document)
+	});
+}
+
+export type RouteProbe = {
+	domain?: string | null;
+	dest_ip?: string | null;
+	geoip?: string[];
+	geosite?: string[];
+	protocol?: string | null;
+	dest_port?: number | null;
+};
+
+export type RouteTraceStep = {
+	kind: 'rule' | 'fallback' | string;
+	matched: boolean;
+	rule_index?: number;
+	priority?: number;
+	matcher_kind?: string;
+	pattern?: string;
+	condition?: string;
+	outbound: string;
+	reason: string;
+};
+
+export type RouteSimulation = {
+	outbound: string;
+	matched: boolean;
+	matched_rule_index?: number;
+	matched_condition?: string;
+	matched_priority?: number;
+	matched_matcher_kind?: string;
+	matched_pattern?: string;
+	steps: RouteTraceStep[];
+};
+
+/** Dry-run the compiled routing table against probe facts (current draft graph). */
+export function simulateOrchestration(document: OrchestrationDocument, probe: RouteProbe) {
+	return api<RouteSimulation>('/api/v1/orchestration/simulate', {
+		method: 'POST',
+		body: JSON.stringify({ document, probe })
 	});
 }
 

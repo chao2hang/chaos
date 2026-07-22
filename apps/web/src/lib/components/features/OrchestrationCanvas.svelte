@@ -16,6 +16,7 @@
 		OrchestrationNodeDto
 	} from '$lib/api';
 	import { canConnect } from '$lib/orchestration';
+	import { getResolvedTheme, readCssVar } from '$lib/theme.svelte';
 	import RuleNode from '$lib/flow/RuleNode.svelte';
 	import GroupNode from '$lib/flow/GroupNode.svelte';
 	import BuiltinNode from '$lib/flow/BuiltinNode.svelte';
@@ -58,6 +59,11 @@
 		node_group: GroupNode,
 		builtin: BuiltinNode
 	};
+
+	const colorMode = $derived(getResolvedTheme());
+	const patternColor = $derived(readCssVar('--flow-dot', colorMode === 'dark' ? '#3a3a3a' : '#d4d4d4'));
+	// CSS variables in SVG style attributes resolve live when the theme tokens change.
+	const connectionLineStyle = $derived('stroke: var(--ink); stroke-width: 1.5');
 
 	function onBeforeConnect(connection: Connection) {
 		if (!onconnectrequest) return connection;
@@ -105,14 +111,18 @@
 		bind:edges
 		bind:viewport
 		{nodeTypes}
-		colorMode="light"
+		{colorMode}
 		minZoom={0.3}
 		maxZoom={1.6}
 		fitView={fitOnInit}
 		snapGrid={[20, 20]}
 		connectionRadius={28}
-		connectionLineStyle="stroke: #111111; stroke-width: 1.4"
-		defaultEdgeOptions={{ type: 'smoothstep' }}
+		connectionLineStyle={connectionLineStyle}
+		defaultMarkerColor={null}
+		defaultEdgeOptions={{
+			type: 'smoothstep',
+			style: 'stroke: var(--ink); stroke-width: 1.45'
+		}}
 		isValidConnection={(connection) => canConnect(connection, nodes, edges)}
 		onbeforeconnect={onBeforeConnect}
 		onselectionchange={onSelectionChange}
@@ -148,7 +158,7 @@
 		oninit={onready}
 		fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1 }}
 	>
-		<Background variant={BackgroundVariant.Dots} gap={20} size={1} patternColor="#d4d4d4" />
+		<Background variant={BackgroundVariant.Dots} gap={20} size={1} patternColor={patternColor} />
 		<Controls position="bottom-left" showLock={false} />
 		<OrchestrationMiniMap />
 	</SvelteFlow>
@@ -160,13 +170,31 @@
 		min-width: 0;
 		height: 100%;
 		min-height: 34rem;
-		background: #fafafa;
+		background: var(--flow-canvas);
 		/* Keep wheel events inside the canvas so the page does not scroll. */
 		overscroll-behavior: contain;
 	}
 
 	.flow-canvas :global(.svelte-flow) {
-		background: #fafafa;
+		background: var(--flow-canvas);
+		/* Keep xyflow defaults aligned with chaos tokens (especially dark mode). */
+		--xy-background-color: var(--flow-canvas);
+		--xy-background-pattern-dots-color: var(--flow-dot);
+		--xy-edge-stroke: var(--ink);
+		--xy-edge-stroke-default: var(--ink);
+		--xy-edge-stroke-selected: var(--ink);
+		--xy-edge-stroke-selected-default: var(--ink);
+		--xy-edge-stroke-width: 1.45;
+		--xy-connectionline-stroke: var(--ink);
+		--xy-connectionline-stroke-default: var(--ink);
+		--xy-minimap-background-color: var(--flow-minimap);
+		--xy-minimap-node-background-color: var(--surface-subtle);
+		--xy-minimap-node-stroke-color: var(--line-strong);
+		--xy-controls-button-background-color: var(--surface);
+		--xy-controls-button-background-color-hover: var(--surface-subtle);
+		--xy-controls-button-color: var(--ink);
+		--xy-controls-button-color-hover: var(--ink);
+		--xy-controls-border-color: var(--line-strong);
 	}
 
 	.flow-canvas :global(.svelte-flow__node) {
@@ -177,18 +205,28 @@
 		outline: none;
 	}
 
-	.flow-canvas :global(.svelte-flow__edge-path) {
-		stroke: var(--ink);
-		stroke-width: 1.35;
+	/* Inline edge style also sets stroke; keep class rules as a second layer. */
+	.flow-canvas :global(.svelte-flow__edge-path),
+	.flow-canvas :global(.svelte-flow__connection-path) {
+		stroke: var(--ink) !important;
+		stroke-width: 1.45;
 	}
 
 	.flow-canvas :global(.svelte-flow__edge.selected .svelte-flow__edge-path) {
 		stroke-width: 2.25;
 	}
 
+	.flow-canvas :global(.svelte-flow__arrowhead polyline) {
+		stroke: var(--ink) !important;
+	}
+
+	.flow-canvas :global(.svelte-flow__arrowhead polyline.arrowclosed) {
+		fill: var(--ink) !important;
+	}
+
 	.flow-canvas :global(.svelte-flow__edge-textbg) {
-		fill: #ffffff;
-		stroke: #c8c8c8;
+		fill: var(--surface);
+		stroke: var(--line-strong);
 		stroke-width: 0.6;
 	}
 
@@ -215,17 +253,17 @@
 		overflow: hidden;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius-md);
-		background: #f7f7f7 !important;
+		background: var(--flow-minimap) !important;
 		box-shadow: none;
 	}
 
 	.flow-canvas :global(.svelte-flow__minimap-mask) {
-		fill: rgba(17, 17, 17, 0.1);
-		stroke: #111111;
+		fill: color-mix(in srgb, var(--ink) 12%, transparent);
+		stroke: var(--ink);
 	}
 
 	.flow-canvas :global(.svelte-flow__minimap-node) {
-		stroke: #8a8a8a;
+		stroke: var(--line-strong);
 	}
 
 	.flow-canvas :global(.svelte-flow__attribution) {

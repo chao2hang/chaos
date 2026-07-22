@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import type { OrchestrationRuleData } from '$lib/api';
+	import { GEOIP_OPTIONS, GEOSITE_OPTIONS, parseGeoCodes } from '$lib/geoOptions';
 	import { t } from '$lib/i18n.svelte';
 
 	let { data, selected = false }: NodeProps = $props();
@@ -8,19 +9,56 @@
 	const matcherLabel = $derived(
 		details.matcher.kind === 'domain_suffix'
 			? t('flow.matcher.domainSuffix')
-			: t('flow.matcher.destinationCidr')
+			: details.matcher.kind === 'destination_cidr'
+				? t('flow.matcher.destinationCidr')
+				: details.matcher.kind === 'geosite'
+					? t('flow.matcher.geosite')
+					: details.matcher.kind === 'geoip'
+						? t('flow.matcher.geoip')
+						: details.matcher.kind
 	);
+	const patternLabel = $derived.by(() => {
+		const pattern = details.matcher.pattern || t('flow.rule.emptyPattern');
+		if (details.matcher.kind === 'geoip' || details.matcher.kind === 'geosite') {
+			const options = details.matcher.kind === 'geosite' ? GEOSITE_OPTIONS : GEOIP_OPTIONS;
+			const codes = parseGeoCodes(pattern);
+			if (!codes.length) return t('flow.rule.emptyPattern');
+			return codes
+				.map((code) => {
+					const option = options.find((item) => item.code === code);
+					if (!option) return code;
+					const label = t(option.labelKey);
+					return label === option.labelKey ? code : label;
+				})
+				.join(' · ');
+		}
+		if (
+			details.matcher.kind === 'domain_suffix' ||
+			details.matcher.kind === 'domain_full' ||
+			details.matcher.kind === 'domain_keyword'
+		) {
+			const parts = pattern
+				.split(/[\s,;]+/)
+				.map((part) => part.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+				.filter(Boolean);
+			if (!parts.length) return t('flow.rule.emptyPattern');
+			if (parts.length === 1) return parts[0];
+			return `${parts[0]} · +${parts.length - 1}`;
+		}
+		return pattern;
+	});
 </script>
 
 <div class="rule-node" class:selected>
-	<Handle type="source" position={Position.Right} id="out" />
-	<header>
-		<span>{matcherLabel}</span>
-		<small>#{details.priority ?? '?'}</small>
-	</header>
-	<strong title={details.matcher.pattern}>{details.matcher.pattern || t('flow.rule.emptyPattern')}</strong>
-	<span class="target">{t('flow.rule.to')} {details.target_name || t('flow.rule.connectTarget')}</span>
-</div>
+		<Handle type="target" position={Position.Left} id="in" />
+		<header>
+			<span>{matcherLabel}</span>
+			<small>#{details.priority ?? '?'}</small>
+		</header>
+		<strong title={details.matcher.pattern || ''}>{patternLabel}</strong>
+		<span class="target">{t('flow.rule.to')} {details.target_name || t('flow.rule.connectTarget')}</span>
+		<Handle type="source" position={Position.Right} id="out" />
+	</div>
 
 <style>
 	.rule-node {
@@ -42,9 +80,9 @@
 		border-color: var(--ink);
 	}
 
-	.rule-node.selected {
-		box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.14);
-	}
+.rule-node.selected {
+			box-shadow: 0 0 0 3px var(--selection-ring);
+		}
 
 	header {
 		display: flex;

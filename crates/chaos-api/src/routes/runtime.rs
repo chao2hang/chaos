@@ -34,6 +34,7 @@ pub struct RuntimeStatus {
     pub data_plane: &'static str,
     pub data_plane_ready: bool,
     pub geoip_data: GeoIpDataStatus,
+    pub geosite_data: GeoIpDataStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,7 +45,9 @@ pub struct GeoIpDataStatus {
 }
 
 const GEOIP_DATA_URL: &str = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat";
-const MAX_GEOIP_DATA_BYTES: u64 = 64 * 1024 * 1024;
+const GEOSITE_DATA_URL: &str =
+    "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat";
+const MAX_GEO_DATA_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct ApplyResponse {
@@ -157,7 +160,8 @@ async fn get_runtime(
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);
     let running = data_plane.kind == "linux-dae" && manager_for_status_or_stop().is_running();
     let config_exists = work_dir.join("config.dae").is_file();
-    let geoip_data = geoip_status(&work_dir);
+    let geoip_data = geo_data_status(&work_dir, "geoip.dat");
+    let geosite_data = geo_data_status(&work_dir, "geosite.dat");
     let needs_republish = orchestration_needs_republish(&state).await?;
     Ok(Json(RuntimeStatus {
         running,
@@ -169,17 +173,49 @@ async fn get_runtime(
         data_plane: data_plane.kind,
         data_plane_ready: data_plane.ready,
         geoip_data,
+        geosite_data,
     }))
 }
 
-fn geoip_status(work_dir: &std::path::Path) -> GeoIpDataStatus {
-    let path = work_dir.join("geoip.dat");
+fn geo_data_status(work_dir: &std::path::Path, filename: &str) -> GeoIpDataStatus {
+    let path = work_dir.join(filename);
     let metadata = std::fs::metadata(&path).ok();
     GeoIpDataStatus {
         path: path.display().to_string(),
         exists: metadata.is_some(),
         bytes: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
     }
+}
+
+async fn download_geo_dataset(
+    url: &str,
+    too_large_code: &'static str,
+    locale: Locale,
+) -> Result<Vec<u8>, ApiError> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("download geo data from {url}: {error}"))
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("download geo data status {url}: {error}"))
+        })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_GEO_DATA_BYTES)
+    {
+        return Err(ApiError::bad_request(too_large_code, locale));
+    }
+    let data = response.bytes().await.map_err(|error| {
+        ApiError::internal_logged(locale, format!("read geo data from {url}: {error}"))
+    })?;
+    if u64::try_from(data.len()).unwrap_or(u64::MAX) > MAX_GEO_DATA_BYTES {
+        return Err(ApiError::bad_request(too_large_code, locale));
+    }
+    Ok(data.to_vec())
 }
 
 async fn update_geoip_data(
@@ -189,35 +225,27 @@ async fn update_geoip_data(
 ) -> Result<Json<GeoIpDataStatus>, ApiError> {
     let _runtime_guard = state.runtime_lock.lock().await;
     let manager = manager_for_status_or_stop();
-    let response = reqwest::Client::new()
-        .get(GEOIP_DATA_URL)
-        .send()
-        .await
-        .map_err(|error| {
-            ApiError::internal_logged(locale, format!("download geoip data: {error}"))
-        })?
-        .error_for_status()
-        .map_err(|error| {
-            ApiError::internal_logged(locale, format!("download geoip status: {error}"))
-        })?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_GEOIP_DATA_BYTES)
-    {
-        return Err(ApiError::bad_request("geoip_data_too_large", locale));
-    }
-    let data = response
-        .bytes()
-        .await
-        .map_err(|error| ApiError::internal_logged(locale, format!("read geoip data: {error}")))?;
-    if u64::try_from(data.len()).unwrap_or(u64::MAX) > MAX_GEOIP_DATA_BYTES {
-        return Err(ApiError::bad_request("geoip_data_too_large", locale));
-    }
+    let data = download_geo_dataset(GEOIP_DATA_URL, "geoip_data_too_large", locale).await?;
     manager
         .write_geoip_data(&data)
         .await
         .map_err(|error| ApiError::internal_logged(locale, format!("write geoip data: {error}")))?;
-    Ok(Json(geoip_status(&manager.work_dir)))
+    Ok(Json(geo_data_status(&manager.work_dir, "geoip.dat")))
+}
+
+async fn update_geosite_data(
+    _user: AuthUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<GeoIpDataStatus>, ApiError> {
+    let _runtime_guard = state.runtime_lock.lock().await;
+    let manager = manager_for_status_or_stop();
+    let data = download_geo_dataset(GEOSITE_DATA_URL, "geosite_data_too_large", locale).await?;
+    manager
+        .write_geosite_data(&data)
+        .await
+        .map_err(|error| ApiError::internal_logged(locale, format!("write geosite data: {error}")))?;
+    Ok(Json(geo_data_status(&manager.work_dir, "geosite.dat")))
 }
 
 async fn apply_runtime(
@@ -334,7 +362,8 @@ async fn stop_runtime(
         needs_republish,
         data_plane: data_plane.kind,
         data_plane_ready: data_plane.ready,
-        geoip_data: geoip_status(&work_dir),
+        geoip_data: geo_data_status(&work_dir, "geoip.dat"),
+        geosite_data: geo_data_status(&work_dir, "geosite.dat"),
     }))
 }
 
@@ -975,6 +1004,7 @@ pub fn runtime_router() -> Router<AppState> {
         .route("/runtime/diagnostics", get(get_diagnostics))
         .route("/runtime/connections", get(get_connections))
         .route("/runtime/geoip/update", post(update_geoip_data))
+        .route("/runtime/geosite/update", post(update_geosite_data))
         .route("/runtime/stop", post(stop_runtime))
 }
 

@@ -1,63 +1,93 @@
 <script lang="ts">
-	import { AlertTriangle, Link2, LockKeyhole, Trash2, X } from '@lucide/svelte';
-	import type {
-		GroupDto,
-		NodeDto,
-		OrchestrationEdgeDto,
-		OrchestrationNodeDto,
-		OrchestrationNodeGroupData,
-		OrchestrationRuleData,
-		OrchestrationRuleMatcher,
-		OrchestrationSource,
-		OrchestrationValidationIssue,
-		SubscriptionDto
-	} from '$lib/api';
-	import { t } from '$lib/i18n.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Field from '$lib/components/ui/Field.svelte';
-	import SearchInput from '$lib/components/ui/SearchInput.svelte';
-	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
-	import NodePickList from '$lib/components/features/NodePickList.svelte';
+import { AlertTriangle, Link2, LockKeyhole, Plus, Trash2, X } from '@lucide/svelte';
+		import type {
+			GroupDto,
+			NodeDto,
+			OrchestrationEdgeDto,
+			OrchestrationNodeDto,
+			OrchestrationNodeGroupData,
+			OrchestrationRuleData,
+			OrchestrationRuleMatcher,
+			OrchestrationSource,
+			OrchestrationValidationIssue,
+			SubscriptionDto
+		} from '$lib/api';
+		import { t } from '$lib/i18n.svelte';
+		import {
+			GEOIP_OPTIONS,
+			GEOSITE_OPTIONS,
+			parseGeoCodes,
+			serializeGeoCodes
+		} from '$lib/geoOptions';
+		import {
+			compareRulesByEvaluationOrder,
+			parseDomainList,
+			serializeDomainList
+		} from '$lib/orchestration';
+		import Button from '$lib/components/ui/Button.svelte';
+		import Field from '$lib/components/ui/Field.svelte';
+		import MultiSelect from '$lib/components/ui/MultiSelect.svelte';
+		import SearchInput from '$lib/components/ui/SearchInput.svelte';
+		import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
+		import NodePickList from '$lib/components/features/NodePickList.svelte';
 
-	type SourceTab = OrchestrationSource['kind'];
-	type ResourceOption = { kind: SourceTab; id: string; name: string; meta: string };
+		type SourceTab = OrchestrationSource['kind'];
+		type ResourceOption = { kind: SourceTab; id: string; name: string; meta: string };
 
-	let {
-		node,
-		edge,
-		flowNodes,
-		flowEdges,
-		inventoryNodes,
-		subscriptions,
-		groups,
-		issues,
-		busy = false,
-		onupdaterule,
-		onupdategroup,
-		onsettarget,
-		onsetendtarget,
-		ondelete,
-		onselectnode
-	}: {
-		node: OrchestrationNodeDto | null;
-		edge: OrchestrationEdgeDto | null;
-		flowNodes: OrchestrationNodeDto[];
-		flowEdges: OrchestrationEdgeDto[];
-		inventoryNodes: NodeDto[];
-		subscriptions: SubscriptionDto[];
-		groups: GroupDto[];
-		issues: OrchestrationValidationIssue[];
-		busy?: boolean;
-		onupdaterule: (id: string, patch: Partial<OrchestrationRuleData>) => void;
-		onupdategroup: (id: string, patch: Partial<OrchestrationNodeGroupData>) => void;
-		onsettarget: (ruleId: string, targetId: string | null) => void;
-		onsetendtarget: (targetId: string | null) => void;
-		ondelete: (kind: 'node' | 'edge', id: string) => void;
-		onselectnode: (id: string) => void;
-	} = $props();
+		let {
+			node,
+			edge,
+			flowNodes,
+			flowEdges,
+			inventoryNodes,
+			subscriptions,
+			groups,
+			issues,
+			busy = false,
+			onupdaterule,
+			onupdategroup,
+			onsettarget,
+			onsetendtarget,
+			ondelete,
+			onselectnode,
+			onmigratedomains
+		}: {
+			node: OrchestrationNodeDto | null;
+			edge: OrchestrationEdgeDto | null;
+			flowNodes: OrchestrationNodeDto[];
+			flowEdges: OrchestrationEdgeDto[];
+			inventoryNodes: NodeDto[];
+			subscriptions: SubscriptionDto[];
+			groups: GroupDto[];
+			issues: OrchestrationValidationIssue[];
+			busy?: boolean;
+			onupdaterule: (id: string, patch: Partial<OrchestrationRuleData>) => void;
+			onupdategroup: (id: string, patch: Partial<OrchestrationNodeGroupData>) => void;
+			onsettarget: (ruleId: string, targetId: string | null) => void;
+			onsetendtarget: (targetId: string | null) => void;
+			ondelete: (kind: 'node' | 'edge', id: string) => void;
+			onselectnode: (id: string) => void;
+			/**
+			 * Move selected domains into another domain rule.
+			 * Pass `toRuleId: null` to create a new domain_suffix rule first.
+			 * Optional `outboundId` is applied when creating a new rule.
+			 */
+			onmigratedomains?: (
+				fromRuleId: string,
+				toRuleId: string | null,
+				domains: string[],
+				outboundId?: string | null
+			) => void;
+		} = $props();
 
-	let sourceTab = $state<SourceTab>('node');
-	let query = $state('');
+		let sourceTab = $state<SourceTab>('node');
+		let query = $state('');
+		let domainDrafts = $state<string[]>(['']);
+		let selectedDomains = $state<string[]>([]);
+		/** Existing rule id, or `__new__` to create a new domain rule. */
+		let migrateTargetId = $state('');
+		let migrateOutboundId = $state('');
+		let domainEditorRuleId = $state<string | null>(null);
 
 	const selectedSources = $derived(node?.type === 'node_group' ? node.data.sources : []);
 	const selectedIssues = $derived(
@@ -88,16 +118,18 @@
 		if (target.type === 'node_group') return target.data.name || t('flow.node.unnamedGroup');
 		return endEdge.target;
 	});
-	const incomingRules = $derived.by(() => {
-		if (!node || (node.type !== 'node_group' && node.type !== 'builtin')) return [];
-		const sourceIds = new Set(
-			flowEdges.filter((item) => item.target === node.id).map((item) => item.source)
-		);
-		return flowNodes.filter(
-			(item): item is Extract<OrchestrationNodeDto, { type: 'rule' }> =>
-				item.type === 'rule' && sourceIds.has(item.id)
-		);
-	});
+const incomingRules = $derived.by(() => {
+			if (!node || (node.type !== 'node_group' && node.type !== 'builtin')) return [];
+			const sourceIds = new Set(
+				flowEdges.filter((item) => item.target === node.id).map((item) => item.source)
+			);
+			return flowNodes
+				.filter(
+					(item): item is Extract<OrchestrationNodeDto, { type: 'rule' }> =>
+						item.type === 'rule' && sourceIds.has(item.id)
+				)
+				.sort(compareRulesByEvaluationOrder);
+		});
 	const groupOptions = $derived.by((): ResourceOption[] => {
 		const currentGroupId = node?.type === 'node_group' ? node.id : null;
 		const ownedRuntimeIds = new Set(
@@ -157,16 +189,181 @@
 		return options.filter((item) => `${item.name} ${item.meta}`.toLowerCase().includes(normalized));
 	});
 
-	function nodeName(item: OrchestrationNodeDto): string {
-		if (item.type === 'rule') return item.data.matcher.pattern || t('flow.rule.untitled');
-		if (item.type === 'node_group') return item.data.name || t('flow.node.unnamedGroup');
-		return 'DIRECT';
-	}
+function nodeName(item: OrchestrationNodeDto): string {
+			if (item.type === 'rule') {
+				const pattern = item.data.matcher.pattern || t('flow.rule.untitled');
+				if (
+					item.data.matcher.kind === 'domain_suffix' ||
+					item.data.matcher.kind === 'domain_full' ||
+					item.data.matcher.kind === 'domain_keyword'
+				) {
+					const parts = parseDomainList(pattern);
+					if (parts.length > 1) return `${parts[0]} +${parts.length - 1}`;
+					return parts[0] || pattern;
+				}
+				return pattern;
+			}
+			if (item.type === 'node_group') return item.data.name || t('flow.node.unnamedGroup');
+			return 'DIRECT';
+		}
 
-	function patchMatcher(patch: Partial<OrchestrationRuleMatcher>) {
-		if (node?.type !== 'rule') return;
-		onupdaterule(node.id, { matcher: { ...node.data.matcher, ...patch } });
-	}
+		function patchMatcher(patch: Partial<OrchestrationRuleMatcher>) {
+			if (node?.type !== 'rule') return;
+			onupdaterule(node.id, { matcher: { ...node.data.matcher, ...patch } });
+		}
+
+		const isDomainMatcher = $derived(
+			node?.type === 'rule' &&
+				(node.data.matcher.kind === 'domain_suffix' ||
+					node.data.matcher.kind === 'domain_full' ||
+					node.data.matcher.kind === 'domain_keyword')
+		);
+
+		const selectedGeoCodes = $derived(
+			node?.type === 'rule' && (node.data.matcher.kind === 'geoip' || node.data.matcher.kind === 'geosite')
+				? parseGeoCodes(node.data.matcher.pattern)
+				: []
+		);
+
+		const geoSelectOptions = $derived.by(() => {
+			const catalog =
+				node?.type === 'rule' && node.data.matcher.kind === 'geosite'
+					? GEOSITE_OPTIONS
+					: GEOIP_OPTIONS;
+			const base = catalog.map((option) => {
+				const translated = t(option.labelKey);
+				return {
+					value: option.code,
+					label: translated === option.labelKey ? option.code : translated,
+					meta: option.code
+				};
+			});
+			// Preserve unknown custom codes so old drafts remain editable.
+			for (const code of selectedGeoCodes) {
+				if (!base.some((option) => option.value === code)) {
+					base.push({
+						value: code,
+						label: code,
+						meta: t('flow.matcher.customCodes')
+					});
+				}
+			}
+			return base;
+		});
+
+		function setGeoCodes(next: string[]) {
+			if (node?.type !== 'rule') return;
+			patchMatcher({ pattern: serializeGeoCodes(next) });
+		}
+
+const domainRuleOptions = $derived(
+				flowNodes.filter(
+					(item): item is Extract<OrchestrationNodeDto, { type: 'rule' }> =>
+						item.type === 'rule' &&
+						item.id !== node?.id &&
+						(item.data.matcher.kind === 'domain_suffix' ||
+							item.data.matcher.kind === 'domain_full' ||
+							item.data.matcher.kind === 'domain_keyword')
+				)
+			);
+
+			const migrateOutboundOptions = $derived(
+				flowNodes.filter((item) => item.type === 'node_group' || item.type === 'builtin')
+			);
+
+			const canMigrate = $derived.by(() => {
+				if (busy || !selectedDomains.length || !migrateTargetId) return false;
+				if (migrateTargetId === '__new__') return true;
+				return domainRuleOptions.some((item) => item.id === migrateTargetId);
+			});
+
+			// Keep multi-row domain editor in sync when switching rules / external pattern updates.
+			$effect(() => {
+				if (node?.type !== 'rule' || !isDomainMatcher) {
+					domainEditorRuleId = null;
+					return;
+				}
+				const pattern = node.data.matcher.pattern;
+				const ruleId = node.id;
+				if (domainEditorRuleId !== ruleId) {
+					domainEditorRuleId = ruleId;
+					const parts = parseDomainList(pattern);
+					domainDrafts = parts.length ? parts : [''];
+					selectedDomains = [];
+					migrateTargetId = domainRuleOptions.length ? '' : '__new__';
+					migrateOutboundId = '';
+					return;
+				}
+				const serializedDraft = serializeDomainList(domainDrafts);
+				const serializedPattern = serializeDomainList(parseDomainList(pattern));
+				if (serializedDraft !== serializedPattern) {
+					const parts = parseDomainList(pattern);
+					domainDrafts = parts.length ? parts : [''];
+					selectedDomains = selectedDomains.filter((d) => parts.includes(d));
+				}
+			});
+
+		function commitDomainDrafts(next: string[]) {
+			if (node?.type !== 'rule' || !isDomainMatcher) return;
+			domainDrafts = next.length ? next : [''];
+			patchMatcher({ pattern: serializeDomainList(domainDrafts) });
+			const kept = new Set(parseDomainList(domainDrafts.join(',')));
+			selectedDomains = selectedDomains.filter((d) => kept.has(d));
+		}
+
+		function setDomainRow(index: number, value: string) {
+			const next = [...domainDrafts];
+			next[index] = value;
+			commitDomainDrafts(next);
+		}
+
+		function addDomainRow() {
+			commitDomainDrafts([...domainDrafts, '']);
+		}
+
+		function removeDomainRow(index: number) {
+			const removed = parseDomainList(domainDrafts[index] ?? '')[0];
+			const next = domainDrafts.filter((_, i) => i !== index);
+			commitDomainDrafts(next.length ? next : ['']);
+			if (removed) selectedDomains = selectedDomains.filter((d) => d !== removed);
+		}
+
+		function toggleDomainSelected(domain: string, checked: boolean) {
+			const normalized = parseDomainList(domain)[0];
+			if (!normalized) return;
+			if (checked) {
+				if (!selectedDomains.includes(normalized)) {
+					selectedDomains = [...selectedDomains, normalized];
+				}
+			} else {
+				selectedDomains = selectedDomains.filter((d) => d !== normalized);
+			}
+		}
+
+function migrateSelectedDomains() {
+				if (node?.type !== 'rule' || !canMigrate) return;
+				const toRuleId = migrateTargetId === '__new__' ? null : migrateTargetId;
+				const outboundId =
+					migrateTargetId === '__new__' ? migrateOutboundId || null : undefined;
+				onmigratedomains?.(node.id, toRuleId, selectedDomains, outboundId);
+				const moving = new Set(selectedDomains);
+				const remaining = domainDrafts.filter((row) => {
+					const domain = parseDomainList(row)[0];
+					return !domain || !moving.has(domain);
+				});
+				// Parent mutates source pattern; keep local drafts aligned.
+				domainDrafts = remaining.length ? remaining : [''];
+				selectedDomains = [];
+				if (migrateTargetId !== '__new__') migrateTargetId = '';
+			}
+
+			function selectAllDomains() {
+				selectedDomains = parseDomainList(domainDrafts.join(','));
+			}
+
+			function clearDomainSelection() {
+				selectedDomains = [];
+			}
 
 	function patchGroup(patch: Partial<OrchestrationNodeGroupData>) {
 		if (node?.type === 'node_group') onupdategroup(node.id, patch);
@@ -254,35 +451,198 @@
 				>
 					<option value="domain_suffix">{t('flow.matcher.domainSuffix')}</option>
 					<option value="destination_cidr">{t('flow.matcher.destinationCidr')}</option>
+					<option value="geosite">{t('flow.matcher.geosite')}</option>
+					<option value="geoip">{t('flow.matcher.geoip')}</option>
 				</select>
 			</Field>
-			<Field label={t('flow.rule.pattern')} forId="flow-rule-pattern">
-				<input
-					id="flow-rule-pattern"
-					type="text"
-					value={node.data.matcher.pattern}
-					disabled={busy}
-					placeholder={node.data.matcher.kind === 'domain_suffix' ? 'example.com' : '192.0.2.0/24'}
-					oninput={(event) => patchMatcher({ pattern: (event.currentTarget as HTMLInputElement).value })}
-				/>
-			</Field>
-			<Field label={t('flow.rule.priority')} forId="flow-rule-priority">
-				<input
-					id="flow-rule-priority"
-					type="number"
-					min="1"
-					max="9999"
-					value={node.data.priority ?? 1}
-					disabled={busy}
-					onchange={(event) =>
-						onupdaterule(node.id, {
-							priority: Math.min(
-								9999,
-								Math.max(1, Math.floor(Number((event.currentTarget as HTMLInputElement).value) || 1))
-							)
-						})}
-				/>
-			</Field>
+{#if node.data.matcher.kind === 'geosite' || node.data.matcher.kind === 'geoip'}
+						<Field
+							label={t('flow.rule.pattern')}
+							forId="flow-rule-geo-select"
+							hint={node.data.matcher.kind === 'geosite'
+								? t('flow.matcher.geositeHint')
+								: t('flow.matcher.geoipHint')}
+						>
+							<MultiSelect
+								id="flow-rule-geo-select"
+								label={t('flow.rule.pattern')}
+								values={selectedGeoCodes}
+								options={geoSelectOptions}
+								placeholder={t('flow.matcher.selectCodes')}
+								searchPlaceholder={t('flow.matcher.searchCodes')}
+								emptyLabel={t('common.noSearchResults')}
+								disabled={busy}
+								onChange={setGeoCodes}
+							/>
+						</Field>
+					{:else if isDomainMatcher}
+						<div class="domain-list-field">
+							<div class="section-title">
+								<strong>{t('flow.rule.domains')}</strong>
+								<span>{parseDomainList(domainDrafts.join(',')).length}</span>
+							</div>
+							<p class="domain-hint">{t('flow.rule.domainsHint')}</p>
+							<div class="domain-rows" role="list">
+								{#each domainDrafts as row, index (index)}
+									{@const normalized = parseDomainList(row)[0] ?? ''}
+									<div class="domain-row" role="listitem">
+										<label class="domain-row__check">
+											<input
+												type="checkbox"
+												disabled={busy || !normalized}
+												checked={normalized !== '' && selectedDomains.includes(normalized)}
+												aria-label={t('flow.rule.selectDomain')}
+												onchange={(event) =>
+													toggleDomainSelected(
+														row,
+														(event.currentTarget as HTMLInputElement).checked
+													)}
+											/>
+										</label>
+										<input
+											class="domain-row__input"
+											id={index === 0 ? 'flow-rule-pattern' : `flow-rule-domain-${index}`}
+											type="text"
+											value={row}
+											disabled={busy}
+											placeholder="example.com"
+											spellcheck="false"
+											autocomplete="off"
+											oninput={(event) =>
+												setDomainRow(index, (event.currentTarget as HTMLInputElement).value)}
+										/>
+										<button
+											class="domain-row__remove"
+											type="button"
+											disabled={busy || domainDrafts.length <= 1}
+											aria-label={t('flow.rule.removeDomain')}
+											title={t('flow.rule.removeDomain')}
+											onclick={() => removeDomainRow(index)}
+										>
+											<X size={14} strokeWidth={1.8} aria-hidden="true" />
+										</button>
+									</div>
+								{/each}
+							</div>
+<div class="domain-actions">
+									<Button
+										variant="ghost"
+										size="sm"
+										icon={Plus}
+										disabled={busy}
+										onclick={addDomainRow}
+									>
+										{t('flow.rule.addDomain')}
+									</Button>
+									{#if parseDomainList(domainDrafts.join(',')).length}
+										<Button
+											variant="ghost"
+											size="sm"
+											disabled={busy}
+											onclick={selectAllDomains}
+										>
+											{t('flow.rule.selectAllDomains')}
+										</Button>
+										{#if selectedDomains.length}
+											<Button
+												variant="ghost"
+												size="sm"
+												disabled={busy}
+												onclick={clearDomainSelection}
+											>
+												{t('flow.rule.clearDomainSelection')}
+											</Button>
+										{/if}
+									{/if}
+								</div>
+								<div class="domain-migrate">
+									<div class="section-title">
+										<strong>{t('flow.rule.migrateTitle')}</strong>
+										<span>{selectedDomains.length}</span>
+									</div>
+									<p class="domain-hint">{t('flow.rule.migrateHint')}</p>
+									<Field label={t('flow.rule.migrateTo')} forId="flow-rule-migrate-target">
+										<select
+											id="flow-rule-migrate-target"
+											value={migrateTargetId}
+											disabled={busy || !selectedDomains.length}
+											onchange={(event) =>
+												(migrateTargetId = (event.currentTarget as HTMLSelectElement).value)}
+										>
+											<option value="">{t('flow.rule.migratePick')}</option>
+											<option value="__new__">{t('flow.rule.migrateNewRule')}</option>
+											{#each domainRuleOptions as target (target.id)}
+												<option value={target.id}>
+													#{target.data.priority ?? '?'} · {nodeName(target)}
+												</option>
+											{/each}
+										</select>
+									</Field>
+									{#if migrateTargetId === '__new__'}
+										<Field
+											label={t('flow.rule.migrateNewOutbound')}
+											forId="flow-rule-migrate-outbound"
+											hint={t('flow.rule.migrateNewOutboundHint')}
+										>
+											<select
+												id="flow-rule-migrate-outbound"
+												value={migrateOutboundId}
+												disabled={busy || !selectedDomains.length}
+												onchange={(event) =>
+													(migrateOutboundId = (event.currentTarget as HTMLSelectElement)
+														.value)}
+											>
+												<option value="">{t('flow.rule.noTarget')}</option>
+												{#each migrateOutboundOptions as target (target.id)}
+													<option value={target.id}>{nodeName(target)}</option>
+												{/each}
+											</select>
+										</Field>
+									{/if}
+									<Button
+										variant="primary"
+										size="sm"
+										disabled={!canMigrate}
+										onclick={migrateSelectedDomains}
+									>
+										{t('flow.rule.migrateAction', { count: selectedDomains.length || 0 })}
+									</Button>
+								</div>
+							</div>
+					{:else}
+						<Field label={t('flow.rule.pattern')} forId="flow-rule-pattern">
+							<input
+								id="flow-rule-pattern"
+								type="text"
+								value={node.data.matcher.pattern}
+								disabled={busy}
+								placeholder="192.0.2.0/24"
+								oninput={(event) =>
+									patchMatcher({ pattern: (event.currentTarget as HTMLInputElement).value })}
+							/>
+						</Field>
+					{/if}
+<Field
+					label={t('flow.rule.priority')}
+					forId="flow-rule-priority"
+					hint={t('flow.rule.priorityHint')}
+				>
+					<input
+						id="flow-rule-priority"
+						type="number"
+						min="1"
+						max="9999"
+						value={node.data.priority ?? 1}
+						disabled={busy}
+						onchange={(event) =>
+							onupdaterule(node.id, {
+								priority: Math.min(
+									9999,
+									Math.max(1, Math.floor(Number((event.currentTarget as HTMLInputElement).value) || 1))
+								)
+							})}
+					/>
+				</Field>
 			<Field label={t('flow.rule.target')} forId="flow-rule-target">
 				<select
 					id="flow-rule-target"
@@ -437,13 +797,109 @@
 
 <style>
 	.inspector { display: flex; min-width: 0; height: 100%; min-height: 0; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); overflow-y: auto; }
-	.panel-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 4rem; padding: .7rem var(--space-4); border-bottom: 1px solid var(--ink); background: var(--surface); }
+	.panel-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 4rem; padding: .7rem var(--space-4); border-bottom: 1px solid var(--line-strong); background: var(--surface); }
 	.panel-header span, .panel-header strong { display: block; }
 	.panel-header span { color: var(--ink-faint); font-family: var(--font-mono); font-size: .58rem; font-weight: 700; text-transform: uppercase; }
 	.panel-header strong { overflow: hidden; max-width: 13rem; margin-top: .12rem; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 	.inspector-section, .issue-list { padding: var(--space-4); border-bottom: 1px solid var(--line); }
 	.inspector-section { display: flex; flex-direction: column; gap: var(--space-4); }
-	.issue-list { display: flex; flex-direction: column; gap: .45rem; background: var(--danger-surface); }
+	.domain-list-field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+	.domain-hint {
+		margin: 0;
+		color: var(--ink-muted);
+		font-size: 0.68rem;
+		line-height: 1.4;
+	}
+	.domain-rows {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		overflow: hidden;
+	}
+	.domain-row {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-width: 0;
+		min-height: 2.5rem;
+		padding: 0.35rem 0.5rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.domain-row:last-child {
+		border-bottom: 0;
+	}
+	.domain-row__check {
+		display: inline-grid;
+		flex: 0 0 auto;
+		place-items: center;
+		width: 1.15rem;
+		height: 1.15rem;
+		margin: 0;
+		cursor: pointer;
+	}
+	.domain-row__check input {
+		width: 1rem;
+		height: 1rem;
+		margin: 0;
+	}
+	/* Override global input[type=text]{width:100%; min-height:2.5rem} so the row stays single-line. */
+	.domain-row__input {
+		flex: 1 1 auto;
+		width: auto !important;
+		min-width: 0 !important;
+		min-height: 1.85rem !important;
+		height: 1.85rem;
+		padding: 0.2rem 0.55rem !important;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--ink);
+		font-size: 0.78rem;
+		line-height: 1.2;
+		box-shadow: none;
+	}
+	.domain-row__input:focus {
+		border-color: var(--ink);
+		box-shadow: 0 0 0 1px var(--ink);
+	}
+	.domain-row__remove {
+		display: inline-grid;
+		flex: 0 0 auto;
+		place-items: center;
+		width: 1.75rem;
+		height: 1.75rem;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--ink-muted);
+	}
+	.domain-row__remove:hover:not(:disabled) {
+		background: var(--surface-subtle, var(--surface-hover, transparent));
+		color: var(--ink);
+	}
+	.domain-row__remove:disabled {
+		opacity: 0.35;
+	}
+	.domain-actions {
+		display: flex;
+	}
+	.domain-migrate {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding-top: var(--space-1);
+		border-top: 1px dashed var(--line);
+	}
+		.issue-list { display: flex; flex-direction: column; gap: .45rem; background: var(--danger-surface); }
 	.issue-list > div { display: flex; align-items: flex-start; gap: var(--space-2); font-size: .7rem; }
 	.issue-list > div.runtime { text-decoration: underline dotted; }
 	.section-title { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }

@@ -30,7 +30,7 @@
 		justify-content: space-between;
 		gap: var(--space-6);
 		padding-bottom: var(--space-5);
-		border-bottom: 1px solid var(--ink);
+		border-bottom: 1px solid var(--line-strong);
 	}
 
 	.copy {

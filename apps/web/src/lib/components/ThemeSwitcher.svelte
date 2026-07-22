@@ -2,10 +2,9 @@
 	import { Sun, Moon, Monitor } from '@lucide/svelte';
 	import { getTheme, setTheme, type Theme } from '$lib/theme.svelte';
 
-	let theme = $state(getTheme());
+	const theme = $derived(getTheme());
 
 	function selectTheme(newTheme: Theme) {
-		theme = newTheme;
 		setTheme(newTheme);
 	}
 

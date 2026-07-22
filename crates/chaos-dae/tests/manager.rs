@@ -154,6 +154,12 @@ async fn geoip_data_replaces_existing_file_atomically() {
     assert_eq!(std::fs::read(mgr.geoip_path()).unwrap(), second);
     assert!(mgr.write_geoip_data(&[0; 16]).await.is_err());
 
+    assert_eq!(
+        mgr.write_geosite_data(&first).await.unwrap(),
+        mgr.geosite_path()
+    );
+    assert_eq!(std::fs::read(mgr.geosite_path()).unwrap(), first);
+
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 

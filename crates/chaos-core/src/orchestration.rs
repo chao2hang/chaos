@@ -222,6 +222,38 @@ pub enum RuleMatcherKind {
     Protocol,
 }
 
+/// Fixed evaluation band for routing rules.
+///
+/// dae evaluates top-to-bottom and stops at the first hit. Domain matches must
+/// always win over geosite lists, which must win over IP/geoip matches,
+/// regardless of the user-assigned `priority` number. Within a band, lower
+/// `priority` is evaluated first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum RuleMatcherBand {
+    Domain = 0,
+    Geosite = 1,
+    Ip = 2,
+    Other = 3,
+}
+
+impl RuleMatcherKind {
+    pub fn band(self) -> RuleMatcherBand {
+        match self {
+            Self::DomainSuffix | Self::DomainFull | Self::DomainKeyword => RuleMatcherBand::Domain,
+            Self::Geosite => RuleMatcherBand::Geosite,
+            Self::Geoip | Self::DestinationCidr | Self::SourceCidr | Self::IpVersion => {
+                RuleMatcherBand::Ip
+            }
+            Self::SourcePort
+            | Self::DestPort
+            | Self::ProcessName
+            | Self::MacAddress
+            | Self::Protocol => RuleMatcherBand::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinKind {
@@ -323,6 +355,373 @@ pub struct CompiledRoute {
 pub struct CompiledRouting {
     pub conditions: Vec<CompiledRoute>,
     pub fallback: String,
+}
+
+/// Traffic facts used to dry-run the compiled routing table.
+///
+/// Fields are optional; only matchers that can be evaluated from the provided
+/// facts participate. Domain-only probes skip IP/geoip rules, and vice versa.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteProbe {
+    /// Destination hostname (SNI / sniffed domain), lowercased by the matcher.
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// Destination IP (literal IPv4/IPv6).
+    #[serde(default)]
+    pub dest_ip: Option<String>,
+    /// ISO-like geoip country/region codes (e.g. `us`, `cn`, `private`).
+    #[serde(default)]
+    pub geoip: Vec<String>,
+    /// Geosite category codes (e.g. `netflix`, `google`).
+    #[serde(default)]
+    pub geosite: Vec<String>,
+    /// L4 protocol when testing port/protocol rules: `tcp` or `udp`.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Destination port.
+    #[serde(default)]
+    pub dest_port: Option<u16>,
+}
+
+/// One step of a dry-run walk: either a rule was considered, or the fallback won.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteTraceStep {
+    /// `rule` | `fallback`
+    pub kind: String,
+    pub matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    pub outbound: String,
+    /// Why this step matched / was skipped / did not match.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteSimulation {
+    /// Final outbound name (`direct` / group identifier).
+    pub outbound: String,
+    /// Whether any rule matched (false ⇒ fallback).
+    pub matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_rule_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_priority: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_matcher_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_pattern: Option<String>,
+    /// Ordered evaluation trace (band → priority order).
+    pub steps: Vec<RouteTraceStep>,
+}
+
+impl CompiledRouting {
+    /// Dry-run the compiled table against probe facts. First match wins.
+    pub fn simulate(&self, probe: &RouteProbe) -> RouteSimulation {
+        let mut steps = Vec::with_capacity(self.conditions.len() + 1);
+        for (index, route) in self.conditions.iter().enumerate() {
+            let decision = evaluate_route(route, probe);
+            steps.push(RouteTraceStep {
+                kind: "rule".into(),
+                matched: decision.matched,
+                rule_index: Some(index),
+                priority: Some(route.priority),
+                matcher_kind: Some(matcher_kind_name(route.matcher.kind).into()),
+                pattern: Some(route.matcher.pattern.clone()),
+                condition: Some(route.condition.clone()),
+                outbound: route.outbound.clone(),
+                reason: decision.reason,
+            });
+            if decision.matched {
+                return RouteSimulation {
+                    outbound: route.outbound.clone(),
+                    matched: true,
+                    matched_rule_index: Some(index),
+                    matched_condition: Some(route.condition.clone()),
+                    matched_priority: Some(route.priority),
+                    matched_matcher_kind: Some(matcher_kind_name(route.matcher.kind).into()),
+                    matched_pattern: Some(route.matcher.pattern.clone()),
+                    steps,
+                };
+            }
+        }
+        steps.push(RouteTraceStep {
+            kind: "fallback".into(),
+            matched: true,
+            rule_index: None,
+            priority: None,
+            matcher_kind: None,
+            pattern: None,
+            condition: None,
+            outbound: self.fallback.clone(),
+            reason: "no_rule_matched".into(),
+        });
+        RouteSimulation {
+            outbound: self.fallback.clone(),
+            matched: false,
+            matched_rule_index: None,
+            matched_condition: None,
+            matched_priority: None,
+            matched_matcher_kind: None,
+            matched_pattern: None,
+            steps,
+        }
+    }
+}
+
+struct MatchDecision {
+    matched: bool,
+    reason: String,
+}
+
+fn matcher_kind_name(kind: RuleMatcherKind) -> &'static str {
+    match kind {
+        RuleMatcherKind::DomainSuffix => "domain_suffix",
+        RuleMatcherKind::DestinationCidr => "destination_cidr",
+        RuleMatcherKind::DomainKeyword => "domain_keyword",
+        RuleMatcherKind::DomainFull => "domain_full",
+        RuleMatcherKind::Geosite => "geosite",
+        RuleMatcherKind::Geoip => "geoip",
+        RuleMatcherKind::SourceCidr => "source_cidr",
+        RuleMatcherKind::SourcePort => "source_port",
+        RuleMatcherKind::DestPort => "dest_port",
+        RuleMatcherKind::IpVersion => "ip_version",
+        RuleMatcherKind::ProcessName => "process_name",
+        RuleMatcherKind::MacAddress => "mac_address",
+        RuleMatcherKind::Protocol => "protocol",
+    }
+}
+
+fn evaluate_route(route: &CompiledRoute, probe: &RouteProbe) -> MatchDecision {
+    let raw = match_matcher(&route.matcher, probe);
+    if route.matcher.invert {
+        // Inverted rules only fire when the positive match would have succeeded
+        // with the available facts. Missing facts stay skipped (not inverted).
+        if raw.reason.starts_with("skip_") {
+            return raw;
+        }
+        return MatchDecision {
+            matched: !raw.matched,
+            reason: if raw.matched {
+                "inverted_positive_match".into()
+            } else {
+                "inverted_no_match".into()
+            },
+        };
+    }
+    raw
+}
+
+fn match_matcher(matcher: &RuleMatcher, probe: &RouteProbe) -> MatchDecision {
+    match matcher.kind {
+        RuleMatcherKind::DomainSuffix => {
+            let Some(domain) = probe.domain.as_deref().map(normalize_domain) else {
+                return skip("skip_no_domain");
+            };
+            let patterns = split_domain_list(&matcher.pattern);
+            if patterns.is_empty() {
+                return no("empty_pattern");
+            }
+            let hit = patterns.iter().any(|pattern| {
+                domain == *pattern || domain.ends_with(&format!(".{pattern}"))
+            });
+            yes_or_no(hit, "domain_suffix_match", "domain_suffix_miss")
+        }
+        RuleMatcherKind::DomainFull => {
+            let Some(domain) = probe.domain.as_deref().map(normalize_domain) else {
+                return skip("skip_no_domain");
+            };
+            let patterns = split_domain_list(&matcher.pattern);
+            if patterns.is_empty() {
+                return no("empty_pattern");
+            }
+            let hit = patterns.iter().any(|pattern| domain == *pattern);
+            yes_or_no(hit, "domain_full_match", "domain_full_miss")
+        }
+        RuleMatcherKind::DomainKeyword => {
+            let Some(domain) = probe.domain.as_deref().map(|d| d.to_ascii_lowercase()) else {
+                return skip("skip_no_domain");
+            };
+            let patterns = split_domain_list(&matcher.pattern);
+            if patterns.is_empty() {
+                return no("empty_pattern");
+            }
+            let hit = patterns
+                .iter()
+                .any(|pattern| domain.contains(pattern));
+            yes_or_no(
+                hit,
+                "domain_keyword_match",
+                "domain_keyword_miss",
+            )
+        }
+        RuleMatcherKind::Geosite => {
+            if probe.geosite.is_empty() {
+                return skip("skip_no_geosite");
+            }
+            let codes = split_geo_codes(&matcher.pattern);
+            let hit = probe
+                .geosite
+                .iter()
+                .any(|code| codes.iter().any(|c| c.eq_ignore_ascii_case(code.trim())));
+            yes_or_no(hit, "geosite_match", "geosite_miss")
+        }
+        RuleMatcherKind::Geoip => {
+            if probe.geoip.is_empty() {
+                return skip("skip_no_geoip");
+            }
+            let codes = split_geo_codes(&matcher.pattern);
+            let hit = probe
+                .geoip
+                .iter()
+                .any(|code| codes.iter().any(|c| c.eq_ignore_ascii_case(code.trim())));
+            yes_or_no(hit, "geoip_match", "geoip_miss")
+        }
+        RuleMatcherKind::DestinationCidr => {
+            let Some(ip) = probe.dest_ip.as_deref() else {
+                return skip("skip_no_dest_ip");
+            };
+            match ip_in_cidr(ip, matcher.pattern.trim()) {
+                Ok(true) => yes("cidr_match"),
+                Ok(false) => no("cidr_miss"),
+                Err(_) => no("invalid_cidr_or_ip"),
+            }
+        }
+        RuleMatcherKind::SourceCidr => skip("skip_source_cidr_unsupported"),
+        RuleMatcherKind::SourcePort => skip("skip_source_port_unsupported"),
+        RuleMatcherKind::DestPort => {
+            let Some(port) = probe.dest_port else {
+                return skip("skip_no_dest_port");
+            };
+            let hit = port_list_contains(matcher.pattern.trim(), port);
+            yes_or_no(hit, "dest_port_match", "dest_port_miss")
+        }
+        RuleMatcherKind::IpVersion => {
+            let Some(ip) = probe.dest_ip.as_deref() else {
+                return skip("skip_no_dest_ip");
+            };
+            let want = matcher.pattern.trim();
+            let is_v4 = ip.parse::<std::net::Ipv4Addr>().is_ok();
+            let is_v6 = ip.parse::<std::net::Ipv6Addr>().is_ok();
+            let hit = (want == "4" && is_v4) || (want == "6" && is_v6);
+            yes_or_no(hit, "ip_version_match", "ip_version_miss")
+        }
+        RuleMatcherKind::ProcessName => skip("skip_process_name_unsupported"),
+        RuleMatcherKind::MacAddress => skip("skip_mac_unsupported"),
+        RuleMatcherKind::Protocol => {
+            let Some(proto) = probe.protocol.as_deref() else {
+                return skip("skip_no_protocol");
+            };
+            let hit = proto.eq_ignore_ascii_case(matcher.pattern.trim());
+            yes_or_no(hit, "protocol_match", "protocol_miss")
+        }
+    }
+}
+
+fn skip(reason: &str) -> MatchDecision {
+    MatchDecision {
+        matched: false,
+        reason: reason.into(),
+    }
+}
+
+fn yes(reason: &str) -> MatchDecision {
+    MatchDecision {
+        matched: true,
+        reason: reason.into(),
+    }
+}
+
+fn no(reason: &str) -> MatchDecision {
+    MatchDecision {
+        matched: false,
+        reason: reason.into(),
+    }
+}
+
+fn yes_or_no(hit: bool, yes_reason: &str, no_reason: &str) -> MatchDecision {
+    if hit {
+        yes(yes_reason)
+    } else {
+        no(no_reason)
+    }
+}
+
+fn port_list_contains(pattern: &str, port: u16) -> bool {
+    pattern.split([',', ' ']).filter(|s| !s.is_empty()).any(|part| {
+        if let Some((a, b)) = part.split_once('-') {
+            let Ok(lo) = a.trim().parse::<u16>() else {
+                return false;
+            };
+            let Ok(hi) = b.trim().parse::<u16>() else {
+                return false;
+            };
+            (lo.min(hi)..=lo.max(hi)).contains(&port)
+        } else {
+            part.trim().parse::<u16>().ok() == Some(port)
+        }
+    })
+}
+
+/// Return true when `ip` is contained in `cidr` (`x.x.x.x/n` or bare IP).
+fn ip_in_cidr(ip: &str, cidr: &str) -> Result<bool, ()> {
+    use std::net::IpAddr;
+    let ip: IpAddr = ip.trim().parse().map_err(|_| ())?;
+    let cidr = cidr.trim();
+    if let Some((net, prefix)) = cidr.split_once('/') {
+        let network: IpAddr = net.trim().parse().map_err(|_| ())?;
+        let bits: u8 = prefix.trim().parse().map_err(|_| ())?;
+        return Ok(ip_prefix_contains(network, bits, ip));
+    }
+    // bare IP acts as /32 or /128
+    let network: IpAddr = cidr.parse().map_err(|_| ())?;
+    Ok(ip == network)
+}
+
+fn ip_prefix_contains(network: std::net::IpAddr, prefix: u8, ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match (network, ip) {
+        (IpAddr::V4(net), IpAddr::V4(addr)) => {
+            if prefix > 32 {
+                return false;
+            }
+            if prefix == 0 {
+                return true;
+            }
+            let mask = u32::MAX << (32 - prefix);
+            (u32::from(net) & mask) == (u32::from(addr) & mask)
+        }
+        (IpAddr::V6(net), IpAddr::V6(addr)) => {
+            if prefix > 128 {
+                return false;
+            }
+            if prefix == 0 {
+                return true;
+            }
+            let net_bytes = net.octets();
+            let addr_bytes = addr.octets();
+            let full = (prefix / 8) as usize;
+            let rem = prefix % 8;
+            if net_bytes[..full] != addr_bytes[..full] {
+                return false;
+            }
+            if rem == 0 {
+                return true;
+            }
+            let mask = 0xffu8 << (8 - rem);
+            (net_bytes[full] & mask) == (addr_bytes[full] & mask)
+        }
+        _ => false,
+    }
 }
 
 impl Default for OrchestrationDocument {
@@ -631,7 +1030,15 @@ pub fn compile_orchestration(
         .iter()
         .filter(|node| node.kind == FlowNodeKind::Rule)
         .collect();
-    rules.sort_by_key(|node| (node.data.priority.unwrap_or(u32::MAX), node.id.as_str()));
+    // domain → geosite → IP/geoip → other, then user priority, then stable id.
+    rules.sort_by_key(|node| {
+        let matcher = node.data.matcher.as_ref().expect("validated matcher");
+        (
+            matcher.kind.band(),
+            node.data.priority.unwrap_or(u32::MAX),
+            node.id.as_str(),
+        )
+    });
     let conditions = rules
         .into_iter()
         .map(|rule| {
@@ -678,10 +1085,18 @@ fn validate_rule(node: &FlowNode, outputs: &[&FlowEdge], issues: &mut Vec<Valida
     };
     let pattern = matcher.pattern.trim();
     let valid = match matcher.kind {
-        RuleMatcherKind::DomainSuffix => valid_domain_suffix(pattern),
+        RuleMatcherKind::DomainSuffix | RuleMatcherKind::DomainFull => {
+            let parts = split_domain_list(pattern);
+            !parts.is_empty() && parts.iter().all(|part| valid_domain_suffix(part))
+        }
         RuleMatcherKind::DestinationCidr => valid_cidr(pattern),
-        RuleMatcherKind::DomainKeyword => !pattern.is_empty() && pattern.len() <= 253,
-        RuleMatcherKind::DomainFull => valid_domain_suffix(pattern),
+        RuleMatcherKind::DomainKeyword => {
+            let parts = split_domain_list(pattern);
+            !parts.is_empty()
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.len() <= 253)
+        }
         RuleMatcherKind::Geosite => valid_geosite(pattern),
         RuleMatcherKind::Geoip => valid_geoip(pattern),
         RuleMatcherKind::SourceCidr => valid_cidr(pattern),
@@ -822,18 +1237,12 @@ fn validate_group_source_cycles(
 fn compile_matcher(matcher: &RuleMatcher) -> String {
     let pattern = matcher.pattern.trim();
     let expr = match matcher.kind {
-        RuleMatcherKind::DomainSuffix => {
-            format!("domain(suffix: {})", normalize_domain(pattern))
-        }
+        RuleMatcherKind::DomainSuffix => compile_domain_list("suffix", pattern),
         RuleMatcherKind::DestinationCidr => format!("dip({})", pattern),
-        RuleMatcherKind::DomainKeyword => {
-            format!("domain(keyword: {})", pattern.to_ascii_lowercase())
-        }
-        RuleMatcherKind::DomainFull => {
-            format!("domain(full: {})", normalize_domain(pattern))
-        }
-        RuleMatcherKind::Geosite => format!("domain(geosite:{})", pattern),
-        RuleMatcherKind::Geoip => format!("dip(geoip:{})", pattern),
+        RuleMatcherKind::DomainKeyword => compile_domain_list("keyword", pattern),
+        RuleMatcherKind::DomainFull => compile_domain_list("full", pattern),
+        RuleMatcherKind::Geosite => compile_geo_list("domain", "geosite", pattern),
+        RuleMatcherKind::Geoip => compile_geo_list("dip", "geoip", pattern),
         RuleMatcherKind::SourceCidr => format!("sip({})", pattern),
         RuleMatcherKind::SourcePort => format!("sport({})", pattern),
         RuleMatcherKind::DestPort => format!("dport({})", pattern),
@@ -852,8 +1261,11 @@ fn normalized_matcher(matcher: &RuleMatcher) -> RuleMatcher {
     RuleMatcher {
         kind: matcher.kind,
         pattern: match matcher.kind {
-            RuleMatcherKind::DomainSuffix | RuleMatcherKind::DomainFull => {
-                normalize_domain(&matcher.pattern)
+            RuleMatcherKind::DomainSuffix
+            | RuleMatcherKind::DomainFull
+            | RuleMatcherKind::DomainKeyword => split_domain_list(&matcher.pattern).join(", "),
+            RuleMatcherKind::Geosite | RuleMatcherKind::Geoip => {
+                split_geo_codes(&matcher.pattern).join(", ")
             }
             RuleMatcherKind::MacAddress | RuleMatcherKind::Protocol => {
                 matcher.pattern.trim().to_ascii_lowercase()
@@ -876,6 +1288,29 @@ fn outbound(node: &FlowNode) -> String {
 fn normalize_domain(value: &str) -> String {
     value.trim().trim_matches('.').to_ascii_lowercase()
 }
+
+/// Split multi-domain patterns: comma / whitespace / newline separated.
+fn split_domain_list(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    value
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .map(normalize_domain)
+        .filter(|part| !part.is_empty())
+        .filter(|part| seen.insert(part.clone()))
+        .collect()
+}
+
+/// `google.com, youtube.com` → `domain(suffix: google.com, suffix: youtube.com)`.
+fn compile_domain_list(kind: &str, pattern: &str) -> String {
+    let parts = split_domain_list(pattern);
+    let joined = parts
+        .into_iter()
+        .map(|part| format!("{kind}: {part}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("domain({joined})")
+}
+
 fn valid_domain_suffix(value: &str) -> bool {
     let domain = normalize_domain(value);
     !domain.is_empty()
@@ -910,23 +1345,53 @@ fn valid_cidr(value: &str) -> bool {
     }
 }
 
-/// Validate a geosite identifier like `cn`, `geolocation-!cn`, `category-ads`.
+/// Validate geosite codes: single `cn` or multi `cn, category-ads`.
 fn valid_geosite(value: &str) -> bool {
-    let v = value.trim();
-    !v.is_empty()
-        && v.len() <= 128
-        && v.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'!' || b == b'@'
+    let parts = split_geo_codes(value);
+    !parts.is_empty()
+        && parts.len() <= 32
+        && parts.iter().all(|part| {
+            part.len() <= 128
+                && part.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'!' || b == b'@'
+                })
         })
 }
 
-/// Validate a geoip identifier like `cn`, `us`, `private`.
+/// Validate geoip codes: single `cn` or multi `cn, private`.
 fn valid_geoip(value: &str) -> bool {
-    let v = value.trim();
-    !v.is_empty()
-        && v.len() <= 64
-        && v.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    let parts = split_geo_codes(value);
+    !parts.is_empty()
+        && parts.len() <= 32
+        && parts.iter().all(|part| {
+            part.len() <= 64
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+fn split_geo_codes(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .filter(|part| seen.insert(part.clone()))
+        .collect()
+}
+
+/// Compile multi-select geo patterns into dae list form:
+/// `cn, private` → `dip(geoip:cn, geoip:private)`.
+fn compile_geo_list(function: &str, prefix: &str, pattern: &str) -> String {
+    let parts = split_geo_codes(pattern);
+    let joined = parts
+        .into_iter()
+        .map(|part| format!("{prefix}:{part}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{function}({joined})")
 }
 
 /// Validate port list: single port `443`, range `8000-9000`, or comma-separated `80, 443`.
@@ -1345,7 +1810,50 @@ mod tests {
     }
 
     #[test]
-    fn rules_compile_matchers_by_priority_and_fall_back_to_direct() {
+    fn multi_geo_codes_compile_to_list() {
+        let document = OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes: vec![
+                start_node(),
+                rule(
+                    "rule-geoip",
+                    RuleMatcherKind::Geoip,
+                    "cn, private, us",
+                    Some(1),
+                ),
+                rule(
+                    "rule-geosite",
+                    RuleMatcherKind::Geosite,
+                    "cn category-ads",
+                    Some(2),
+                ),
+                group(),
+                direct_builtin(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("start-geoip", "start", "rule-geoip"),
+                FlowEdge::new("start-geosite", "start", "rule-geosite"),
+                FlowEdge::new("geoip-direct", "rule-geoip", "direct"),
+                FlowEdge::new("geosite-group", "rule-geosite", "group"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let compiled = document.compile().expect("compile multi geo");
+        // geosite band always precedes IP/geoip, even when geoip has lower priority.
+        assert_eq!(
+            compiled.conditions[0].condition,
+            "domain(geosite:cn, geosite:category-ads)"
+        );
+        assert_eq!(
+            compiled.conditions[1].condition,
+            "dip(geoip:cn, geoip:private, geoip:us)"
+        );
+    }
+
+    #[test]
+    fn rules_compile_band_first_then_priority_and_fall_back_to_direct() {
         let document = OrchestrationDocument {
             version: ORCHESTRATION_VERSION,
             nodes: vec![
@@ -1379,16 +1887,7 @@ mod tests {
             document.compile().unwrap(),
             CompiledRouting {
                 conditions: vec![
-                    CompiledRoute {
-                        matcher: RuleMatcher {
-                            kind: RuleMatcherKind::DestinationCidr,
-                            pattern: "10.0.0.0/8".into(),
-                            invert: false,
-                        },
-                        priority: 1,
-                        condition: "dip(10.0.0.0/8)".into(),
-                        outbound: "direct".into()
-                    },
+                    // Domain band wins over IP band even with a higher priority number.
                     CompiledRoute {
                         matcher: RuleMatcher {
                             kind: RuleMatcherKind::DomainSuffix,
@@ -1398,11 +1897,120 @@ mod tests {
                         priority: 2,
                         condition: "domain(suffix: example.com)".into(),
                         outbound: "Proxy".into()
+                    },
+                    CompiledRoute {
+                        matcher: RuleMatcher {
+                            kind: RuleMatcherKind::DestinationCidr,
+                            pattern: "10.0.0.0/8".into(),
+                            invert: false,
+                        },
+                        priority: 1,
+                        condition: "dip(10.0.0.0/8)".into(),
+                        outbound: "direct".into()
                     }
                 ],
                 fallback: "direct".into()
             }
         );
+    }
+
+    #[test]
+    fn rules_compile_domain_before_geosite_before_geoip() {
+        let document = OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes: vec![
+                start_node(),
+                rule(
+                    "rule-geoip",
+                    RuleMatcherKind::Geoip,
+                    "us",
+                    Some(1),
+                ),
+                rule(
+                    "rule-domain",
+                    RuleMatcherKind::DomainSuffix,
+                    "fast.com",
+                    Some(99),
+                ),
+                rule(
+                    "rule-geosite",
+                    RuleMatcherKind::Geosite,
+                    "netflix",
+                    Some(50),
+                ),
+                group(),
+                direct_builtin(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("start-geoip", "start", "rule-geoip"),
+                FlowEdge::new("start-domain", "start", "rule-domain"),
+                FlowEdge::new("start-geosite", "start", "rule-geosite"),
+                FlowEdge::new("geoip-group", "rule-geoip", "group"),
+                FlowEdge::new("domain-group", "rule-domain", "group"),
+                FlowEdge::new("geosite-group", "rule-geosite", "group"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let compiled = document.compile().expect("compile band order");
+        assert_eq!(
+            compiled
+                .conditions
+                .iter()
+                .map(|route| route.condition.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "domain(suffix: fast.com)",
+                "domain(geosite:netflix)",
+                "dip(geoip:us)",
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_domain_suffix_compiles_and_matches_any() {
+        let document = OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes: vec![
+                start_node(),
+                rule(
+                    "rule-multi",
+                    RuleMatcherKind::DomainSuffix,
+                    "google.com, youtube.com\nfast.com",
+                    Some(1),
+                ),
+                group(),
+                direct_builtin(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("s-multi", "start", "rule-multi"),
+                FlowEdge::new("multi-group", "rule-multi", "group"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        };
+        let compiled = document.compile().expect("compile multi domain");
+        assert_eq!(
+            compiled.conditions[0].condition,
+            "domain(suffix: google.com, suffix: youtube.com, suffix: fast.com)"
+        );
+        assert_eq!(
+            compiled.conditions[0].matcher.pattern,
+            "google.com, youtube.com, fast.com"
+        );
+        let hit = compiled.simulate(&RouteProbe {
+            domain: Some("www.youtube.com".into()),
+            ..Default::default()
+        });
+        assert!(hit.matched);
+        assert_eq!(hit.outbound, "Proxy");
+        let miss = compiled.simulate(&RouteProbe {
+            domain: Some("example.org".into()),
+            ..Default::default()
+        });
+        assert!(!miss.matched);
     }
 
     #[test]
@@ -1610,5 +2218,125 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "group_source_cycle"));
+    }
+
+    fn sample_routing_document() -> OrchestrationDocument {
+        OrchestrationDocument {
+            version: ORCHESTRATION_VERSION,
+            nodes: vec![
+                start_node(),
+                rule(
+                    "rule-domain",
+                    RuleMatcherKind::DomainSuffix,
+                    "fast.com",
+                    Some(1),
+                ),
+                rule(
+                    "rule-geosite",
+                    RuleMatcherKind::Geosite,
+                    "netflix",
+                    Some(2),
+                ),
+                rule(
+                    "rule-geoip",
+                    RuleMatcherKind::Geoip,
+                    "us",
+                    Some(3),
+                ),
+                rule(
+                    "rule-cidr",
+                    RuleMatcherKind::DestinationCidr,
+                    "10.0.0.0/8",
+                    Some(4),
+                ),
+                group(),
+                direct_builtin(),
+                end_node(),
+            ],
+            edges: vec![
+                FlowEdge::new("s-domain", "start", "rule-domain"),
+                FlowEdge::new("s-geosite", "start", "rule-geosite"),
+                FlowEdge::new("s-geoip", "start", "rule-geoip"),
+                FlowEdge::new("s-cidr", "start", "rule-cidr"),
+                FlowEdge::new("domain-group", "rule-domain", "group"),
+                FlowEdge::new("geosite-group", "rule-geosite", "group"),
+                FlowEdge::new("geoip-group", "rule-geoip", "group"),
+                FlowEdge::new("cidr-direct", "rule-cidr", "direct"),
+                FlowEdge::new("end-direct", "end", "direct"),
+            ],
+            viewport: FlowViewport::default(),
+        }
+    }
+
+    #[test]
+    fn simulate_domain_hits_before_geoip() {
+        let compiled = sample_routing_document().compile().unwrap();
+        let result = compiled.simulate(&RouteProbe {
+            domain: Some("api.fast.com".into()),
+            dest_ip: Some("1.1.1.1".into()),
+            geoip: vec!["us".into()],
+            ..Default::default()
+        });
+        assert!(result.matched);
+        assert_eq!(result.outbound, "Proxy");
+        assert_eq!(result.matched_matcher_kind.as_deref(), Some("domain_suffix"));
+        assert_eq!(result.matched_pattern.as_deref(), Some("fast.com"));
+    }
+
+    #[test]
+    fn simulate_geoip_when_no_domain_rule_hits() {
+        let compiled = sample_routing_document().compile().unwrap();
+        let result = compiled.simulate(&RouteProbe {
+            dest_ip: Some("8.8.8.8".into()),
+            geoip: vec!["us".into()],
+            ..Default::default()
+        });
+        assert!(result.matched);
+        assert_eq!(result.outbound, "Proxy");
+        assert_eq!(result.matched_matcher_kind.as_deref(), Some("geoip"));
+        // Domain/geosite rules without facts are skipped, not matched.
+        assert!(result.steps.iter().any(|s| s.reason == "skip_no_domain"));
+        assert!(result.steps.iter().any(|s| s.reason == "skip_no_geosite"));
+    }
+
+    #[test]
+    fn simulate_geosite_option_hits_group() {
+        let compiled = sample_routing_document().compile().unwrap();
+        let result = compiled.simulate(&RouteProbe {
+            geosite: vec!["netflix".into()],
+            ..Default::default()
+        });
+        assert!(result.matched);
+        assert_eq!(result.matched_matcher_kind.as_deref(), Some("geosite"));
+        assert_eq!(result.outbound, "Proxy");
+    }
+
+    #[test]
+    fn simulate_cidr_and_fallback() {
+        let compiled = sample_routing_document().compile().unwrap();
+        let private = compiled.simulate(&RouteProbe {
+            dest_ip: Some("10.1.2.3".into()),
+            ..Default::default()
+        });
+        assert!(private.matched);
+        assert_eq!(private.outbound, "direct");
+        assert_eq!(private.matched_matcher_kind.as_deref(), Some("destination_cidr"));
+
+        let miss = compiled.simulate(&RouteProbe {
+            dest_ip: Some("1.2.3.4".into()),
+            geoip: vec!["jp".into()],
+            ..Default::default()
+        });
+        assert!(!miss.matched);
+        assert_eq!(miss.outbound, "direct");
+        assert_eq!(miss.steps.last().map(|s| s.kind.as_str()), Some("fallback"));
+    }
+
+    #[test]
+    fn ip_prefix_helpers_cover_v4_and_bare() {
+        assert_eq!(ip_in_cidr("10.0.0.5", "10.0.0.0/8"), Ok(true));
+        assert_eq!(ip_in_cidr("11.0.0.5", "10.0.0.0/8"), Ok(false));
+        assert_eq!(ip_in_cidr("1.2.3.4", "1.2.3.4"), Ok(true));
+        assert!(ip_in_cidr("not-an-ip", "10.0.0.0/8").is_err());
     }
 }

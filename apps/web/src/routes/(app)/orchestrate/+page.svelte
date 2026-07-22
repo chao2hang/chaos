@@ -3,88 +3,91 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { Connection } from '@xyflow/svelte';
-	import {
-		AlertTriangle,
-		Boxes,
-		Check,
-		Layers3,
-		LayoutGrid,
-		ListFilter,
-		LockKeyhole,
-		Play,
-		Plus,
-		RadioTower,
-		Redo2,
-		RefreshCw,
-		Save,
-		Server,
-		Undo2
-	} from '@lucide/svelte';
-	import {
-		ApiClientError,
-		getOrchestration,
-		listGroups,
-		listNodes,
-		listSubscriptions,
-		publishOrchestration,
-		putOrchestration,
-		isSessionRedirectPending,
-		type GroupDto,
-		type NodeDto,
-		type OrchestrationDocument,
-		type OrchestrationEdgeDto,
-		type OrchestrationNodeDto,
-		type OrchestrationNodeGroupData,
-		type OrchestrationRuleData,
-		type SubscriptionDto
-	} from '$lib/api';
-	import { apiErrorText, t } from '$lib/i18n.svelte';
-	import {
-		autoLayout,
-		createGroupNode,
-		createRuleNode,
-		decorateDocument,
-		ORCHESTRATION_VERSION,
-		sanitizeDocument,
-		setEndTarget,
-		setRuleTarget,
-		snapshotDocument,
-		validateLocal
-	} from '$lib/orchestration';
-	import Button from '$lib/components/ui/Button.svelte';
-	import AppPage from '$lib/components/ui/AppPage.svelte';
-	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
-	import LoadingState from '$lib/components/ui/LoadingState.svelte';
-import { toast } from '$lib/toast.svelte';
-	import PageHeader from '$lib/components/ui/PageHeader.svelte';
-	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
-	import OrchestrationCanvas from '$lib/components/features/OrchestrationCanvas.svelte';
-	import OrchestrationInspector from '$lib/components/features/OrchestrationInspector.svelte';
+import {
+			AlertTriangle,
+			Boxes,
+			Check,
+			FlaskConical,
+			Layers3,
+			LayoutGrid,
+			ListFilter,
+			LockKeyhole,
+			Play,
+			Plus,
+			RadioTower,
+			Redo2,
+			RefreshCw,
+			Save,
+			Server,
+			Undo2
+		} from '@lucide/svelte';
+		import {
+			ApiClientError,
+			getOrchestration,
+			listGroups,
+			listNodes,
+			listSubscriptions,
+			publishOrchestration,
+			putOrchestration,
+			isSessionRedirectPending,
+			type GroupDto,
+			type NodeDto,
+			type OrchestrationDocument,
+			type OrchestrationEdgeDto,
+			type OrchestrationNodeDto,
+			type OrchestrationNodeGroupData,
+			type OrchestrationRuleData,
+			type SubscriptionDto
+		} from '$lib/api';
+		import { apiErrorText, t } from '$lib/i18n.svelte';
+		import {
+			autoLayout,
+			createGroupNode,
+			createRuleNode,
+			decorateDocument,
+			ORCHESTRATION_VERSION,
+			sanitizeDocument,
+			setEndTarget,
+			setRuleTarget,
+			snapshotDocument,
+			validateLocal
+		} from '$lib/orchestration';
+		import Button from '$lib/components/ui/Button.svelte';
+		import AppPage from '$lib/components/ui/AppPage.svelte';
+		import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+		import LoadingState from '$lib/components/ui/LoadingState.svelte';
+		import { toast } from '$lib/toast.svelte';
+		import PageHeader from '$lib/components/ui/PageHeader.svelte';
+		import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
+		import OrchestrationCanvas from '$lib/components/features/OrchestrationCanvas.svelte';
+		import OrchestrationInspector from '$lib/components/features/OrchestrationInspector.svelte';
+		import RouteTestPanel from '$lib/components/features/RouteTestPanel.svelte';
 
-	type AddableNodeKind = 'rule' | 'node_group';
+		type AddableNodeKind = 'rule' | 'node_group';
 
-	let flowNodes = $state.raw<OrchestrationNodeDto[]>([]);
-	let flowEdges = $state.raw<OrchestrationEdgeDto[]>([]);
-	let viewport = $state({ x: 0, y: 0, zoom: 0.85 });
-	let fitOnInit = $state(true);
-	let inventoryNodes = $state<NodeDto[]>([]);
-	let subscriptions = $state<SubscriptionDto[]>([]);
-	let groups = $state<GroupDto[]>([]);
-	let selectedNodeId = $state<string | null>(null);
-	let selectedEdgeId = $state<string | null>(null);
-	let loaded = $state(false);
-let busy = $state<'load' | 'save' | 'publish' | ''>('');
+		let flowNodes = $state.raw<OrchestrationNodeDto[]>([]);
+		let flowEdges = $state.raw<OrchestrationEdgeDto[]>([]);
+		let viewport = $state({ x: 0, y: 0, zoom: 0.85 });
+		let fitOnInit = $state(true);
+		let inventoryNodes = $state<NodeDto[]>([]);
+		let subscriptions = $state<SubscriptionDto[]>([]);
+		let groups = $state<GroupDto[]>([]);
+		let selectedNodeId = $state<string | null>(null);
+		let selectedEdgeId = $state<string | null>(null);
+		let loaded = $state(false);
+		let busy = $state<'load' | 'save' | 'publish' | ''>('');
 		let confirmReload = $state(false);
-	let savedSnapshot = $state('');
-	let undoStack = $state<string[]>([]);
-	let redoStack = $state<string[]>([]);
-	let pendingBefore = $state<string | null>(null);
-	let lastHistoryKey = $state('');
-	let lastHistoryAt = $state(0);
-	let mobilePanel = $state<'canvas' | 'inspector'>('canvas');
-	let canvasSettled = $state(false);
-	let needsRepublish = $state(false);
-	let validationToastSignature = '';
+		let openRouteTest = $state(false);
+		let savedSnapshot = $state('');
+		let undoStack = $state<string[]>([]);
+		let redoStack = $state<string[]>([]);
+		let pendingBefore = $state<string | null>(null);
+		let lastHistoryKey = $state('');
+		let lastHistoryAt = $state(0);
+		let mobilePanel = $state<'canvas' | 'inspector'>('canvas');
+		let canvasSettled = $state(false);
+		let needsRepublish = $state(false);
+		let validationToastSignature = '';
 
 	function currentDocument(): OrchestrationDocument {
 		return sanitizeDocument(flowNodes, flowEdges, viewport);
@@ -186,33 +189,34 @@ let busy = $state<'load' | 'save' | 'publish' | ''>('');
 		restoreSnapshot(next);
 	}
 
-function syncNeedsRepublishToast(active: boolean) {
-			if (active) {
-				toast.warning({
-					id: 'needs-republish',
-					title: t('flow.needsRepublish'),
-					duration: 0
-				});
-			} else {
-				toast.dismiss('needs-republish');
-			}
+	
+	function syncNeedsRepublishToast(active: boolean) {
+		if (active) {
+			toast.warning({
+				id: 'needs-republish',
+				title: t('flow.needsRepublish'),
+				duration: 0
+			});
+		} else {
+			toast.dismiss('needs-republish');
 		}
+	}
 
-		async function load() {
-			busy = 'load';
-			try {
-				const [document, nodeResult, subscriptionResult, groupResult] = await Promise.all([
-					getOrchestration(),
-					listNodes(),
-					listSubscriptions(),
-					listGroups()
-				]);
-				inventoryNodes = nodeResult.nodes;
-				subscriptions = subscriptionResult.subscriptions;
-				groups = groupResult.groups.map((group) => ({ ...group, members: group.members ?? [] }));
-				needsRepublish = document.needs_republish === true;
-				syncNeedsRepublishToast(needsRepublish);
-				setDocument(document);
+	async function load() {
+		busy = 'load';
+		try {
+			const [document, nodeResult, subscriptionResult, groupResult] = await Promise.all([
+				getOrchestration(),
+				listNodes(),
+				listSubscriptions(),
+				listGroups()
+			]);
+			inventoryNodes = nodeResult.nodes;
+			subscriptions = subscriptionResult.subscriptions;
+			groups = groupResult.groups.map((group) => ({ ...group, members: group.members ?? [] }));
+			needsRepublish = document.needs_republish === true;
+			syncNeedsRepublishToast(needsRepublish);
+			setDocument(document);
 			const requestedGroup = page.url.searchParams.get('group');
 			if (requestedGroup) {
 				const target = flowNodes.find(
@@ -233,15 +237,13 @@ function syncNeedsRepublishToast(active: boolean) {
 			undoStack = [];
 			redoStack = [];
 			confirmReload = false;
-} catch (cause) {
-				toast.error({
-					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.loadFailed')
-				});
-			} finally {
-				busy = '';
-				loaded = true;
-			}
+		} catch (cause) {
+			toast.error({ title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.loadFailed') });
+		} finally {
+			busy = '';
+			loaded = true;
 		}
+	}
 
 	onMount(() => {
 		void load();
@@ -330,16 +332,126 @@ function syncNeedsRepublishToast(active: boolean) {
 		addNodeAt(kind, { x: 520, y: 70 + groupCount * 180 });
 	}
 
-	function updateRule(id: string, patch: Partial<OrchestrationRuleData>) {
-		const key = Object.keys(patch)[0] ?? 'data';
-		mutate(() => {
-			flowNodes = flowNodes.map((node) =>
-				node.id === id && node.type === 'rule'
-					? { ...node, data: { ...node.data, ...patch } }
-					: node
-			);
-		}, `rule:${id}:${key}`);
-	}
+function updateRule(id: string, patch: Partial<OrchestrationRuleData>) {
+			const key = Object.keys(patch)[0] ?? 'data';
+			mutate(() => {
+				flowNodes = flowNodes.map((node) =>
+					node.id === id && node.type === 'rule'
+						? { ...node, data: { ...node.data, ...patch } }
+						: node
+				);
+			}, `rule:${id}:${key}`);
+		}
+
+function migrateDomains(
+			fromRuleId: string,
+			toRuleId: string | null,
+			domains: string[],
+			outboundId?: string | null
+		) {
+			if (!domains.length) return;
+			if (toRuleId && fromRuleId === toRuleId) return;
+			const moving = [
+				...new Set(
+					domains
+						.map((d) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+						.filter(Boolean)
+				)
+			];
+			if (!moving.length) return;
+
+			let createdId: string | null = null;
+			mutate(() => {
+				let targetId = toRuleId;
+				let nextNodes = [...flowNodes];
+				let nextEdges = [...flowEdges];
+
+				if (!targetId) {
+					const sourceRule = nextNodes.find(
+						(node) => node.id === fromRuleId && node.type === 'rule'
+					);
+					const sourceY =
+						sourceRule && 'position' in sourceRule ? sourceRule.position.y : 70 + ruleCount * 145;
+					const created = createRuleNode(
+						{ x: 280, y: sourceY + 145 },
+						nextRulePriority(),
+						'domain_suffix'
+					);
+					created.data = {
+						...created.data,
+						matcher: {
+							kind: 'domain_suffix',
+							pattern: moving.join(', ')
+						}
+					};
+					createdId = created.id;
+					targetId = created.id;
+					nextNodes = [...nextNodes, created];
+					nextEdges = [
+						...nextEdges,
+						{ id: `start-${created.id}`, source: 'start', target: created.id }
+					];
+					if (outboundId) {
+						nextEdges = setRuleTarget(created.id, outboundId, nextNodes, nextEdges);
+					}
+				}
+
+				const targetRuleId = targetId!;
+				nextNodes = nextNodes.map((node) => {
+					if (node.type !== 'rule') return node;
+					if (node.id === fromRuleId) {
+						const remaining = (node.data.matcher.pattern || '')
+							.split(/[\s,;]+/)
+							.map((d) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+							.filter((d) => d && !moving.includes(d));
+						return {
+							...node,
+							data: {
+								...node.data,
+								matcher: {
+									...node.data.matcher,
+									pattern: remaining.join(', ')
+								}
+							}
+						};
+					}
+					if (node.id === targetRuleId && toRuleId) {
+						// Existing target: append. New rule already has the domains.
+						const existing = (node.data.matcher.pattern || '')
+							.split(/[\s,;]+/)
+							.map((d) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+							.filter(Boolean);
+						const seen = new Set(existing);
+						const merged = [...existing];
+						for (const domain of moving) {
+							if (!seen.has(domain)) {
+								seen.add(domain);
+								merged.push(domain);
+							}
+						}
+						return {
+							...node,
+							data: {
+								...node.data,
+								matcher: {
+									...node.data.matcher,
+									pattern: merged.join(', ')
+								}
+							}
+						};
+					}
+					return node;
+				});
+
+				flowNodes = nextNodes;
+				flowEdges = nextEdges;
+			}, `migrate:${fromRuleId}:${toRuleId ?? 'new'}`);
+
+			if (createdId) {
+				selectNode(createdId);
+				setTimeout(() => selectNode(createdId!), 60);
+			}
+		}
 
 	function updateGroup(id: string, patch: Partial<OrchestrationNodeGroupData>) {
 		const key = Object.keys(patch)[0] ?? 'data';
@@ -424,23 +536,21 @@ function syncNeedsRepublishToast(active: boolean) {
 		pushHistory(before, 'layout');
 	}
 
-async function saveDraft() {
-			busy = 'save';
-			try {
-				const saved = await putOrchestration(currentDocument());
-				setDocument(saved);
-				savedSnapshot = currentSnapshot();
-				undoStack = [];
-				redoStack = [];
-				toast.success({ title: t('flow.draftSaved') });
-			} catch (cause) {
-				toast.error({
-					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed')
-				});
-			} finally {
-				busy = '';
-			}
+	async function saveDraft() {
+		busy = 'save';
+		try {
+			const saved = await putOrchestration(currentDocument());
+			setDocument(saved);
+			savedSnapshot = currentSnapshot();
+			undoStack = [];
+			redoStack = [];
+			toast.success({ title: t('flow.draftSaved') });
+		} catch (cause) {
+			toast.error({ title: cause instanceof ApiClientError ? apiErrorText(cause) : t('flow.saveFailed') });
+		} finally {
+			busy = '';
 		}
+	}
 
 		async function publishAndApply() {
 			if (!validation.dae_compatible) {
@@ -482,11 +592,11 @@ async function saveDraft() {
 			}
 		}
 
-	function onBeforeUnload(event: BeforeUnloadEvent) {
-		if (!dirty || isSessionRedirectPending()) return;
-		event.preventDefault();
-		event.returnValue = '';
-	}
+		function onBeforeUnload(event: BeforeUnloadEvent) {
+			if (!dirty || isSessionRedirectPending()) return;
+			event.preventDefault();
+			event.returnValue = '';
+		}
 
 	function onPaletteDragStart(event: DragEvent, kind: AddableNodeKind) {
 		event.dataTransfer?.setData('application/chaos-flow-node', kind);
@@ -521,23 +631,35 @@ async function saveDraft() {
 				{/if}
 				<span>{validation.dae_compatible ? t('flow.runtime.ready') : t('flow.runtime.blocked')}</span>
 			</div>
-			<Button
-				variant="ghost"
-				size="icon"
-				icon={RefreshCw}
-				disabled={!!busy}
-				aria-label={t('common.reload')}
-				title={t('common.reload')}
-				onclick={requestReload}
-			/>
-			<Button
-				icon={Save}
-				loading={busy === 'save'}
-				disabled={!dirty || !!busy}
-				onclick={() => void saveDraft()}
-			>
-				{t('flow.saveDraft')}
-			</Button>
+<Button
+					variant="ghost"
+					size="icon"
+					icon={RefreshCw}
+					disabled={!!busy}
+					aria-label={t('common.reload')}
+					title={t('common.reload')}
+					onclick={requestReload}
+				/>
+				<Button
+					variant="ghost"
+					icon={FlaskConical}
+					disabled={!loaded || !!busy}
+					title={
+						!validation.dae_compatible ? t('flow.runtime.applyDisabled') : t('flow.test.title')
+					}
+					data-testid="open-route-test"
+					onclick={() => (openRouteTest = true)}
+				>
+					{t('flow.test.title')}
+				</Button>
+				<Button
+					icon={Save}
+					loading={busy === 'save'}
+					disabled={!dirty || !!busy}
+					onclick={() => void saveDraft()}
+				>
+					{t('flow.saveDraft')}
+				</Button>
 			<Button
 				variant="primary"
 				icon={Play}
@@ -550,9 +672,10 @@ async function saveDraft() {
 				{t('flow.publishApply')}
 			</Button>
 		{/snippet}
-</PageHeader>
+	</PageHeader>
 
-		{#if !loaded}
+
+	{#if !loaded}
 		<LoadingState label={t('common.loading')} />
 		{:else}
 			<div class="mobile-panel-switch">
@@ -618,20 +741,20 @@ async function saveDraft() {
 					</button>
 				</section>
 
-				<section class="library-section resource-summary">
-					<div class="library-heading"><span>{t('flow.library.resources')}</span></div>
-					<dl>
-						<div><dt><Server size={13} strokeWidth={1.8} />{t('flow.source.nodes')}</dt><dd>{inventoryNodes.length}</dd></div>
-						<div><dt><RadioTower size={13} strokeWidth={1.8} />{t('flow.source.subscriptions')}</dt><dd>{subscriptions.length}</dd></div>
-						<div><dt><Layers3 size={13} strokeWidth={1.8} />{t('flow.source.groups')}</dt><dd>{groups.length}</dd></div>
-					</dl>
-				</section>
+<section class="library-section resource-summary">
+						<div class="library-heading"><span>{t('flow.library.resources')}</span></div>
+						<dl>
+							<div><dt><Server size={13} strokeWidth={1.8} />{t('flow.source.nodes')}</dt><dd>{inventoryNodes.length}</dd></div>
+							<div><dt><RadioTower size={13} strokeWidth={1.8} />{t('flow.source.subscriptions')}</dt><dd>{subscriptions.length}</dd></div>
+							<div><dt><Layers3 size={13} strokeWidth={1.8} />{t('flow.source.groups')}</dt><dd>{groups.length}</dd></div>
+						</dl>
+					</section>
 
-				<footer class:blocked={runtimeIssues.length > 0}>
-					<span>DATA PLANE</span>
-					<strong>DIRECT FALLBACK</strong>
-				</footer>
-			</aside>
+					<footer class:blocked={runtimeIssues.length > 0}>
+						<span>DATA PLANE</span>
+						<strong>DIRECT FALLBACK</strong>
+					</footer>
+				</aside>
 
 			<section class="canvas-column">
 				<div class="canvas-toolbar">
@@ -683,28 +806,35 @@ async function saveDraft() {
 				{groups}
 				issues={validation.issues}
 				busy={!!busy}
-				onupdaterule={updateRule}
-				onupdategroup={updateGroup}
-				onsettarget={updateRuleTarget}
-				onsetendtarget={updateEndTarget}
-				ondelete={deleteElement}
-				onselectnode={selectNode}
-			/>
+onupdaterule={updateRule}
+					onupdategroup={updateGroup}
+					onsettarget={updateRuleTarget}
+					onsetendtarget={updateEndTarget}
+					ondelete={deleteElement}
+					onselectnode={selectNode}
+					onmigratedomains={migrateDomains}
+				/>
 		</div>
 	{/if}
 </AppPage>
 
 <ConfirmDialog
-	bind:open={confirmReload}
-	title={t('common.discardTitle')}
-	description={t('common.discardDescription')}
-	confirmLabel={t('common.discard')}
-	cancelLabel={t('common.cancel')}
-	danger
-	onconfirm={load}
-/>
+		bind:open={confirmReload}
+		title={t('common.discardTitle')}
+		description={t('common.discardDescription')}
+		confirmLabel={t('common.discard')}
+		cancelLabel={t('common.cancel')}
+		danger
+		onconfirm={load}
+	/>
 
-<style>
+	<RouteTestPanel
+		bind:open={openRouteTest}
+		document={currentDocument()}
+		disabled={!!busy || !validation.dae_compatible}
+	/>
+	
+	<style>
 
 
 	.runtime-state {
@@ -725,16 +855,16 @@ async function saveDraft() {
 		text-decoration: underline dotted;
 	}
 
-	.editor-shell {
-		display: grid;
-		grid-template-columns: 13.5rem minmax(30rem, 1fr) 20rem;
-		height: max(44rem, calc(100vh - 11.5rem));
-		min-height: 0;
-		border: 1px solid var(--ink);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		overflow: hidden;
-	}
+.editor-shell {
+			display: grid;
+			grid-template-columns: 13.5rem minmax(30rem, 1fr) 20rem;
+			height: max(44rem, calc(100vh - 11.5rem));
+			min-height: 0;
+			border: 1px solid var(--line-strong);
+			border-radius: var(--radius-lg);
+			background: var(--surface);
+			overflow: hidden;
+		}
 
 	.mobile-panel-switch { display: none; }
 
@@ -748,11 +878,11 @@ async function saveDraft() {
 		overflow-y: auto;
 	}
 
-	.node-library > header {
-		min-height: 4rem;
-		padding: 0.7rem var(--space-3);
-		border-bottom: 1px solid var(--ink);
-	}
+.node-library > header {
+			min-height: 4rem;
+			padding: 0.7rem var(--space-3);
+			border-bottom: 1px solid var(--line-strong);
+		}
 
 	.node-library > header span,
 	.node-library > header strong {
@@ -774,12 +904,12 @@ async function saveDraft() {
 		font-size: 0.78rem;
 	}
 
-	.library-section {
-		padding: var(--space-3);
-		border-bottom: 1px solid var(--line);
-	}
+.library-section {
+			padding: var(--space-3);
+			border-bottom: 1px solid var(--line);
+		}
 
-	.library-heading {
+		.library-heading {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -911,9 +1041,9 @@ async function saveDraft() {
 		background: var(--surface);
 	}
 
-	.canvas-toolbar {
-		border-bottom: 1px solid var(--ink);
-	}
+.canvas-toolbar {
+			border-bottom: 1px solid var(--line-strong);
+		}
 
 	.canvas-meta span,
 	.canvas-meta strong {
@@ -989,12 +1119,12 @@ async function saveDraft() {
 			min-height: 42rem;
 		}
 
-		.editor-shell :global(.inspector) {
-			grid-column: 1 / -1;
-			max-height: 34rem;
-			border-top: 1px solid var(--ink);
-			border-left: 0;
-		}
+.editor-shell :global(.inspector) {
+				grid-column: 1 / -1;
+				max-height: 34rem;
+				border-top: 1px solid var(--line-strong);
+				border-left: 0;
+			}
 
 		.canvas-column {
 			height: 42rem;
@@ -1021,10 +1151,10 @@ async function saveDraft() {
 		.editor-shell.show-inspector .canvas-column { display: none; }
 		.editor-shell.show-inspector :global(.inspector) { display: flex; max-height: min(44rem, 72vh); border-top: 0; }
 
-		.node-library {
-			border-right: 0;
-			border-bottom: 1px solid var(--ink);
-		}
+.node-library {
+				border-right: 0;
+				border-bottom: 1px solid var(--line-strong);
+			}
 
 		.node-library > header,
 		.resource-summary,

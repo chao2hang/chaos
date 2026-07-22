@@ -15,8 +15,8 @@
 </div>
 
 <style>
-	.anchor-node { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .55rem; width: 11.5rem; min-height: 4.5rem; padding: .65rem .75rem; border: 1px solid var(--ink); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); }
-	.anchor-node.selected { box-shadow: 0 0 0 3px rgba(17, 17, 17, .18); }
+	.anchor-node { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .55rem; width: 11.5rem; min-height: 4.5rem; padding: .65rem .75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); }
+	.anchor-node.selected { box-shadow: 0 0 0 3px var(--selection-ring); }
 	span, strong, small { display: block; }
 	span, small { font-family: var(--font-mono); font-size: .55rem; }
 	span { font-weight: 700; text-transform: uppercase; }
