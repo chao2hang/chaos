@@ -1,4 +1,7 @@
-export type ToastTone = 'info' | 'success' | 'warning' | 'error';
+import { resolveDuration, type ToastTone } from './toastDuration';
+
+export type { ToastTone };
+export { resolveDuration };
 
 export type ToastOptions = {
 	id?: string;
@@ -15,7 +18,6 @@ export type ToastItem = ToastOptions & {
 	duration: number;
 };
 
-const DEFAULT_DURATION = 5000;
 const MAX_VISIBLE_TOASTS = 4;
 
 let nextId = 0;
@@ -23,11 +25,12 @@ let items = $state<ToastItem[]>([]);
 
 function create(options: ToastOptions): string {
 	const id = options.id ?? `toast-${++nextId}`;
+	const tone = options.tone ?? 'info';
 	const item: ToastItem = {
 		...options,
 		id,
-		tone: options.tone ?? 'info',
-		duration: options.duration ?? DEFAULT_DURATION
+		tone,
+		duration: resolveDuration(tone, options.duration)
 	};
 	const existing = items.findIndex((toast) => toast.id === id);
 	items =
