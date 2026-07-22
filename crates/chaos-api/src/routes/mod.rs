@@ -5,6 +5,7 @@ pub mod config;
 pub mod dns;
 pub mod groups;
 pub mod latency;
+pub mod network;
 pub mod nodes;
 pub mod orchestration;
 pub mod profiles;

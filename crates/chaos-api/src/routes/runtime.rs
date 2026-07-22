@@ -8,8 +8,8 @@ use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chaos_core::config_render::{
-    render_dae_config, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig, GroupForConfig,
-    GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
+    render_dae_config_with_network, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig,
+    GroupForConfig, GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
 };
 use chaos_core::orchestration::{migrate_orchestration_document, OrchestrationDocument};
 use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager, ReloadOutcome};
@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
+use crate::routes::network::load_network_config;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -283,7 +284,8 @@ pub(crate) async fn apply_current_config_locked(
         })
         .collect();
     let plane = load_config_plane(state, locale).await?;
-    let content = render_dae_config(&for_config, &plane);
+    let network = load_network_config(state).await?;
+    let content = render_dae_config_with_network(&for_config, &plane, &network);
     let previous_config = tokio::fs::read_to_string(mgr.config_path()).await.ok();
     let config_path = mgr
         .write_config(&content)

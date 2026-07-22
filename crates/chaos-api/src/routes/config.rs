@@ -8,13 +8,14 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use chaos_core::config_render::{
-    render_dae_config, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig, GroupForConfig,
-    GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
+    render_dae_config_with_network, ConfigPlane, DnsRuleForConfig, DnsUpstreamForConfig,
+    GroupForConfig, GroupMemberForConfig, NodeForConfig, RoutingRuleForConfig,
 };
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
+use crate::routes::network::load_network_config;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -54,7 +55,8 @@ async fn export_config(
 
     // Build a minimal config plane from published orchestration or defaults
     let plane = ConfigPlane::default();
-    let content = render_dae_config(&for_config, &plane);
+    let network = load_network_config(&state).await?;
+    let content = render_dae_config_with_network(&for_config, &plane, &network);
 
     // Return as downloadable file
     let filename = format!(

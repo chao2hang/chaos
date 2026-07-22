@@ -9,8 +9,10 @@ use crate::models::{now_rfc3339, DnsRule, DnsUpstream, Group, GroupMember, Routi
 
 pub const META_ROUTING_FALLBACK: &str = "routing.fallback";
 pub const META_DNS_FALLBACK: &str = "dns.fallback";
-/// Last successfully published V2 graph. Runtime compilation must only read this key.
-pub const META_ORCHESTRATION_FLOW: &str = "orchestration.flow.v2";
+    /// JSON NetworkConfig document (WAN / LAN / kernel params) for dae global {}.
+    pub const META_NETWORK_DOCUMENT: &str = "network.document.v1";
+    /// Last successfully published V2 graph. Runtime compilation must only read this key.
+    pub const META_ORCHESTRATION_FLOW: &str = "orchestration.flow.v2";
 /// Editable V2 graph. Saving a draft must never change the active runtime graph.
 pub const META_ORCHESTRATION_DRAFT: &str = "orchestration.flow.v2.draft";
 /// Expanded, immutable runtime resources produced by the last V2 publication.

@@ -20,6 +20,7 @@ use routes::config::config_router;
 use routes::dns::dns_router;
 use routes::groups::groups_router;
 use routes::latency::latency_router;
+use routes::network::network_router;
 use routes::nodes::nodes_router;
 use routes::orchestration::orchestration_router;
 use routes::profiles::profiles_router;
@@ -63,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
                 .merge(routing_router())
                 .merge(orchestration_router())
                 .merge(dns_router())
+                .merge(network_router())
                 .merge(profiles_router())
                 .merge(backup_router())
                 .merge(update_router())

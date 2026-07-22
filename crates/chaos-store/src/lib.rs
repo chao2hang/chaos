@@ -15,10 +15,10 @@ pub use config_plane::{
     replace_group_members, replace_routing_rules, restore_orchestration_publication,
     set_member_weight, set_meta, snapshot_orchestration_publication, update_group,
     OrchestrationPublicationSnapshot, PublishedGroup, PublishedOrchestration,
-    PublishedOrchestrationPlan, PublishedRoutingRule, META_DNS_FALLBACK, META_ORCHESTRATION_DRAFT,
-    META_ORCHESTRATION_FLOW, META_ORCHESTRATION_FLOW_LEGACY, META_ORCHESTRATION_NEEDS_REPUBLISH,
-    META_ORCHESTRATION_PENDING, META_ORCHESTRATION_PLAN, META_ORCHESTRATION_V2_INITIALIZED,
-    META_ROUTING_FALLBACK,
+    PublishedOrchestrationPlan, PublishedRoutingRule, META_DNS_FALLBACK, META_NETWORK_DOCUMENT,
+    META_ORCHESTRATION_DRAFT, META_ORCHESTRATION_FLOW, META_ORCHESTRATION_FLOW_LEGACY,
+    META_ORCHESTRATION_NEEDS_REPUBLISH, META_ORCHESTRATION_PENDING, META_ORCHESTRATION_PLAN,
+    META_ORCHESTRATION_V2_INITIALIZED, META_ROUTING_FALLBACK,
 };
 pub use config_profiles::{
     activate_profile, create_profile, delete_profile, get_active_profile, get_profile,
