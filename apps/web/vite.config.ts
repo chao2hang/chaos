@@ -7,6 +7,7 @@ import { defineConfig } from 'vite';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const localesDir = path.join(root, 'locales');
 const apiOrigin = process.env.CHAOS_API_ORIGIN ?? 'http://127.0.0.1:2030';
+const webHost = process.env.CHAOS_WEB_HOST ?? '0.0.0.0';
 
 export default defineConfig({
 	plugins: [
@@ -29,6 +30,7 @@ export default defineConfig({
 		}
 	},
 	server: {
+		host: webHost,
 		fs: {
 			allow: [root]
 		},

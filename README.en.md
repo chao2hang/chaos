@@ -23,7 +23,7 @@ One install is enough — no separate daed / dae-wing required for the product p
 | **Backup** | Create / list / download / restore (DB + `config.dae`) |
 | **Packages** | **amd64** and **arm64** `.deb` + FHS `.tar.gz`; tag push builds releases |
 
-Default bind: **`127.0.0.1:2030`**. Can coexist with system daed (often `:2023`).
+The default bind is **`0.0.0.0:2030`** (all IPv4 interfaces), so LAN devices can connect through the host IP. Set `CHAOS_BIND=127.0.0.1:2030` to allow local access only.
 
 ---
 
@@ -58,7 +58,12 @@ sudo systemctl enable --now chaos
 
 ### Open the console
 
-**http://127.0.0.1:2030**
+- Local: **http://127.0.0.1:2030**
+- LAN: **`http://<host-LAN-IP>:2030`**
+
+> `0.0.0.0` exposes the service on every reachable interface. Configure the host firewall, and do not expose the port directly to the public Internet before creating the admin account.
+>
+> Existing installations must change `CHAOS_BIND` in `/etc/chaos/chaos.env` to `0.0.0.0:2030`, then run `sudo systemctl restart chaos`. Upgrades do not overwrite an existing environment file.
 
 1. **First run** → create the admin account (`role = admin`)
 2. Import nodes / subscriptions → latency test
@@ -108,7 +113,7 @@ pnpm install
 # or: pnpm dev
 ```
 
-Open **http://127.0.0.1:5173** (Vite proxies `/api`).
+Open **http://127.0.0.1:5173**, or **`http://<host-LAN-IP>:5173`** from the same LAN (Vite proxies `/api`).
 
 ```bash
 pnpm dev:api    # cargo run -p chaos-api
@@ -119,7 +124,7 @@ pnpm dev:web    # SvelteKit
 
 ```text
 apps/web              SvelteKit console
-crates/chaos-api      REST (default 127.0.0.1:2030)
+crates/chaos-api      REST (default 0.0.0.0:2030)
 crates/chaos-core     domain / latency / config render
 crates/chaos-dae      dae process integration
 crates/chaos-store    SQLite
@@ -132,7 +137,8 @@ locales/              shared en + zh-CN catalogs
 
 | Variable | Dev default | Meaning |
 |----------|-------------|---------|
-| `CHAOS_BIND` | `127.0.0.1:2030` | Listen address |
+| `CHAOS_BIND` | `0.0.0.0:2030` | API listen address; use `127.0.0.1:2030` for local-only access |
+| `CHAOS_WEB_HOST` | `0.0.0.0` | Vite development server listen address |
 | `CHAOS_DATABASE_URL` | `sqlite:./data/chaos.db?mode=rwc` | SQLite |
 | `CHAOS_JWT_SECRET` | auto `./data/jwt.secret` | Secret string **or path** to secret file |
 | `CHAOS_DAE_BIN` | `third_party/dae/current/dae` | dae binary |

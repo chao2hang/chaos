@@ -1,4 +1,4 @@
-//! chaos-api — REST JSON API on 127.0.0.1:2030.
+//! chaos-api — REST JSON API on 0.0.0.0:2030.
 
 mod auth;
 mod error;
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = std::env::var("CHAOS_BIND")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 2030)));
+        .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 2030)));
 
     tracing::info!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;

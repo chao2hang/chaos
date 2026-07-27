@@ -23,7 +23,7 @@
 | **备份** | 创建 / 列表 / 下载 / 恢复（数据库与 `config.dae`） |
 | **安装包** | **amd64** 与 **arm64** 的 `.deb` + FHS `.tar.gz`，tag 推送自动发版 |
 
-默认只监听 **`127.0.0.1:2030`**，与系统 daed（常见 `:2023`）可并存。
+默认监听 **`0.0.0.0:2030`**（所有 IPv4 网卡），局域网设备可通过主机 IP 访问；如只允许本机访问，可将 `CHAOS_BIND` 改为 `127.0.0.1:2030`。
 
 ---
 
@@ -58,7 +58,14 @@ sudo systemctl enable --now chaos
 
 ### 打开控制台
 
-浏览器访问：**http://127.0.0.1:2030**
+浏览器访问：
+
+- 本机：**http://127.0.0.1:2030**
+- 局域网：**`http://<主机局域网 IP>:2030`**
+
+> `0.0.0.0` 会向所有可达网卡开放服务。请配置主机防火墙，不要在完成管理员账号初始化前将端口直接暴露到公网。
+>
+> 已安装旧版本的用户需将 `/etc/chaos/chaos.env` 中的 `CHAOS_BIND` 改为 `0.0.0.0:2030`，然后执行 `sudo systemctl restart chaos`；升级不会自动覆盖已有的环境配置文件。
 
 1. **首次运行** → 创建管理员账号（永久为 `admin`）
 2. 导入节点 / 订阅 → 测延迟
@@ -108,7 +115,7 @@ pnpm install
 # 或: pnpm dev
 ```
 
-打开 **http://127.0.0.1:5173**（开发态由 Vite 代理 `/api`）。
+打开 **http://127.0.0.1:5173**；同一局域网内也可使用 **`http://<主机局域网 IP>:5173`**（开发态由 Vite 代理 `/api`）。
 
 ```bash
 pnpm dev:api    # cargo run -p chaos-api
@@ -119,7 +126,7 @@ pnpm dev:web    # SvelteKit
 
 ```text
 apps/web              SvelteKit 控制台
-crates/chaos-api      REST（默认 127.0.0.1:2030）
+crates/chaos-api      REST（默认 0.0.0.0:2030）
 crates/chaos-core     领域逻辑 / 延迟 / 配置渲染
 crates/chaos-dae      dae 进程与配置
 crates/chaos-store    SQLite
@@ -132,7 +139,8 @@ locales/              en + zh-CN 共用文案
 
 | 变量 | 默认（开发） | 含义 |
 |------|----------------|------|
-| `CHAOS_BIND` | `127.0.0.1:2030` | 监听地址 |
+| `CHAOS_BIND` | `0.0.0.0:2030` | API 监听地址；设为 `127.0.0.1:2030` 可限制为仅本机访问 |
+| `CHAOS_WEB_HOST` | `0.0.0.0` | Vite 开发服务器监听地址 |
 | `CHAOS_DATABASE_URL` | `sqlite:./data/chaos.db?mode=rwc` | SQLite |
 | `CHAOS_JWT_SECRET` | 自动生成 `./data/jwt.secret` | 密钥字符串，或**密钥文件路径** |
 | `CHAOS_DAE_BIN` | `third_party/dae/current/dae` | dae 可执行文件 |

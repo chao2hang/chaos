@@ -15,4 +15,4 @@ cargo run -p chaos-api &
 API_PID=$!
 trap 'kill $API_PID 2>/dev/null || true' EXIT
 
-pnpm --dir apps/web dev --host 127.0.0.1 --port 5173
+pnpm --dir apps/web dev --port 5173
