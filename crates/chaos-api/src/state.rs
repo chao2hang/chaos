@@ -1,7 +1,7 @@
 //! Shared application state.
 
 use sqlx::SqlitePool;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,7 +23,7 @@ impl AppState {
         Self {
             pool,
             jwt_secret: Arc::new(jwt_secret),
-            prober_bin: resolve_prober_bin(),
+            prober_bin: resolve_prober_bin(std::env::current_exe().ok()),
             runtime_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -33,10 +33,12 @@ impl AppState {
 ///
 /// Order:
 /// 1. `CHAOS_PROBER_BIN` environment variable
-/// 2. `third_party/chaos-prober` relative to cwd
-/// 3. `None` (fall back to TCP probes)
-fn resolve_prober_bin() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("CHAOS_PROBER_BIN") {
+/// 2. `chaos-prober` next to the running `chaos-api` executable (installed package layout)
+/// 3. `/usr/lib/chaos/bin/chaos-prober`
+/// 4. `third_party/chaos-prober` relative to cwd (development layout)
+fn resolve_prober_bin(current_exe: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CHAOS_PROBER_BIN") {
+        let path = path.to_string_lossy();
         let path = path.trim();
         if !path.is_empty() {
             let p = PathBuf::from(path);
@@ -45,9 +47,56 @@ fn resolve_prober_bin() -> Option<PathBuf> {
             }
         }
     }
-    let candidate = PathBuf::from("third_party/chaos-prober");
-    if candidate.is_file() {
-        return Some(candidate);
+
+    let candidates = [
+        current_exe
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .map(|dir| dir.join("chaos-prober")),
+        Some(PathBuf::from("/usr/lib/chaos/bin/chaos-prober")),
+        Some(PathBuf::from("third_party/chaos-prober")),
+    ];
+
+    candidates.into_iter().flatten().find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex as StdMutex;
+
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    #[test]
+    fn resolves_prober_next_to_api_binary() {
+        let dir = std::env::temp_dir().join(format!("chaos-prober-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let prober = dir.join("chaos-prober");
+        fs::write(&prober, b"").unwrap();
+
+        let resolved = resolve_prober_bin(Some(dir.join("chaos-api")));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(resolved.as_deref(), Some(prober.as_path()));
     }
-    None
+
+    #[test]
+    fn env_override_takes_precedence() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("chaos-prober-env-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sibling = dir.join("chaos-prober");
+        let override_path = dir.join("custom-prober");
+        fs::write(&sibling, b"sibling").unwrap();
+        fs::write(&override_path, b"override").unwrap();
+
+        // SAFETY: tests are serialized by ENV_LOCK while mutating process-global env.
+        unsafe { std::env::set_var("CHAOS_PROBER_BIN", &override_path) };
+        let resolved = resolve_prober_bin(Some(dir.join("chaos-api")));
+        unsafe { std::env::remove_var("CHAOS_PROBER_BIN") };
+
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(resolved.as_deref(), Some(override_path.as_path()));
+    }
 }

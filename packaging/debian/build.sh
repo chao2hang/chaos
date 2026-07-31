@@ -3,6 +3,7 @@
 #
 # Prerequisites:
 #   - Rust toolchain (cargo)
+#   - Go toolchain (for the bundled chaos-prober latency tester)
 #   - Node.js 20+ with pnpm
 #   - dae binary: CHAOS_DAE_ARCH=... ./scripts/fetch-dae.sh
 #
@@ -21,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${CHAOS_VERSION:-0.1.3}"
+VERSION="${CHAOS_VERSION:-0.1.4}"
 
 # Normalize architecture: debian name (amd64|arm64)
 HOST_DEB="$(dpkg --print-architecture 2>/dev/null || true)"
@@ -81,7 +82,20 @@ cd "$ROOT_DIR/apps/web"
 pnpm install --frozen-lockfile
 pnpm build
 
-# --- Step 3: Resolve dae binary ---
+# --- Step 3: Build chaos-prober (real proxy latency tester) ---
+echo "==> Building chaos-prober ($ARCH)..."
+if ! command -v go >/dev/null 2>&1; then
+  echo "error: Go toolchain is required to build chaos-prober" >&2
+  exit 1
+fi
+case "$ARCH" in
+  amd64) PROBER_GOARCH=amd64 ;;
+  arm64) PROBER_GOARCH=arm64 ;;
+esac
+CHAOS_PROBER_OUT="$ROOT_DIR/third_party/chaos-prober" CHAOS_PROBER_GOARCH="$PROBER_GOARCH" \
+  "$ROOT_DIR/scripts/build-prober.sh"
+
+# --- Step 4: Resolve dae binary ---
 DAE_CANDIDATES=(
   "$ROOT_DIR/third_party/dae/current/${DAE_ARCH}/dae"
   "$ROOT_DIR/third_party/dae/current/dae"
@@ -104,7 +118,7 @@ if [[ -z "$DAE_BIN" ]]; then
   done
 fi
 
-# --- Step 4: Assemble package tree ---
+# --- Step 5: Assemble package tree ---
 echo "==> Assembling package..."
 
 install -Dm755 "$API_BIN" "$PKG_DIR/usr/lib/chaos/bin/chaos-api"
@@ -114,6 +128,8 @@ if [[ -n "$DAE_BIN" ]]; then
 else
   echo "WARNING: dae binary not found. Package will report dae_binary_missing at runtime."
 fi
+
+install -Dm755 "$ROOT_DIR/third_party/chaos-prober" "$PKG_DIR/usr/lib/chaos/bin/chaos-prober"
 
 mkdir -p "$PKG_DIR/usr/share/chaos/web"
 cp -r "$ROOT_DIR/apps/web/build/." "$PKG_DIR/usr/share/chaos/web/"
@@ -193,7 +209,7 @@ fi
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/postrm"
 
-# --- Step 5: Build .deb and FHS tar.gz ---
+# --- Step 6: Build .deb and FHS tar.gz ---
 DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
 TAR_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_linux_${ARCH}.tar.gz"
 

@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARCH="${1:-arm64}"
-VERSION="${CHAOS_VERSION:-0.1.3}"
+VERSION="${CHAOS_VERSION:-0.1.4}"
 
 case "$ARCH" in
   amd64|x86_64) ARCH=amd64; PLATFORM=linux/amd64; DAE_ARCH=x86_64 ;;
@@ -35,6 +35,11 @@ if [[ -x "$ROOT_DIR/scripts/fetch-dae.sh" ]]; then
 fi
 
 IMAGE="rust:1.83-slim"
+GO_VERSION="1.26.5"
+case "$ARCH" in
+  amd64) GO_ARCH=amd64 ;;
+  arm64) GO_ARCH=arm64 ;;
+esac
 echo "==> Building package in $IMAGE ($PLATFORM) as chaos $VERSION ($ARCH)"
 
 docker run --rm --platform "$PLATFORM" \
@@ -42,6 +47,8 @@ docker run --rm --platform "$PLATFORM" \
   -w /src \
   -e CHAOS_VERSION="$VERSION" \
   -e CHAOS_ARCH="$ARCH" \
+  -e CHAOS_GO_ARCH="$GO_ARCH" \
+  -e CHAOS_GO_VERSION="$GO_VERSION" \
   -e CARGO_HOME=/src/.cargo-target/docker-cargo-home \
   -e CARGO_TARGET_DIR=/src/.cargo-target/docker-"$ARCH" \
   "$IMAGE" \
@@ -51,6 +58,10 @@ docker run --rm --platform "$PLATFORM" \
     apt-get install -y --no-install-recommends \
       pkg-config libssl-dev ca-certificates curl unzip dpkg-dev build-essential \
       nodejs npm
+    curl -fsSL "https://go.dev/dl/go${CHAOS_GO_VERSION}.linux-${CHAOS_GO_ARCH}.tar.gz" -o /tmp/go.tgz
+    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+    export PATH=/usr/local/go/bin:$PATH
+    go version
     # Node 20+ preferred; if distro node is old, use corepack/npx pnpm via npm
     npm install -g pnpm@10
     # Ensure workspace deps

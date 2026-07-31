@@ -26,7 +26,19 @@ COPY locales/ locales/
 RUN pnpm --dir apps/web build
 
 # ---------------------------------------------------------------------------
-# Stage 2: Build Rust API
+# Stage 2: Build chaos-prober (real proxy latency tester)
+# ---------------------------------------------------------------------------
+FROM golang:1.26-slim AS prober
+
+WORKDIR /src/tools/chaos-prober
+COPY tools/chaos-prober/go.mod tools/chaos-prober/go.sum ./
+RUN go mod download
+
+COPY tools/chaos-prober/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/chaos-prober .
+
+# ---------------------------------------------------------------------------
+# Stage 3: Build Rust API
 # ---------------------------------------------------------------------------
 FROM rust:1.83-slim AS api
 
@@ -44,7 +56,7 @@ RUN cargo build --release -p chaos-api && \
     cp target/release/chaos-api /usr/local/bin/chaos-api
 
 # ---------------------------------------------------------------------------
-# Stage 3: Runtime image
+# Stage 4: Runtime image
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim
 
@@ -59,6 +71,9 @@ RUN useradd -r -s /bin/false chaos && \
 
 # Copy API binary
 COPY --from=api /usr/local/bin/chaos-api /usr/lib/chaos/bin/chaos-api
+
+# Copy real proxy latency tester
+COPY --from=prober /out/chaos-prober /usr/lib/chaos/bin/chaos-prober
 
 # Copy web assets
 COPY --from=web /app/apps/web/build /usr/share/chaos/web
@@ -75,6 +90,7 @@ ENV CHAOS_BIND=0.0.0.0:2030 \
     CHAOS_DATABASE_URL=sqlite:/var/lib/chaos/chaos.db?mode=rwc \
     CHAOS_JWT_SECRET=/var/lib/chaos/jwt.secret \
     CHAOS_DAE_BIN=/usr/lib/chaos/bin/dae \
+    CHAOS_PROBER_BIN=/usr/lib/chaos/bin/chaos-prober \
     CHAOS_DAE_WORK_DIR=/var/lib/chaos/dae \
     CHAOS_WEB_DIR=/usr/share/chaos/web
 
