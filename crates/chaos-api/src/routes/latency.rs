@@ -139,6 +139,23 @@ async fn test_latency(
     let mut skipped = Vec::new();
 
     for node in nodes {
+        let detected_protocol = chaos_core::link::detect_protocol(&node.link);
+        let protocol = node
+            .protocol
+            .as_deref()
+            .or(detected_protocol.as_deref())
+            .unwrap_or("");
+
+        if chaos_core::link::is_udp_only_protocol(protocol) {
+            skipped.push((
+                node.id,
+                format!(
+                    "{protocol} is UDP-only; TCP probe skipped. Start the runtime or install chaos-prober for a real proxy test."
+                ),
+            ));
+            continue;
+        }
+
         match resolve_probe_target(node.address.as_deref(), &node.link) {
             Some(addr) => targets.push((node.id, addr)),
             None => {
@@ -343,5 +360,48 @@ mod tests {
         let listed = json_body(list).await;
         assert_eq!(listed["results"][0]["id"], node.id);
         assert_eq!(listed["results"][0]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn tcp_fallback_skips_udp_only_nodes() {
+        let (app, state) = test_app().await;
+        let token = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+
+        insert_node(
+            &state.pool,
+            "hy2",
+            None,
+            "hysteria2://user@127.0.0.1:8443/?sni=server#Node",
+            Some("hysteria2"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let test = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/latency/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ids":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(test.status(), StatusCode::OK);
+        let body = json_body(test).await;
+        assert_eq!(body["method"], "tcp");
+        let result = &body["results"][0];
+        assert_eq!(result["alive"], false);
+        assert!(result["latency_ms"].is_null());
+        let message = result["message"].as_str().unwrap();
+        assert!(
+            message.contains("UDP-only"),
+            "unexpected message: {message}"
+        );
     }
 }

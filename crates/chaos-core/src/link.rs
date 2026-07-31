@@ -19,6 +19,19 @@ pub fn detect_protocol(link: &str) -> Option<String> {
     })
 }
 
+/// Whether the protocol only uses UDP as its transport.
+///
+/// Nodes for these protocols cannot be health-checked with a plain TCP
+/// `connect()`: their server may not listen on the corresponding TCP port at
+/// all (for example, hysteria2/QUIC is UDP-only). The latency prober uses this
+/// to skip a TCP fallback that would otherwise report a healthy node as dead.
+pub fn is_udp_only_protocol(protocol: &str) -> bool {
+    matches!(
+        protocol.to_ascii_lowercase().as_str(),
+        "hysteria2" | "hysteria" | "tuic"
+    )
+}
+
 /// Best-effort host:port (or host) extraction from a URL-ish share link.
 pub fn detect_address(link: &str) -> Option<String> {
     let link = link.trim();
@@ -123,6 +136,15 @@ mod tests {
         assert_eq!(detect_protocol("not-a-link"), None);
         assert_eq!(detect_protocol(""), None);
         assert_eq!(detect_protocol("://missing"), None);
+    }
+
+    #[test]
+    fn detects_udp_only_protocols() {
+        assert!(is_udp_only_protocol("hysteria2"));
+        assert!(is_udp_only_protocol("HYSTERIA"));
+        assert!(is_udp_only_protocol("tuic"));
+        assert!(!is_udp_only_protocol("trojan"));
+        assert!(!is_udp_only_protocol("shadowsocks"));
     }
 
     #[test]
