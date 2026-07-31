@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::state::AppState;
 
-const API_VERSION: &str = "0.1.0";
+const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -80,7 +80,7 @@ mod tests {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["ok"], true);
-        assert_eq!(body["api_version"], "0.1.0");
+        assert_eq!(body["api_version"], env!("CARGO_PKG_VERSION"));
         assert!(body.get("dae_binary").is_some());
         assert!(body
             .get("dae_binary_ok")

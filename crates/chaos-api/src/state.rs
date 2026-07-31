@@ -16,6 +16,8 @@ pub struct AppState {
     /// single process with one config and pid file, so concurrent requests are
     /// not independent operations.
     pub runtime_lock: Arc<Mutex<()>>,
+    /// Serialize self-update operations.
+    pub update_lock: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -25,6 +27,7 @@ impl AppState {
             jwt_secret: Arc::new(jwt_secret),
             prober_bin: resolve_prober_bin(std::env::current_exe().ok()),
             runtime_lock: Arc::new(Mutex::new(())),
+            update_lock: Arc::new(Mutex::new(())),
         }
     }
 }

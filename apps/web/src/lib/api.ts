@@ -174,6 +174,51 @@ export function health() {
 	return api<HealthResponse>('/api/v1/health');
 }
 
+export type VersionInfo = {
+	current: string;
+	latest: string | null;
+	update_available: boolean;
+	release_url: string | null;
+	download_url: string | null;
+	asset_name: string | null;
+	dae_version: string | null;
+};
+
+export type UpdateStatus = {
+	phase:
+		| 'idle'
+		| 'downloading'
+		| 'installing'
+		| 'restarting'
+		| 'verifying'
+		| 'completed'
+		| 'rolled_back'
+		| 'failed'
+		| string;
+	target_version: string | null;
+	message: string | null;
+	started_at: string | null;
+	finished_at: string | null;
+};
+
+export function checkUpdate() {
+	return api<{ version: VersionInfo; status: UpdateStatus }>('/api/v1/update/check');
+}
+
+export function getUpdateStatus() {
+	return api<UpdateStatus>('/api/v1/update/status');
+}
+
+export function applyUpdate(version?: string) {
+	return api<{ ok: boolean; message: string; restart_required: boolean; status: UpdateStatus }>(
+		'/api/v1/update/apply',
+		{
+			method: 'POST',
+			body: JSON.stringify({ component: 'chaos', version })
+		}
+	);
+}
+
 export type NodeDto = {
 	id: string;
 	name: string;

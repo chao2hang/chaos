@@ -33,6 +33,7 @@ use routes::profiles::profiles_router;
 use routes::routing::routing_router;
 use routes::runtime::runtime_router;
 use routes::subscriptions::subscriptions_router;
+use routes::update::update_router;
 use routes::users::users_router;
 use state::AppState;
 
@@ -73,7 +74,8 @@ async fn main() -> anyhow::Result<()> {
                 .merge(profiles_router())
                 .merge(backup_router())
                 .merge(config_router())
-                .merge(users_router()),
+                .merge(users_router())
+                .merge(update_router()),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

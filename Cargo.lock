@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "argon2",
@@ -251,6 +251,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tower",
@@ -262,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "futures",
@@ -276,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-dae"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "tokio",
@@ -285,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-engine"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -296,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-i18n"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "once_cell",
  "serde_json",
@@ -304,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-store"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",

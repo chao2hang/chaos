@@ -5,8 +5,13 @@
 		listUsers,
 		createUser,
 		deleteUser,
+		checkUpdate,
+		getUpdateStatus,
+		applyUpdate,
 		ApiClientError,
-		type UserDto
+		type UserDto,
+		type VersionInfo,
+		type UpdateStatus
 	} from '$lib/api';
 	import { apiErrorText, t } from '$lib/i18n.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
@@ -28,6 +33,18 @@
 	let newRole = $state('user');
 	let deleteTarget = $state<UserDto | null>(null);
 	let deleting = $state(false);
+	let versionInfo = $state<VersionInfo | null>(null);
+	let updateStatus = $state<UpdateStatus>({
+		phase: 'idle',
+		target_version: null,
+		message: null,
+		started_at: null,
+		finished_at: null
+	});
+	let checking = $state(false);
+	let updating = $state(false);
+	let confirmUpdate = $state(false);
+	let statusTimer: ReturnType<typeof setInterval> | null = null;
 
 	async function load() {
 		try {
@@ -86,6 +103,71 @@
 		}
 	}
 
+	async function checkForUpdates() {
+		checking = true;
+		try {
+			const res = await checkUpdate();
+			versionInfo = res.version;
+			updateStatus = res.status;
+			if (res.version.update_available) {
+				toast.success({ title: t('settings.updateAvailable', { version: res.version.latest ?? '' }) });
+			} else {
+				toast.success({ title: t('settings.noUpdate') });
+			}
+		} catch (cause) {
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.updateCheckFailed')
+			});
+		} finally {
+			checking = false;
+		}
+	}
+
+	function stopStatusPolling() {
+		if (statusTimer) {
+			clearInterval(statusTimer);
+			statusTimer = null;
+		}
+	}
+
+	async function refreshUpdateStatus() {
+		try {
+			updateStatus = await getUpdateStatus();
+			if (['completed', 'rolled_back', 'failed'].includes(updateStatus.phase)) {
+				stopStatusPolling();
+				updating = false;
+				if (updateStatus.phase === 'completed') {
+					toast.success({ title: t('settings.updateCompleted') });
+					setTimeout(() => window.location.assign('/dashboard'), 2500);
+				} else if (updateStatus.phase === 'rolled_back') {
+					toast.error({ title: t('settings.updateRolledBack') });
+				} else {
+					toast.error({ title: t('settings.updateFailed') });
+				}
+			}
+		} catch {
+			// The API restarts during update; transient failures are expected.
+		}
+	}
+
+	async function confirmApplyUpdate() {
+		if (!versionInfo?.update_available) return;
+		confirmUpdate = false;
+		updating = true;
+		try {
+			const res = await applyUpdate(versionInfo.latest ?? undefined);
+			updateStatus = res.status;
+			toast.success({ title: t('settings.updating') });
+			stopStatusPolling();
+			statusTimer = setInterval(() => void refreshUpdateStatus(), 2500);
+		} catch (cause) {
+			updating = false;
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.updateFailed')
+			});
+		}
+	}
+
 	function formatDate(iso: string): string {
 		try {
 			return new Date(iso).toLocaleDateString();
@@ -94,7 +176,11 @@
 		}
 	}
 
-	onMount(() => { void load(); });
+	onMount(() => {
+		void load();
+		void checkForUpdates();
+		return stopStatusPolling;
+	});
 </script>
 
 <AppPage>
@@ -106,7 +192,49 @@
 		{/snippet}
 </PageHeader>
 
-		{#if createOpen}
+		<Section
+		title={t('settings.systemUpdate')}
+		description={t('settings.systemUpdateDescription')}
+	>
+		<div class="update-panel">
+			<div class="update-metrics">
+				<div>
+					<span class="label">{t('settings.currentVersion')}</span>
+					<strong>{versionInfo?.current ?? '—'}</strong>
+				</div>
+				<div>
+					<span class="label">{t('settings.latestVersion')}</span>
+					<strong>{versionInfo?.latest ?? '—'}</strong>
+				</div>
+				<div>
+					<span class="label">{t('settings.daeVersion')}</span>
+					<strong>{versionInfo?.dae_version ?? '—'}</strong>
+				</div>
+				<div>
+					<span class="label">{t('settings.updateStatus')}</span>
+					<strong>{t(`settings.updatePhase.${updateStatus.phase}`, updateStatus.target_version ? { version: updateStatus.target_version } : undefined)}</strong>
+				</div>
+			</div>
+			{#if updateStatus.message}
+				<p class="update-message">{updateStatus.message}</p>
+			{/if}
+			<div class="update-actions">
+				<Button variant="secondary" loading={checking} onclick={() => void checkForUpdates()}>
+					{t('settings.checkUpdates')}
+				</Button>
+				<Button
+					variant="primary"
+					loading={updating}
+					disabled={!versionInfo?.update_available || updating}
+					onclick={() => (confirmUpdate = true)}
+				>
+					{t('settings.updateNow')}
+				</Button>
+			</div>
+		</div>
+	</Section>
+
+	{#if createOpen}
 		<Section title={t('settings.createUserTitle')}>
 			<form class="form-stack" onsubmit={(e) => { e.preventDefault(); void onCreate(); }}>
 				<div class="form-grid">
@@ -177,6 +305,17 @@
 </AppPage>
 
 <ConfirmDialog
+	open={confirmUpdate}
+	title={t('settings.updateConfirmTitle')}
+	description={t('settings.updateRestartWarning', { version: versionInfo?.latest ?? '' })}
+	confirmLabel={t('settings.updateNow')}
+	cancelLabel={t('common.cancel')}
+	busy={updating}
+	onconfirm={confirmApplyUpdate}
+	oncancel={() => (confirmUpdate = false)}
+/>
+
+<ConfirmDialog
 	open={!!deleteTarget}
 	title={t('settings.deleteUserTitle')}
 	description={t('settings.deleteUserDescription', { name: deleteTarget?.username ?? '' })}
@@ -189,6 +328,38 @@
 />
 
 <style>
+	.update-panel {
+		display: grid;
+		gap: var(--space-4);
+	}
+
+	.update-metrics {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: var(--space-3);
+	}
+
+	.update-metrics > div {
+		display: grid;
+		gap: 0.2rem;
+		padding: var(--space-3);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		background: var(--surface-subtle);
+	}
+
+	.label,
+	.update-message {
+		color: var(--ink-muted);
+		font-size: 0.74rem;
+	}
+
+	.update-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--space-2);
+	}
+
 	.form-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr auto;
@@ -218,7 +389,8 @@
 	}
 
 	@media (max-width: 720px) {
-		.form-grid {
+		.form-grid,
+		.update-metrics {
 			grid-template-columns: 1fr;
 		}
 	}
