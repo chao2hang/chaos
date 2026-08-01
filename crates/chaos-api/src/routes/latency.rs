@@ -16,7 +16,10 @@ use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::state::AppState;
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-node probe timeout. QUIC/UDP handshakes (hysteria2/tuic) over
+/// cross-border links can take several seconds on a cold path, so 10s
+/// avoids false negatives while still failing fast for dead nodes.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Serialize)]
 pub struct LatencyDto {
