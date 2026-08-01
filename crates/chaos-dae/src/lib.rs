@@ -384,9 +384,9 @@ impl DaeManager {
         );
 
         // Fallback: kill + restart.
-        self.reload().await.with_context(|| {
-            format!("cold restart after hot reload failure: {detail}")
-        })?;
+        self.reload()
+            .await
+            .with_context(|| format!("cold restart after hot reload failure: {detail}"))?;
         Ok(ReloadOutcome::ColdFallback)
     }
 
@@ -464,6 +464,15 @@ impl DaeManager {
         if !allow_sudo {
             cmd.arg("--disable-sudo");
         }
+
+        // Compatibility defaults for virtualized / vNIC environments (KVM/virtio):
+        // dae's userspace TCP relay combined with NIC checksum/segmentation
+        // offloads can corrupt forwarded payloads (TLS "bad record mac",
+        // resets, empty bodies). Disabling the eBPF TCP-relay offload and
+        // quic-go GSO avoids those paths. Operators can opt out by setting the
+        // vars explicitly (e.g. CHAOS_DAE_DISABLE_TCP_RELAY_OFFLOAD=0).
+        apply_compat_env(&mut cmd, "DAE_DISABLE_TCP_RELAY_OFFLOAD");
+        apply_compat_env(&mut cmd, "QUIC_GO_DISABLE_GSO");
         let mut child = cmd
             .current_dir(&work_dir)
             .stdin(Stdio::null())
@@ -571,6 +580,33 @@ fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<
     args.contains(&b"run".as_slice())
         && args.contains(&b"-c".as_slice())
         && args.contains(&config.as_os_str().as_bytes())
+}
+
+/// Set a dae compatibility env var to `"1"` on `cmd` unless the operator has
+/// already provided an explicit value.
+///
+/// The presence of `CHAOS_<NAME>` in the control-plane environment also counts
+/// as an explicit override, so deployments can e.g. set
+/// `CHAOS_DAE_DISABLE_TCP_RELAY_OFFLOAD=0` to force the feature back on.
+/// Decide the value to set for a dae compatibility env var.
+///
+/// Returns `None` when the var is already present in the environment and should
+/// be inherited untouched. Otherwise returns `Some(value)`: `"1"` by default,
+/// or the value of `CHAOS_<NAME>` if the operator set an explicit override.
+fn compat_env_value(name: &str) -> Option<String> {
+    if std::env::var_os(name).is_some() {
+        return None;
+    }
+    match std::env::var(format!("CHAOS_{name}")) {
+        Ok(value) => Some(value),
+        Err(_) => Some("1".to_string()),
+    }
+}
+
+fn apply_compat_env(cmd: &mut Command, name: &str) {
+    if let Some(value) = compat_env_value(name) {
+        cmd.env(name, value);
+    }
 }
 
 fn absolute_path(path: &Path) -> PathBuf {
@@ -689,6 +725,38 @@ mod tests {
     #[test]
     fn dae_bin_ok_false_for_missing() {
         assert!(!dae_bin_ok(Path::new("/no/such/dae-binary-xyz")));
+    }
+
+    #[test]
+    fn compat_env_defaults_to_enabled_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DAE_DISABLE_TCP_RELAY_OFFLOAD");
+        std::env::remove_var("CHAOS_DAE_DISABLE_TCP_RELAY_OFFLOAD");
+        assert_eq!(
+            compat_env_value("DAE_DISABLE_TCP_RELAY_OFFLOAD"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn compat_env_is_inherited_when_already_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DAE_DISABLE_TCP_RELAY_OFFLOAD", "0");
+        std::env::remove_var("CHAOS_DAE_DISABLE_TCP_RELAY_OFFLOAD");
+        assert_eq!(compat_env_value("DAE_DISABLE_TCP_RELAY_OFFLOAD"), None);
+        std::env::remove_var("DAE_DISABLE_TCP_RELAY_OFFLOAD");
+    }
+
+    #[test]
+    fn compat_env_honors_chaos_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("QUIC_GO_DISABLE_GSO");
+        std::env::set_var("CHAOS_QUIC_GO_DISABLE_GSO", "0");
+        assert_eq!(
+            compat_env_value("QUIC_GO_DISABLE_GSO"),
+            Some("0".to_string())
+        );
+        std::env::remove_var("CHAOS_QUIC_GO_DISABLE_GSO");
     }
 
     #[test]

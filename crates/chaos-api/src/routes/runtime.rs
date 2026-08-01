@@ -1111,6 +1111,28 @@ pub struct DiagnosticsResponse {
     pub interfaces: Vec<String>,
     pub dae_binary_version: Option<String>,
     pub permissions: DiagnosticsPermissions,
+    pub virtualization: Option<String>,
+    pub compat: DiagnosticsCompat,
+    /// Read-only NIC offload state for non-loopback interfaces. Used to surface
+    /// the KVM/virtio + checksum/GSO corruption hazard without auto-changing it.
+    pub offloads: Vec<InterfaceOffload>,
+    /// True when a virtualized NIC still has risky offloads enabled.
+    pub offload_warning: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiagnosticsCompat {
+    pub tcp_relay_offload_disabled: bool,
+    pub quic_go_gso_disabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterfaceOffload {
+    pub name: String,
+    pub tx_checksum_ip_generic: Option<bool>,
+    pub tso: Option<bool>,
+    pub gso: Option<bool>,
+    pub gro: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1131,6 +1153,16 @@ async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
     let interfaces = list_interfaces();
     let dae_binary_version = read_dae_version();
     let permissions = check_permissions();
+    let virtualization = detect_virtualization();
+    let compat = read_compat_flags();
+    let offloads = read_interface_offloads(&interfaces);
+    let offload_warning = virtualization.is_some()
+        && offloads.iter().any(|o| {
+            o.tx_checksum_ip_generic.unwrap_or(false)
+                || o.tso.unwrap_or(false)
+                || o.gso.unwrap_or(false)
+                || o.gro.unwrap_or(false)
+        });
 
     Json(DiagnosticsResponse {
         kernel_version,
@@ -1142,7 +1174,105 @@ async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
         interfaces,
         dae_binary_version,
         permissions,
+        virtualization,
+        compat,
+        offloads,
+        offload_warning,
     })
+}
+
+/// Best-effort virtualization detection ("kvm", "vmware", etc.) or `None` on
+/// bare metal / when it cannot be determined.
+fn detect_virtualization() -> Option<String> {
+    if let Ok(value) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor") {
+        let value = value.trim().to_ascii_lowercase();
+        if value.contains("qemu") || value.contains("bochs") {
+            return Some("kvm".to_string());
+        }
+        if value.contains("vmware") {
+            return Some("vmware".to_string());
+        }
+        if value.contains("microsoft") {
+            return Some("hyper-v".to_string());
+        }
+        if value.contains("innotek") || value.contains("virtualbox") {
+            return Some("virtualbox".to_string());
+        }
+        if value.contains("amazon") || value.contains("google") || value.contains("digitalocean") {
+            return Some("cloud-virt".to_string());
+        }
+    }
+    if std::path::Path::new("/sys/devices/virtual/dmi/id/product_name").exists() {
+        if let Ok(value) = std::fs::read_to_string("/sys/devices/virtual/dmi/id/product_name") {
+            let value = value.trim().to_ascii_lowercase();
+            if value.contains("kvm") || value.contains("qemu") || value.contains("virtual") {
+                return Some("kvm".to_string());
+            }
+        }
+    }
+    // Virtio net devices strongly imply a KVM guest.
+    if std::path::Path::new("/sys/bus/virtio").exists() {
+        return Some("kvm".to_string());
+    }
+    None
+}
+
+fn read_compat_flags() -> DiagnosticsCompat {
+    let disabled = |key: &str| match std::env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        ),
+        Err(_) => {
+            // Fall back to the CHAOS_ override namespace used by the manager.
+            match std::env::var(format!("CHAOS_{key}")) {
+                Ok(value) => {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes"
+                    )
+                }
+                Err(_) => false,
+            }
+        }
+    };
+    DiagnosticsCompat {
+        tcp_relay_offload_disabled: disabled("DAE_DISABLE_TCP_RELAY_OFFLOAD"),
+        quic_go_gso_disabled: disabled("QUIC_GO_DISABLE_GSO"),
+    }
+}
+
+fn read_interface_offloads(interfaces: &[String]) -> Vec<InterfaceOffload> {
+    let mut out = Vec::new();
+    for name in interfaces {
+        let output = match std::process::Command::new("ethtool")
+            .args(["-k", name])
+            .output()
+        {
+            Ok(output) if output.status.success() => output,
+            _ => continue,
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let get = |key: &str| -> Option<bool> {
+            let needle = format!("{key}:");
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix(&needle) {
+                    let rest = rest.trim();
+                    return Some(rest.starts_with("on"));
+                }
+            }
+            None
+        };
+        out.push(InterfaceOffload {
+            name: name.clone(),
+            tx_checksum_ip_generic: get("tx-checksum-ip-generic"),
+            tso: get("tcp-segmentation-offload"),
+            gso: get("generic-segmentation-offload"),
+            gro: get("generic-receive-offload"),
+        });
+    }
+    out
 }
 
 fn read_kernel_version() -> String {
