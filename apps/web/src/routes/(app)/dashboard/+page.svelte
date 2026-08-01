@@ -14,7 +14,8 @@ import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } 
 			ApiClientError,
 			type HealthResponse,
 			type RuntimeStatus,
-			type LatencyDto
+			type LatencyDto,
+			type HealthCheckReport
 		} from '$lib/api';
 		import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
 		import { sortByLatency } from '$lib/latencySessionCore';
@@ -105,19 +106,34 @@ import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } 
 				: response.reload_method === 'cold_start'
 					? t('dashboard.reloadColdStart')
 					: t('dashboard.reloadCold');
-			toast.success({
-				title: t('dashboard.appliedWithMethod', {
-					nodes: response.nodes,
-					path: response.config_path,
-					running: String(response.running),
-					method: methodLabel
-				})
-			});
+			const hc = response.health_check;
+			if (hc && !hc.ok) {
+				toast.warning({
+					title: t('dashboard.appliedButUnhealthy'),
+					description: healthSummary(hc),
+					duration: 8000
+				});
+			} else {
+				toast.success({
+					title: t('dashboard.appliedWithMethod', {
+						nodes: response.nodes,
+						path: response.config_path,
+						running: String(response.running),
+						method: methodLabel
+					}),
+					description: hc ? healthSummary(hc) : undefined
+				});
+			}
 			runtime = await getRuntime();
 			syncNeedsRepublishToast(runtime.needs_republish === true);
 		} catch (cause) {
 			toast.error({
-				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.applyFailed')
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.applyFailed'),
+				description:
+					cause instanceof ApiClientError && cause.code === 'dataplane_verify_failed'
+						? t('dashboard.verifyFailedRolledBack')
+						: undefined,
+				duration: 8000
 			});
 		} finally {
 			busy = '';
@@ -134,14 +150,29 @@ async function onReload() {
 						: response.reload_method === 'cold_start'
 							? t('dashboard.reloadColdStart')
 							: t('dashboard.reloadCold');
-				toast.success({
-					title: t('dashboard.reloadedWithMethod', { method: methodLabel })
-				});
+				const hc = response.health_check;
+				if (hc && !hc.ok) {
+					toast.warning({
+						title: t('dashboard.reloadUnhealthy'),
+						description: healthSummary(hc),
+						duration: 8000
+					});
+				} else {
+					toast.success({
+						title: t('dashboard.reloadedWithMethod', { method: methodLabel }),
+						description: hc ? healthSummary(hc) : undefined
+					});
+				}
 				runtime = await getRuntime();
 				syncNeedsRepublishToast(runtime.needs_republish === true);
 			} catch (cause) {
 				toast.error({
-					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.reloadFailed')
+					title: cause instanceof ApiClientError ? apiErrorText(cause) : t('dashboard.reloadFailed'),
+					description:
+						cause instanceof ApiClientError && cause.code === 'dataplane_verify_failed'
+							? t('dashboard.verifyFailed')
+							: undefined,
+					duration: 8000
 				});
 			} finally {
 				busy = '';
@@ -199,6 +230,19 @@ async function onReload() {
 	function formatBytes(value: number): string {
 		if (value < 1024) return `${value} B`;
 		return `${(value / 1024 / 1024).toFixed(1)} MB`;
+	}
+
+	function healthSummary(hc: HealthCheckReport): string {
+		if (hc.ok) {
+			return t('health.summaryOk', { successes: hc.successes, attempts: hc.attempts });
+		}
+		const failed = hc.results.find((r) => !r.ok);
+		const detail = failed?.error
+			? failed.error
+			: failed
+				? `${failed.target} → ${failed.status ?? t('health.noResponse')}`
+				: (hc.error ?? t('health.failed'));
+		return t('health.summaryFailed', { successes: hc.successes, attempts: hc.attempts, detail });
 	}
 
 	const latencySummary = $derived.by(() => {

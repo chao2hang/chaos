@@ -275,6 +275,22 @@ export type RuntimeStatus = {
 	geosite_data: GeoIpDataStatus;
 };
 
+export type HealthProbeResult = {
+	target: string;
+	ok: boolean;
+	latency_ms: number;
+	status: number | null;
+	error?: string;
+};
+
+export type HealthCheckReport = {
+	ok: boolean;
+	attempts: number;
+	successes: number;
+	results: HealthProbeResult[];
+	error?: string;
+};
+
 export type ApplyResponse = {
 	ok: boolean;
 	running: boolean;
@@ -284,6 +300,8 @@ export type ApplyResponse = {
 	data_plane: string;
 	/** How the config was applied: "hot" (zero-downtime), "cold" (restart), "cold_start" (was not running). */
 	reload_method: 'hot' | 'cold' | 'cold_start';
+	/** Post-apply dataplane health probe; absent when verification is disabled or non-Linux. */
+	health_check?: HealthCheckReport;
 };
 
 export type LogsResponse = {
@@ -306,6 +324,23 @@ export type DiagnosticsResponse = {
 		cap_net_admin: boolean;
 		cap_bpf: boolean;
 	};
+	/** Detected hypervisor, e.g. "kvm", when running in a VM. */
+	virtualization: string | null;
+	compat: {
+		tcp_relay_offload_disabled: boolean;
+		quic_go_gso_disabled: boolean;
+	};
+	offloads: InterfaceOffload[];
+	/** True when a virtualized physical NIC still has risky offloads enabled. */
+	offload_warning: boolean;
+};
+
+export type InterfaceOffload = {
+	name: string;
+	tx_checksum_ip_generic: boolean | null;
+	tso: boolean | null;
+	gso: boolean | null;
+	gro: boolean | null;
 };
 
 export type OrchestrationNodeKind = 'start' | 'end' | 'rule' | 'node_group' | 'builtin';

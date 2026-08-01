@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CheckCircle2, XCircle, AlertTriangle } from '@lucide/svelte';
+	import { CheckCircle2, XCircle, AlertTriangle, Cpu, ShieldCheck, Network } from '@lucide/svelte';
 	import { getDiagnostics, type DiagnosticsResponse } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 
@@ -120,6 +120,65 @@
 					</span>
 				</dd>
 			</div>
+
+			{#if diagnostics.virtualization}
+				<div class="diag-item">
+					<dt><Cpu size={13} /> {t('diagnostics.virtualization')}</dt>
+					<dd>
+						<code>{diagnostics.virtualization}</code>
+						{#if diagnostics.offload_warning}
+							<AlertTriangle size={14} class="warn" />
+						{:else}
+							<CheckCircle2 size={14} class="ok" />
+						{/if}
+					</dd>
+				</div>
+			{/if}
+
+			<div class="diag-item">
+				<dt><ShieldCheck size={13} /> {t('diagnostics.compat')}</dt>
+				<dd class="perms">
+					<span class:ok={diagnostics.compat.tcp_relay_offload_disabled}
+						class:bad={!diagnostics.compat.tcp_relay_offload_disabled}>
+						relay-offload: {diagnostics.compat.tcp_relay_offload_disabled ? 'off' : 'on'}
+					</span>
+					<span class:ok={diagnostics.compat.quic_go_gso_disabled}
+						class:bad={!diagnostics.compat.quic_go_gso_disabled}>
+						quic-gso: {diagnostics.compat.quic_go_gso_disabled ? 'off' : 'on'}
+					</span>
+				</dd>
+			</div>
+
+			{#if diagnostics.offloads?.length}
+				<div class="diag-item diag-item--column">
+					<dt><Network size={13} /> {t('diagnostics.nicOffloads')}</dt>
+					<dd class="offloads">
+						{#each diagnostics.offloads as nic}
+							{@const risky =
+								nic.tx_checksum_ip_generic || nic.tso || nic.gso || nic.gro}
+							<span class="nic" class:risky={!!risky}>
+								<code>{nic.name}</code>
+								<span class="flags">
+									{#if nic.tx_checksum_ip_generic === true}csum&nbsp;{/if}
+									{#if nic.tso === true}tso&nbsp;{/if}
+									{#if nic.gso === true}gso&nbsp;{/if}
+									{#if nic.gro === true}gro&nbsp;{/if}
+									{#if !risky}off{/if}
+								</span>
+								{#if risky}
+									<AlertTriangle size={12} class="warn" />
+								{/if}
+							</span>
+						{/each}
+					</dd>
+				</div>
+			{/if}
+
+			{#if diagnostics.offload_warning}
+				<p class="offload-hint">
+					<AlertTriangle size={13} /> {t('diagnostics.offloadHint')}
+				</p>
+			{/if}
 		</dl>
 	{/if}
 </div>
@@ -208,5 +267,49 @@
 	.perms .bad {
 		color: var(--ink-faint);
 		text-decoration: line-through;
+	}
+
+	.diag-item--column {
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--space-2);
+	}
+
+	dt {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.offloads {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 4px;
+	}
+
+	.nic {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+	}
+
+	.nic .flags {
+		color: var(--ink-faint);
+	}
+
+	.nic.risky code {
+		color: var(--ink);
+	}
+
+	.offload-hint {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		margin: var(--space-2) 0 0;
+		font-size: 0.7rem;
+		color: var(--ink-muted);
+		line-height: 1.35;
 	}
 </style>
