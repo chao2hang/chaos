@@ -22,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${CHAOS_VERSION:-0.1.6}"
+VERSION="${CHAOS_VERSION:-0.1.7}"
 
 # Normalize architecture: debian name (amd64|arm64)
 HOST_DEB="$(dpkg --print-architecture 2>/dev/null || true)"

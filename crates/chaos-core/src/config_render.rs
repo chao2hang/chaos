@@ -169,10 +169,7 @@ pub fn render_dae_config_with_network(
     };
     let lan_list = normalize_interface_list(&network.lan_interfaces);
     // `auto` is WAN-only; strip it from LAN at render time as a safety net.
-    let lan_list: Vec<String> = lan_list
-        .into_iter()
-        .filter(|name| name != "auto")
-        .collect();
+    let lan_list: Vec<String> = lan_list.into_iter().filter(|name| name != "auto").collect();
 
     // Global section
     out.push_str("global {\n");
@@ -271,6 +268,12 @@ pub fn render_dae_config_with_network(
         }
     }
 
+    // Collect node server endpoints so their own connections bypass the proxy.
+    // Without this, dae tproxy hijacks the proxy's own outbound connection,
+    // creating a routing loop where every connection (including the proxy
+    // tunnel itself) is sent back through the proxy and times out.
+    let node_bypass_rules = build_node_bypass_rules(nodes);
+
     out.push_str("}\n\ngroup {\n");
     for g in &plane.groups {
         let Some(gname) = normalized_dae_identifier(&g.name) else {
@@ -346,6 +349,11 @@ pub fn render_dae_config_with_network(
         out.push_str("  }\n");
     }
     out.push_str("}\n\nrouting {\n");
+    for rule in &node_bypass_rules {
+        out.push_str("  ");
+        out.push_str(rule);
+        out.push_str(" -> must_direct\n");
+    }
     for r in plane.routing_rules.iter().filter(|r| r.enabled) {
         if r.expression.trim().is_empty() {
             continue;
@@ -473,6 +481,52 @@ fn escape_single_quotes(s: &str) -> String {
     s.replace(['\r', '\n'], " ").replace('\'', "%27")
 }
 
+/// Build `routing { ... -> must_direct }` expressions that keep each proxy
+/// node's own server endpoint out of the proxy. In tproxy mode every outbound
+/// connection is intercepted, so without these rules the connection to the
+/// proxy server itself gets routed back into the proxy, forming a loop.
+///
+/// Rules are deduplicated and emitted in `dip(ip)` / `domain(host)` form,
+/// optionally scoped with `:port` when the link specifies one.
+fn build_node_bypass_rules(nodes: &[NodeForConfig]) -> Vec<String> {
+    let mut rules: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for node in nodes {
+        let Some(addr) = crate::link::detect_address(&node.link) else {
+            continue;
+        };
+        let (host, port) = match addr.rsplit_once(':') {
+            Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+                (h.to_string(), Some(p.to_string()))
+            }
+            _ => (addr.clone(), None),
+        };
+        // IPv6 literals may be wrapped in brackets; strip them.
+        let host = host.strip_prefix('[').unwrap_or(&host).to_string();
+        let host = host.strip_suffix(']').map(str::to_string).unwrap_or(host);
+        if host.is_empty() {
+            continue;
+        }
+
+        let target = if host.parse::<std::net::IpAddr>().is_ok() {
+            format!("dip({host})")
+        } else {
+            format!("domain({host})")
+        };
+        let expr = match port {
+            Some(port) => format!("{target} & dport({port})"),
+            None => target,
+        };
+
+        if seen.insert(expr.clone()) {
+            rules.push(expr);
+        }
+    }
+
+    rules
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +556,29 @@ mod tests {
         assert!(s.contains("node.HK_01_vip"));
         assert!(!s.contains("HK-01"));
         assert!(!s.contains("vip!"));
+    }
+
+    #[test]
+    fn emits_must_direct_rules_for_node_servers() {
+        let s = render_minimal_dae_config(&[
+            NodeForConfig {
+                id: "a".into(),
+                name: "hy2".into(),
+                link: "hy2://pass@hysteria.example.cn:8443/?sni=hysteria.example.cn#node".into(),
+            },
+            NodeForConfig {
+                id: "b".into(),
+                name: "ipnode".into(),
+                link: "trojan://x@1.2.3.4:443".into(),
+            },
+        ]);
+        assert!(s.contains("domain(hysteria.example.cn) & dport(8443) -> must_direct"));
+        assert!(s.contains("dip(1.2.3.4) & dport(443) -> must_direct"));
+        // Bypass rules must come before the routing fallback to take precedence.
+        let routing = s.rfind("routing {").unwrap();
+        let bypass = s[routing..].find("must_direct").unwrap();
+        let fallback = s[routing..].find("fallback:").unwrap();
+        assert!(bypass < fallback);
     }
 
     #[test]
