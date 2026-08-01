@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARCH="${1:-arm64}"
-VERSION="${CHAOS_VERSION:-0.1.8}"
+VERSION="${CHAOS_VERSION:-0.1.9}"
 
 case "$ARCH" in
   amd64|x86_64) ARCH=amd64; PLATFORM=linux/amd64; DAE_ARCH=x86_64 ;;

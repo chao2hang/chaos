@@ -537,6 +537,7 @@
   "flow.geosite.discord": "Discord",
   "flow.geosite.cloudflare": "Cloudflare",
   "flow.policy.min_moving_avg": "Lowest moving average",
+  "flow.policy.min_avg10": "Lowest average (last 10 probes)",
   "flow.policy.min": "Lowest latency",
   "flow.policy.random": "Random",
   "flow.policy.fixed": "Fixed",

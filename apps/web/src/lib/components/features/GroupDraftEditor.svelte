@@ -9,7 +9,7 @@
 	import Section from '$lib/components/ui/Section.svelte';
 	import NodePickList from '$lib/components/features/NodePickList.svelte';
 
-	const policies = ['min_moving_avg', 'fixed', 'random', 'min'];
+	const policies = ['min_moving_avg', 'min_avg10', 'min', 'random', 'fixed'];
 
 	let {
 		groups = $bindable(),
@@ -192,7 +192,7 @@
 							{#if !policies.includes(selectedGroup.policy)}
 								<option value={selectedGroup.policy}>{selectedGroup.policy}</option>
 							{/if}
-							{#each policies as option}<option value={option}>{option}</option>{/each}
+							{#each policies as option}<option value={option}>{t(`flow.policy.${option}`)}</option>{/each}
 						</select>
 					</Field>
 					<Field label={t('groups.filterTag')} forId="draft-group-filter" optional>

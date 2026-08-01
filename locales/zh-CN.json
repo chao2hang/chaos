@@ -537,6 +537,7 @@
   "flow.geosite.discord": "Discord",
   "flow.geosite.cloudflare": "Cloudflare",
   "flow.policy.min_moving_avg": "最低移动平均延迟",
+  "flow.policy.min_avg10": "近 10 次平均延迟最低",
   "flow.policy.min": "最低延迟",
   "flow.policy.random": "随机",
   "flow.policy.fixed": "固定",

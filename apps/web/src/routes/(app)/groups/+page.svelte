@@ -38,7 +38,7 @@
 	import TableFrame from '$lib/components/ui/TableFrame.svelte';
 	import NodePickList from '$lib/components/features/NodePickList.svelte';
 
-	const policies = ['min_moving_avg', 'min', 'random', 'fixed'] as const;
+	const policies = ['min_moving_avg', 'min_avg10', 'min', 'random', 'fixed'] as const;
 	type GroupNode = Extract<OrchestrationNodeDto, { type: 'node_group' }>;
 
 	let flowNodes = $state.raw<OrchestrationNodeDto[]>([]);

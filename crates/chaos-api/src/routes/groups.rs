@@ -13,7 +13,13 @@ use crate::routes::orchestration::{
 };
 use crate::state::AppState;
 
-const GROUP_POLICIES: [&str; 4] = ["min_moving_avg", "min", "random", "fixed"];
+const GROUP_POLICIES: [&str; 5] = [
+    "min_moving_avg",
+    "min",
+    "min_avg10",
+    "random",
+    "fixed",
+];
 
 #[derive(Debug, Serialize)]
 pub struct GroupMemberDto {

@@ -686,7 +686,7 @@ function openMigrateDialog() {
 			</Field>
 			<Field label={t('groups.policy')} forId="flow-group-policy">
 				<select id="flow-group-policy" value={node.data.policy} disabled={busy} onchange={(event) => patchGroup({ policy: (event.currentTarget as HTMLSelectElement).value })}>
-					{#each ['min_moving_avg', 'min', 'random', 'fixed'] as policy}
+					{#each ['min_moving_avg', 'min_avg10', 'min', 'random', 'fixed'] as policy}
 						<option value={policy}>{t(`flow.policy.${policy}`)}</option>
 					{/each}
 				</select>
