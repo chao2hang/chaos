@@ -1158,10 +1158,11 @@ async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
     let offloads = read_interface_offloads(&interfaces);
     let offload_warning = virtualization.is_some()
         && offloads.iter().any(|o| {
-            o.tx_checksum_ip_generic.unwrap_or(false)
-                || o.tso.unwrap_or(false)
-                || o.gso.unwrap_or(false)
-                || o.gro.unwrap_or(false)
+            is_physical_nic(&o.name)
+                && (o.tx_checksum_ip_generic.unwrap_or(false)
+                    || o.tso.unwrap_or(false)
+                    || o.gso.unwrap_or(false)
+                    || o.gro.unwrap_or(false))
         });
 
     Json(DiagnosticsResponse {
@@ -1312,6 +1313,25 @@ fn list_interfaces() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether an interface looks like a physical NIC whose offload settings can
+/// corrupt dae's userspace relay. Excludes dae-created virtual interfaces
+/// (`dae0`, `chaos`), loopback, bridges, bonds, tunnels, and the `docker`/
+/// `veth`/`br-` devices that have no real NIC checksum path.
+fn is_physical_nic(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("ens")
+        || lower.starts_with("enp")
+        || lower.starts_with("enx")
+        || lower.starts_with("eth")
+        || lower.starts_with("eno")
+    {
+        // A matching /sys device symlink confirms a backing PCI/physical device.
+        let path = format!("/sys/class/net/{name}/device");
+        return std::path::Path::new(&path).exists();
+    }
+    false
 }
 
 fn read_dae_version() -> Option<String> {
