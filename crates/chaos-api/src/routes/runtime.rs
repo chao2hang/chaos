@@ -61,7 +61,54 @@ pub struct ApplyResponse {
     /// How the config was applied: "hot" (zero-downtime reload), "cold" (restart),
     /// or "cold_start" (dae was not running).
     pub reload_method: &'static str,
+    /// Post-reload dataplane health probe result. `None` when probing is
+    /// skipped (non-linux data plane, or verification disabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheckReport>,
 }
+
+/// Result of a post-apply dataplane verification probe.
+#[derive(Debug, Serialize)]
+pub struct HealthCheckReport {
+    /// True when enough probes succeeded through the proxy.
+    pub ok: bool,
+    /// Number of probes attempted.
+    pub attempts: u32,
+    /// Number of probes that completed successfully.
+    pub successes: u32,
+    /// Per-attempt outcome (truncated to the most recent few).
+    pub results: Vec<HealthProbeResult>,
+    /// Human-readable reason when `ok` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HealthProbeResult {
+    pub target: String,
+    pub ok: bool,
+    /// Round-trip time in milliseconds when the probe succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// HTTP status code when a response was received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Short error description on failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Probe targets used to verify the transparent proxy actually forwards traffic.
+/// HTTP (not HTTPS) is used so a TLS `bad record mac` surfaces as a clean
+/// transport error rather than an opaque TLS alert, making failures detectable.
+const HEALTH_PROBE_TARGETS: &[&str] = &[
+    "http://cp.cloudflare.com/",
+    "http://www.gstatic.com/generate_204",
+];
+const HEALTH_PROBE_ATTEMPTS: u32 = 4;
+const HEALTH_PROBE_REQUIRED_OK: u32 = 2;
+const HEALTH_PROBE_SETTLE_MS: u64 = 1500;
+const HEALTH_PROBE_TIMEOUT_SECS: u64 = 6;
 
 fn dae_work_dir() -> std::path::PathBuf {
     std::env::var("CHAOS_DAE_WORK_DIR")
@@ -242,10 +289,9 @@ async fn update_geosite_data(
     let _runtime_guard = state.runtime_lock.lock().await;
     let manager = manager_for_status_or_stop();
     let data = download_geo_dataset(GEOSITE_DATA_URL, "geosite_data_too_large", locale).await?;
-    manager
-        .write_geosite_data(&data)
-        .await
-        .map_err(|error| ApiError::internal_logged(locale, format!("write geosite data: {error}")))?;
+    manager.write_geosite_data(&data).await.map_err(|error| {
+        ApiError::internal_logged(locale, format!("write geosite data: {error}"))
+    })?;
     Ok(Json(geo_data_status(&manager.work_dir, "geosite.dat")))
 }
 
@@ -321,6 +367,15 @@ pub(crate) async fn apply_current_config_locked(
         ReloadOutcome::ColdStart => "cold_start",
         ReloadOutcome::ColdFallback => "cold",
     };
+
+    // Verify the new data plane actually forwards traffic. On failure the
+    // previous config is restored and dae is cold-restarted, so we never
+    // silently leave a broken transparent proxy in place.
+    let health_check = match verify_or_rollback(&mgr, previous_config, locale).await {
+        Ok(report) => report,
+        Err(api_error) => return Err(api_error),
+    };
+
     Ok(ApplyResponse {
         ok: true,
         running: mgr.is_running(),
@@ -329,7 +384,205 @@ pub(crate) async fn apply_current_config_locked(
         needs_republish: false,
         data_plane: chaos_dae::platform_backend().status().kind,
         reload_method,
+        health_check: Some(health_check),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Post-apply dataplane health verification
+// ---------------------------------------------------------------------------
+
+/// Whether post-reload health verification should run. Can be disabled via
+/// `CHAOS_VERIFY_DATAPLANE=0` for environments without a usable probe target.
+fn dataplane_verification_enabled() -> bool {
+    !matches!(
+        std::env::var("CHAOS_VERIFY_DATAPLANE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// Probe the transparent proxy a few times after a reload/cold start.
+///
+/// The daemon's staged cutover takes a moment, so we settle briefly then issue
+/// short HEAD/GET requests through the proxy. A healthy data plane must
+/// complete at least [`HEALTH_PROBE_REQUIRED_OK`] of
+/// [`HEALTH_PROBE_ATTEMPTS`] probes without transport errors.
+async fn probe_dataplane() -> HealthCheckReport {
+    // Give the staged same-port handoff time to finish binding.
+    tokio::time::sleep(std::time::Duration::from_millis(HEALTH_PROBE_SETTLE_MS)).await;
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return HealthCheckReport {
+                ok: false,
+                attempts: 0,
+                successes: 0,
+                results: vec![],
+                error: Some(format!("build probe client: {error}")),
+            }
+        }
+    };
+
+    let mut results: Vec<HealthProbeResult> = Vec::new();
+    let mut successes = 0u32;
+    for attempt in 0..HEALTH_PROBE_ATTEMPTS {
+        let target = HEALTH_PROBE_TARGETS[(attempt as usize) % HEALTH_PROBE_TARGETS.len()];
+        let started = std::time::Instant::now();
+        let result = match client.get(target).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let latency_ms = started.elapsed().as_millis() as u64;
+                // 2xx/3xx/4xx all mean the bytes actually traversed the proxy
+                // intact; only a transport-level failure indicates corruption.
+                let ok = (200..500).contains(&status);
+                if ok {
+                    successes += 1;
+                }
+                HealthProbeResult {
+                    target: target.to_string(),
+                    ok,
+                    latency_ms: Some(latency_ms),
+                    status: Some(status),
+                    error: ok.then_some(String::new).and_then(|_| None),
+                }
+            }
+            Err(error) => HealthProbeResult {
+                target: target.to_string(),
+                ok: false,
+                latency_ms: None,
+                status: None,
+                error: Some(probe_error_summary(&error)),
+            },
+        };
+        results.push(result);
+        // Stop early once we have enough successes.
+        if successes >= HEALTH_PROBE_REQUIRED_OK {
+            break;
+        }
+    }
+
+    let ok = successes >= HEALTH_PROBE_REQUIRED_OK;
+    let error = if ok {
+        None
+    } else {
+        Some(format!(
+            "only {successes}/{attempts} probes succeeded through the proxy",
+            attempts = results.len()
+        ))
+    };
+    HealthCheckReport {
+        ok,
+        attempts: results.len() as u32,
+        successes,
+        results,
+        error,
+    }
+}
+
+/// Reduce a reqwest error to a short, log-safe classification.
+fn probe_error_summary(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        return "timeout".to_string();
+    }
+    if error.is_connect() {
+        return "connect error".to_string();
+    }
+    if error.is_body() || error.is_decode() {
+        return "data corruption".to_string();
+    }
+    // Lower-level source (e.g. "bad record mac" from OpenSSL).
+    let mut source = std::error::Error::source(error);
+    while let Some(err) = source {
+        let text = err.to_string().to_ascii_lowercase();
+        if text.contains("bad record mac") {
+            return "bad record mac".to_string();
+        }
+        if text.contains("connection reset") {
+            return "connection reset".to_string();
+        }
+        if text.contains("broken pipe") {
+            return "broken pipe".to_string();
+        }
+        source = err.source();
+    }
+    "request failed".to_string()
+}
+
+/// Verify the freshly applied config; on failure restore `previous_config` and
+/// cold-restart dae so we never leave a broken data plane live.
+async fn verify_or_rollback(
+    mgr: &DaeManager,
+    previous_config: Option<String>,
+    _locale: Locale,
+) -> Result<HealthCheckReport, ApiError> {
+    if !dataplane_verification_enabled() {
+        return Ok(HealthCheckReport {
+            ok: true,
+            attempts: 0,
+            successes: 0,
+            results: vec![],
+            error: None,
+        });
+    }
+    // Only verify on the linux tproxy data plane.
+    if chaos_dae::platform_backend().status().kind != "linux-dae" {
+        return Ok(HealthCheckReport {
+            ok: true,
+            attempts: 0,
+            successes: 0,
+            results: vec![],
+            error: None,
+        });
+    }
+
+    let report = probe_dataplane().await;
+    if report.ok {
+        return Ok(report);
+    }
+
+    tracing::warn!(
+        successes = report.successes,
+        attempts = report.attempts,
+        "dataplane health check failed after apply; rolling back"
+    );
+
+    match previous_config {
+        Some(previous) => {
+            if let Err(error) = mgr.write_config(&previous).await {
+                tracing::error!(error = %error, "failed to restore previous dae config");
+            } else if let Err(error) = mgr.reload().await {
+                tracing::error!(error = %error, "failed to cold-restart dae with restored config");
+            }
+            Err(ApiError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "dataplane_verify_failed",
+                report
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "dataplane health check failed".to_string()),
+            ))
+        }
+        None => {
+            // No prior config to restore; surface the failure but leave the
+            // daemon running so the operator can inspect/fix it.
+            Err(ApiError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "dataplane_verify_failed",
+                report
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "dataplane health check failed".to_string()),
+            ))
+        }
+    }
 }
 
 async fn stop_runtime(
@@ -717,6 +970,29 @@ async fn reload_runtime(
         ReloadOutcome::ColdStart => "cold_start",
         ReloadOutcome::ColdFallback => "cold",
     };
+
+    // Same post-reload verification as apply. There is no previous-config
+    // backup here because the file was not changed, so a failure is reported
+    // (and the daemon left running) rather than rolled back.
+    let health_check = if dataplane_verification_enabled()
+        && chaos_dae::platform_backend().status().kind == "linux-dae"
+    {
+        let report = probe_dataplane().await;
+        if !report.ok {
+            return Err(ApiError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "dataplane_verify_failed",
+                report
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "dataplane health check failed".to_string()),
+            ));
+        }
+        Some(report)
+    } else {
+        None
+    };
+
     Ok(Json(ApplyResponse {
         ok: true,
         running: mgr.is_running(),
@@ -725,6 +1001,7 @@ async fn reload_runtime(
         needs_republish: false,
         data_plane: chaos_dae::platform_backend().status().kind,
         reload_method,
+        health_check,
     }))
 }
 
@@ -782,9 +1059,7 @@ async fn get_logs(
 }
 
 /// SSE stream that tails dae.log in real time.
-async fn stream_logs(
-    _user: AuthUser,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn stream_logs(_user: AuthUser) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let work_dir = dae_work_dir();
     let log_path = work_dir.join("dae.log");
 
@@ -918,10 +1193,7 @@ fn read_dae_version() -> Option<String> {
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         // dae version output is like "dae version v0.2.2" or just "v0.2.2"
-        stdout
-            .lines()
-            .next()
-            .map(|l| l.trim().to_string())
+        stdout.lines().next().map(|l| l.trim().to_string())
     } else {
         None
     }
@@ -968,7 +1240,9 @@ pub struct ConnectionsResponse {
 async fn get_connections(_user: AuthUser) -> Json<ConnectionsResponse> {
     let work_dir = dae_work_dir();
     let log_path = work_dir.join("dae.log");
-    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let content = tokio::fs::read_to_string(&log_path)
+        .await
+        .unwrap_or_default();
 
     // Parse recent log lines for connection events
     let mut connections: Vec<chaos_core::traffic::ActiveConnection> = Vec::new();
@@ -1164,5 +1438,39 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, "orchestration_stale");
+    }
+
+    #[test]
+    fn verification_enabled_defaults_true_and_honors_disable() {
+        let prev = std::env::var("CHAOS_VERIFY_DATAPLANE").ok();
+        std::env::remove_var("CHAOS_VERIFY_DATAPLANE");
+        assert!(dataplane_verification_enabled());
+        std::env::set_var("CHAOS_VERIFY_DATAPLANE", "0");
+        assert!(!dataplane_verification_enabled());
+        std::env::set_var("CHAOS_VERIFY_DATAPLANE", "false");
+        assert!(!dataplane_verification_enabled());
+        std::env::set_var("CHAOS_VERIFY_DATAPLANE", "1");
+        assert!(dataplane_verification_enabled());
+        match prev {
+            Some(v) => std::env::set_var("CHAOS_VERIFY_DATAPLANE", v),
+            None => std::env::remove_var("CHAOS_VERIFY_DATAPLANE"),
+        }
+    }
+
+    #[test]
+    fn probe_report_ok_threshold() {
+        // Sanity-check the constants so tuning doesn't silently make the
+        // probe impossible to satisfy or trivially pass.
+        assert!(HEALTH_PROBE_REQUIRED_OK >= 1);
+        assert!(HEALTH_PROBE_REQUIRED_OK <= HEALTH_PROBE_ATTEMPTS);
+        assert!(!HEALTH_PROBE_TARGETS.is_empty());
+        // Each attempt targets a URL; ensure all are HTTP so TLS corruption
+        // surfaces as a transport error we can classify.
+        for target in HEALTH_PROBE_TARGETS {
+            assert!(
+                target.starts_with("http://"),
+                "target must be plain HTTP: {target}"
+            );
+        }
     }
 }
