@@ -515,7 +515,7 @@ fn build_node_bypass_rules(nodes: &[NodeForConfig]) -> Vec<String> {
             format!("domain({host})")
         };
         let expr = match port {
-            Some(port) => format!("{target} & dport({port})"),
+            Some(port) => format!("{target} && dport({port})"),
             None => target,
         };
 
@@ -572,8 +572,8 @@ mod tests {
                 link: "trojan://x@1.2.3.4:443".into(),
             },
         ]);
-        assert!(s.contains("domain(hysteria.example.cn) & dport(8443) -> must_direct"));
-        assert!(s.contains("dip(1.2.3.4) & dport(443) -> must_direct"));
+        assert!(s.contains("domain(hysteria.example.cn) && dport(8443) -> must_direct"));
+        assert!(s.contains("dip(1.2.3.4) && dport(443) -> must_direct"));
         // Bypass rules must come before the routing fallback to take precedence.
         let routing = s.rfind("routing {").unwrap();
         let bypass = s[routing..].find("must_direct").unwrap();
