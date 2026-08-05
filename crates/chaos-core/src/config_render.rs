@@ -481,13 +481,55 @@ fn escape_single_quotes(s: &str) -> String {
     s.replace(['\r', '\n'], " ").replace('\'', "%27")
 }
 
+/// Split an endpoint string into a host and an optional numeric port.
+///
+/// Endpoints come from [`crate::link::detect_address`] and may be:
+///   - IPv4 + port:      `1.2.3.4:443`
+///   - bracketed IPv6:   `[2001:db8::1]:443` (port optional)
+///   - bare IPv6:        `2001:db8::1` (no port; the whole string parses as an address)
+///   - bare IPv6 + port: `2001:db8::0:1:443` (unusual; the last colon splits the port)
+///   - hostname:         `example.com` / `example.com:443`
+fn split_host_port(addr: &str) -> Option<(String, Option<String>)> {
+    let addr = addr.trim();
+    if let Some(rest) = addr.strip_prefix('[') {
+        // Bracketed IPv6 (possibly with `:port`).
+        let (host, tail) = rest.split_once(']')?;
+        let host = host.trim();
+        if host.is_empty() {
+            return None;
+        }
+        let port = tail
+            .strip_prefix(':')
+            .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            .map(|p| p.to_string());
+        return Some((host.to_string(), port));
+    }
+    // A bare IPv6 literal parses as an address and carries no port.
+    if addr.parse::<std::net::IpAddr>().is_ok() {
+        return Some((addr.to_string(), None));
+    }
+    // IPv4 / hostname with a trailing port.
+    match addr.rsplit_once(':') {
+        Some((host, port))
+            if !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            Some((host.to_string(), Some(port.to_string())))
+        }
+        _ => Some((addr.to_string(), None)),
+    }
+}
+
 /// Build `routing { ... -> must_direct }` expressions that keep each proxy
 /// node's own server endpoint out of the proxy. In tproxy mode every outbound
 /// connection is intercepted, so without these rules the connection to the
 /// proxy server itself gets routed back into the proxy, forming a loop.
 ///
 /// Rules are deduplicated and emitted in `dip(ip)` / `domain(host)` form,
-/// optionally scoped with `:port` when the link specifies one.
+/// optionally scoped with `dport(port)` when the link specifies one.
+///
+/// IPv6 addresses must be quoted (`dip("2001:db8::1")`): `:` is not a legal
+/// character in a bare literal in dae's config grammar, so an unquoted IPv6
+/// fails to parse with `no viable alternative at input 'dip(2605:'`.
 fn build_node_bypass_rules(nodes: &[NodeForConfig]) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -496,23 +538,17 @@ fn build_node_bypass_rules(nodes: &[NodeForConfig]) -> Vec<String> {
         let Some(addr) = crate::link::detect_address(&node.link) else {
             continue;
         };
-        let (host, port) = match addr.rsplit_once(':') {
-            Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
-                (h.to_string(), Some(p.to_string()))
-            }
-            _ => (addr.clone(), None),
+        let Some((host, port)) = split_host_port(&addr) else {
+            continue;
         };
-        // IPv6 literals may be wrapped in brackets; strip them.
-        let host = host.strip_prefix('[').unwrap_or(&host).to_string();
-        let host = host.strip_suffix(']').map(str::to_string).unwrap_or(host);
         if host.is_empty() {
             continue;
         }
 
-        let target = if host.parse::<std::net::IpAddr>().is_ok() {
-            format!("dip({host})")
-        } else {
-            format!("domain({host})")
+        let target = match host.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(_)) => format!("dip({host})"),
+            Ok(std::net::IpAddr::V6(_)) => format!("dip(\"{host}\")"),
+            Err(_) => format!("domain({host})"),
         };
         let expr = match port {
             Some(port) => format!("{target} && dport({port})"),
@@ -579,6 +615,58 @@ mod tests {
         let bypass = s[routing..].find("must_direct").unwrap();
         let fallback = s[routing..].find("fallback:").unwrap();
         assert!(bypass < fallback);
+    }
+
+    #[test]
+    fn quotes_ipv6_endpoints_in_bypass_rules() {
+        // dae's grammar rejects a bare IPv6 literal inside dip(); the address
+        // must be quoted or config validation fails at publish time.
+        let s = render_minimal_dae_config(&[
+            NodeForConfig {
+                id: "v6a".into(),
+                name: "v6-bracketed".into(),
+                link: "vless://u@[2605:9880:200:0401:0135:7700:ef0a:0e05]:54835?type=ws#t".into(),
+            },
+            NodeForConfig {
+                id: "v6b".into(),
+                name: "v6-bare".into(),
+                link: "trojan://u@2001:db8::1".into(),
+            },
+            NodeForConfig {
+                id: "v4".into(),
+                name: "v4-node".into(),
+                link: "trojan://x@1.2.3.4:443".into(),
+            },
+        ]);
+        assert!(s.contains("dip(\"2605:9880:200:0401:0135:7700:ef0a:0e05\") && dport(54835) -> must_direct"));
+        assert!(s.contains("dip(\"2001:db8::1\") -> must_direct"));
+        assert!(s.contains("dip(1.2.3.4) && dport(443) -> must_direct"));
+        // The broken unquoted form must never be emitted.
+        assert!(!s.contains("dip(2605:"));
+        assert!(!s.contains("dip(2001:db8"));
+    }
+
+    #[test]
+    fn split_host_port_handles_ipv6_shapes() {
+        assert_eq!(
+            split_host_port("[2605:9880:200:401:135:7700:ef0a:0]:443"),
+            Some(("2605:9880:200:401:135:7700:ef0a:0".into(), Some("443".into())))
+        );
+        assert_eq!(split_host_port("2001:db8::1"), Some(("2001:db8::1".into(), None)));
+        assert_eq!(
+            split_host_port("2605:9880:200:401:135:7700:ef0a:0:443"),
+            Some(("2605:9880:200:401:135:7700:ef0a:0".into(), Some("443".into())))
+        );
+        assert_eq!(
+            split_host_port("1.2.3.4:443"),
+            Some(("1.2.3.4".into(), Some("443".into())))
+        );
+        assert_eq!(
+            split_host_port("example.com:8443"),
+            Some(("example.com".into(), Some("8443".into())))
+        );
+        assert_eq!(split_host_port("onlybase64"), Some(("onlybase64".into(), None)));
+        assert_eq!(split_host_port("[]:443"), None);
     }
 
     #[test]

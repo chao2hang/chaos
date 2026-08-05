@@ -288,7 +288,10 @@ async fn delete_subscription_handler(
     Ok(Json(DeleteSubscriptionResponse { deleted: true }))
 }
 
-async fn fetch_and_replace_nodes(
+/// Shared by the manual refresh route and the background auto-refresh task.
+/// Reuses node ids for unchanged links, guards nodes that runtime configuration
+/// references, and bumps republish markers when a published plan is affected.
+pub(crate) async fn fetch_and_replace_nodes(
     state: &AppState,
     subscription_id: &str,
     sub_tag: Option<&str>,
@@ -345,11 +348,7 @@ async fn fetch_and_replace_nodes(
         .collect();
     let added_ids: HashSet<String> = new_node_ids.difference(&old_node_ids).cloned().collect();
     let removed_ids: HashSet<String> = old_node_ids.difference(&new_node_ids).cloned().collect();
-    if orchestration_references_any_source(state, "node", &removed_ids).await?
-        || active_plan_references_any_node(state, &removed_ids).await?
-    {
-        return Err(ApiError::conflict("resource_in_use", locale));
-    }
+    ensure_removed_nodes_unreferenced(state, &removed_ids, locale).await?;
 
     let mut nodes =
         replace_subscription_nodes(&state.pool, subscription_id, "ok", &new_nodes).await?;
@@ -399,6 +398,31 @@ async fn fetch_and_replace_nodes(
         })?;
 
     Ok((sub, nodes))
+}
+
+/// Fail closed when a refresh would delete nodes that runtime configuration
+/// still depends on: nodes referenced by an orchestration document, by the
+/// published plan, or by a source group. Deleting them would silently strip
+/// configured members from the live config.
+async fn ensure_removed_nodes_unreferenced(
+    state: &AppState,
+    removed_ids: &HashSet<String>,
+    locale: Locale,
+) -> Result<(), ApiError> {
+    if removed_ids.is_empty() {
+        return Ok(());
+    }
+    let group_referenced = chaos_store::list_all_group_members(&state.pool)
+        .await?
+        .iter()
+        .any(|member| removed_ids.contains(&member.node_id));
+    if orchestration_references_any_source(state, "node", removed_ids).await?
+        || active_plan_references_any_node(state, removed_ids).await?
+        || group_referenced
+    {
+        return Err(ApiError::conflict("resource_in_use", locale));
+    }
+    Ok(())
 }
 
 fn subscription_fetch_failed(locale: Locale) -> ApiError {
@@ -770,5 +794,127 @@ mod tests {
             .unwrap();
         assert_eq!(del.status(), StatusCode::OK);
         assert_eq!(json_body(del).await["deleted"], true);
+    }
+
+    /// A refresh that would delete a node referenced by a source group, an
+    /// orchestration document, or the published plan must fail closed instead
+    /// of silently stripping configured members.
+    #[tokio::test]
+    async fn removed_node_referenced_by_group_blocks_refresh() {
+        let (_app, state) = test_app().await;
+        let sub = insert_subscription(&state.pool, Some("t"), "https://example.invalid/sub", "ok")
+            .await
+            .unwrap();
+        let nodes = replace_subscription_nodes(
+            &state.pool,
+            &sub.id,
+            "ok",
+            &[NewSubscriptionNode {
+                id: Some("node-1".into()),
+                name: "n1".into(),
+                tag: Some("t".into()),
+                link: "trojan://u@1.2.3.4:443".into(),
+                protocol: Some("trojan".into()),
+                address: Some("1.2.3.4:443".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let group = chaos_store::insert_group(&state.pool, "home", "min_moving_avg", None, 0)
+            .await
+            .unwrap();
+        chaos_store::add_group_member(&state.pool, &group.id, &nodes[0].id, 1)
+            .await
+            .unwrap();
+
+        let removed: HashSet<String> = [nodes[0].id.clone()].into_iter().collect();
+        let err = ensure_removed_nodes_unreferenced(&state, &removed, Locale::En)
+            .await
+            .expect_err("group-referenced node must not be deletable");
+        assert_eq!(err.code, "resource_in_use");
+
+        // The node is untouched.
+        let remaining = chaos_store::list_nodes(&state.pool).await.unwrap();
+        assert!(remaining.iter().any(|n| n.id == nodes[0].id));
+    }
+
+    /// A refresh that would delete a node referenced by the published plan
+    /// must fail closed.
+    #[tokio::test]
+    async fn removed_node_referenced_by_plan_blocks_refresh() {
+        let (_app, state) = test_app().await;
+        let sub = insert_subscription(&state.pool, Some("t"), "https://example.invalid/sub", "ok")
+            .await
+            .unwrap();
+        let nodes = replace_subscription_nodes(
+            &state.pool,
+            &sub.id,
+            "ok",
+            &[NewSubscriptionNode {
+                id: Some("node-1".into()),
+                name: "n1".into(),
+                tag: Some("t".into()),
+                link: "trojan://u@1.2.3.4:443".into(),
+                protocol: Some("trojan".into()),
+                address: Some("1.2.3.4:443".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        chaos_store::publish_orchestration_v2(
+            &state.pool,
+            &chaos_store::PublishedOrchestrationPlan {
+                document: r#"{"version":4,"nodes":[],"edges":[],"viewport":{"x":0.0,"y":0.0,"zoom":1.0}}"#
+                    .to_string(),
+                groups: vec![chaos_store::PublishedGroup {
+                    node_id: "g1".into(),
+                    id: "runtime-g1".into(),
+                    name: "home".into(),
+                    policy: "min_moving_avg".into(),
+                    members: vec![(nodes[0].id.clone(), 1)],
+                }],
+                routing: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let removed: HashSet<String> = [nodes[0].id.clone()].into_iter().collect();
+        let err = ensure_removed_nodes_unreferenced(&state, &removed, Locale::En)
+            .await
+            .expect_err("plan-referenced node must not be deletable");
+        assert_eq!(err.code, "resource_in_use");
+    }
+
+    /// Unreferenced removed nodes are free to be replaced.
+    #[tokio::test]
+    async fn removed_node_unreferenced_allows_refresh() {
+        let (_app, state) = test_app().await;
+        let sub = insert_subscription(&state.pool, Some("t"), "https://example.invalid/sub", "ok")
+            .await
+            .unwrap();
+        let nodes = replace_subscription_nodes(
+            &state.pool,
+            &sub.id,
+            "ok",
+            &[NewSubscriptionNode {
+                id: Some("node-1".into()),
+                name: "n1".into(),
+                tag: Some("t".into()),
+                link: "trojan://u@1.2.3.4:443".into(),
+                protocol: Some("trojan".into()),
+                address: Some("1.2.3.4:443".into()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let removed: HashSet<String> = [nodes[0].id.clone()].into_iter().collect();
+        ensure_removed_nodes_unreferenced(&state, &removed, Locale::En)
+            .await
+            .expect("unreferenced node is deletable");
+        ensure_removed_nodes_unreferenced(&state, &HashSet::new(), Locale::En)
+            .await
+            .expect("empty removal set is always allowed");
     }
 }

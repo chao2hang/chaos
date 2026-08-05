@@ -189,13 +189,9 @@ async fn refresh_due_subscriptions(state: &AppState) -> anyhow::Result<()> {
     }
     tracing::info!(count = due.len(), "auto-refreshing subscriptions");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()?;
-
     for sub in due {
         tracing::info!(id = %sub.id, url = %sub.url, "refreshing subscription");
-        match fetch_and_replace_subscription(state, &client, &sub).await {
+        match fetch_and_replace_subscription(state, &sub).await {
             Ok(node_count) => {
                 tracing::info!(id = %sub.id, node_count, "subscription refreshed");
             }
@@ -210,42 +206,22 @@ async fn refresh_due_subscriptions(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refresh one subscription. Delegates to the same store+guard logic as the
+/// manual refresh endpoint: unchanged links keep their node ids (so group and
+/// plan references survive), and a refresh that would delete nodes still
+/// referenced by the published plan, an orchestration document, or a source
+/// group fails closed instead of silently dropping configured members.
 async fn fetch_and_replace_subscription(
     state: &AppState,
-    client: &reqwest::Client,
     sub: &chaos_store::Subscription,
 ) -> anyhow::Result<usize> {
-    use chaos_core::subscription::{decode_subscription_body, parse_subscription_links};
-
-    let response = client.get(&sub.url).send().await?.error_for_status()?;
-    let bytes = response.bytes().await?;
-    let body = decode_subscription_body(&bytes);
-    let links = parse_subscription_links(&body);
-
-    let nodes: Vec<chaos_store::NewSubscriptionNode> = links
-        .iter()
-        .map(|link| {
-            let protocol = chaos_core::link::detect_protocol(link);
-            let address = chaos_core::link::detect_address(link);
-            let link_tag = chaos_core::link::detect_tag(link);
-            let id = uuid::Uuid::new_v4().to_string();
-            let name = chaos_core::link::node_name(
-                link_tag.as_deref(),
-                sub.tag.as_deref(),
-                protocol.as_deref(),
-                &id,
-            );
-            chaos_store::NewSubscriptionNode {
-                id: Some(id),
-                name,
-                tag: link_tag,
-                link: link.clone(),
-                protocol,
-                address,
-            }
-        })
-        .collect();
-
-    let created = chaos_store::replace_subscription_nodes(&state.pool, &sub.id, "ok", &nodes).await?;
-    Ok(created.len())
+    let (_, nodes) = crate::routes::subscriptions::fetch_and_replace_nodes(
+        state,
+        &sub.id,
+        sub.tag.as_deref(),
+        &sub.url,
+        chaos_i18n::Locale::En,
+    )
+    .await?;
+    Ok(nodes.len())
 }
