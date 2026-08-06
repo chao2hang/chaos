@@ -22,7 +22,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${CHAOS_VERSION:-0.1.13}"
+
+# Prefer an explicit CHAOS_VERSION; otherwise read the workspace version so the
+# package never drifts from the CARGO_PKG_VERSION embedded in chaos-api.
+if [[ -n "${CHAOS_VERSION:-}" ]]; then
+  VERSION="$CHAOS_VERSION"
+else
+  VERSION="$(grep -m1 '^version' "$ROOT_DIR/Cargo.toml" | sed 's/.*= *"\(.*\)"/\1/')"
+  VERSION="${VERSION:-0.1.0}"
+fi
 
 # Normalize architecture: debian name (amd64|arm64)
 HOST_DEB="$(dpkg --print-architecture 2>/dev/null || true)"
@@ -118,6 +126,31 @@ if [[ -z "$DAE_BIN" ]]; then
   done
 fi
 
+# --- Step 4.5: Bundle GeoIP/GeoSite datasets ---
+# dae FATALs at startup when routing rules reference geoip()/geosite() and the
+# datasets are absent, so ship them inside the package. Sources match the
+# runtime update endpoints (crates/chaos-api/src/routes/runtime.rs).
+GEOIP_DATA_URL="${CHAOS_GEOIP_URL:-https://github.com/v2fly/geoip/releases/latest/download/geoip.dat}"
+GEOSITE_DATA_URL="${CHAOS_GEOSITE_URL:-https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat}"
+GEO_DATA_DIR="$PKG_DIR/usr/share/chaos"
+if [[ "${CHAOS_SKIP_GEO_DATA:-0}" != "1" ]]; then
+  echo "==> Bundling GeoIP/GeoSite datasets..."
+  mkdir -p "$GEO_DATA_DIR"
+  curl -fsSL -o "$GEO_DATA_DIR/geoip.dat" "$GEOIP_DATA_URL"
+  curl -fsSL -o "$GEO_DATA_DIR/geosite.dat" "$GEOSITE_DATA_URL"
+  # Sanity check: these datasets are multiple MB; anything smaller is a bad
+  # download (e.g. a captive-portal or error page).
+  for f in geoip.dat geosite.dat; do
+    sz="$(stat -c%s "$GEO_DATA_DIR/$f" 2>/dev/null || echo 0)"
+    if [[ "$sz" -lt 1048576 ]]; then
+      echo "error: $f download looks broken ($sz bytes); clean dist/ and retry, or set CHAOS_SKIP_GEO_DATA=1" >&2
+      exit 1
+    fi
+  done
+else
+  echo "WARNING: CHAOS_SKIP_GEO_DATA=1; package will not bundle geo data"
+fi
+
 # --- Step 5: Assemble package tree ---
 echo "==> Assembling package..."
 
@@ -149,7 +182,10 @@ Package: $PKG_NAME
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: chaos <chaos@localhost>
-Depends: libc6, ca-certificates
+# Built inside Debian 12 (glibc 2.36); the version bound turns a runtime
+# restart-loop into a clear dpkg error on older hosts. curl is used by the
+# in-app self-update script.
+Depends: libc6 (>= 2.36), ca-certificates, curl
 Description: Modern control plane for dae
  Chaos is a modern proxy control plane: Rust REST API + SvelteKit console
  + vendored dae data plane. Full replacement for daed as an installable product.
@@ -208,6 +244,27 @@ if [ "$1" = "purge" ]; then
 fi
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/postrm"
+
+cat > "$PKG_DIR/DEBIAN/preinst" <<'EOF'
+#!/bin/sh
+set -e
+# chaos binaries are linked against the glibc from Debian 12 (2.36). Refuse to
+# install on hosts with an older glibc so users get a clear message instead of
+# a Restart=on-failure loop in chaos.service (also covers tar.gz installs,
+# where dpkg's Depends check does not apply).
+need=2.36
+got="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+if [ -n "$got" ] && [ "$got" != "$need" ]; then
+  older="$(printf '%s\n%s\n' "$need" "$got" | sort -V | head -n1)"
+  if [ "$older" = "$got" ]; then
+    echo "error: chaos requires glibc >= $need, but this host has $got." >&2
+    echo "Please upgrade to Debian 12+ or Ubuntu 24.04+ before installing." >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+chmod 755 "$PKG_DIR/DEBIAN/preinst"
 
 # --- Step 6: Build .deb and FHS tar.gz ---
 DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"

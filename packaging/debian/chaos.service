@@ -29,5 +29,9 @@ NoNewPrivileges=false
 ProtectHome=read-only
 ReadWritePaths=/var/lib/chaos
 
+# Clean up dae's netns mount left by unclean exits (reboot mid-upgrade, OOM, kill -9)
+ExecStopPost=-/usr/bin/umount /run/netns/daens
+ExecStopPost=-/bin/rm -f /run/netns/daens
+
 [Install]
 WantedBy=multi-user.target

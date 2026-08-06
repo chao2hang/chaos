@@ -16,7 +16,13 @@
 
 services:
   chaos:
-    build: .
+    build:
+      context: .
+      args:
+        # Host-native dae binary fetched by ./scripts/fetch-dae.sh. For cross-arch
+        # builds (e.g. buildx --platform linux/arm64) point at the arch layout:
+        #   DAE_BIN: third_party/dae/current/arm64/dae
+        DAE_BIN: third_party/dae/current/dae
     container_name: chaos
     privileged: true
     network_mode: host

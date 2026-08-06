@@ -9,7 +9,7 @@ on:
       version:
         description: "Package version without leading v (default: 0.1.0)"
         required: false
-        default: "0.1.13"
+        default: "0.1.15"
 
 permissions:
   contents: write
@@ -27,8 +27,17 @@ jobs:
             arch: arm64
             dae_arch: arm64
     runs-on: ${{ matrix.os }}
+    # Build inside Debian 12 so the shipped binaries link against glibc 2.36
+    # and run on bookworm out of the box (a bare ubuntu-latest build would
+    # require glibc 2.39 and break Debian 12 hosts). glibc of the container
+    # (2.36) matches the Docker runtime image (bookworm-slim).
+    container: debian:12
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: apt-get update && apt-get install -y --no-install-recommends \
+               dpkg-dev curl ca-certificates unzip xz-utils
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,9 +53,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
 
       - name: Install JS deps
         run: pnpm install --frozen-lockfile

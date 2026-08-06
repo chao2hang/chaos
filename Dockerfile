@@ -62,12 +62,26 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create chaos user and directories
 RUN useradd -r -s /bin/false chaos && \
-    mkdir -p /var/lib/chaos /usr/lib/chaos/bin /usr/share/chaos/web && \
+    mkdir -p /var/lib/chaos /usr/lib/chaos/bin /usr/share/chaos/web /usr/share/chaos && \
     chown -R chaos:chaos /var/lib/chaos
+
+# dae requires geoip.dat/geosite.dat at startup; bundle them (sources match
+# the runtime update endpoints in crates/chaos-api/src/routes/runtime.rs).
+# Offline builds can skip with: --build-arg CHAOS_SKIP_GEO_DATA=1
+ARG CHAOS_SKIP_GEO_DATA=0
+RUN if [ "$CHAOS_SKIP_GEO_DATA" != "1" ]; then \
+      curl -fsSL -o /usr/share/chaos/geoip.dat \
+        https://github.com/v2fly/geoip/releases/latest/download/geoip.dat && \
+      curl -fsSL -o /usr/share/chaos/geosite.dat \
+        https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat && \
+      test "$(stat -c%s /usr/share/chaos/geoip.dat)" -ge 1048576 && \
+      test "$(stat -c%s /usr/share/chaos/geosite.dat)" -ge 1048576; \
+    fi
 
 # Copy API binary
 COPY --from=api /usr/local/bin/chaos-api /usr/lib/chaos/bin/chaos-api
@@ -78,9 +92,12 @@ COPY --from=prober /out/chaos-prober /usr/lib/chaos/bin/chaos-prober
 # Copy web assets
 COPY --from=web /app/apps/web/build /usr/share/chaos/web
 
-# Copy dae binary if present (fetched via scripts/fetch-dae.sh before build)
-# The build will succeed without it; runtime reports dae_binary_missing.
-COPY third_party/dae/current/dae* /usr/lib/chaos/bin/dae
+# Copy the vendored dae binary. scripts/fetch-dae.sh stores it at
+# third_party/dae/current/dae (host-native) or current/<arch>/dae when
+# CHAOS_DAE_ARCH is set for cross builds. Point DAE_BIN at the right path:
+#   docker build --build-arg DAE_BIN=third_party/dae/current/arm64/dae ...
+ARG DAE_BIN=third_party/dae/current/dae
+COPY $DAE_BIN /usr/lib/chaos/bin/dae
 
 # Copy locales
 COPY locales/ /usr/share/chaos/locales/

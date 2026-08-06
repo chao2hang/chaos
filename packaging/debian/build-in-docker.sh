@@ -11,7 +11,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARCH="${1:-arm64}"
-VERSION="${CHAOS_VERSION:-0.1.13}"
+
+# Prefer an explicit CHAOS_VERSION; otherwise read the workspace version so the
+# package never drifts from the CARGO_PKG_VERSION embedded in chaos-api.
+if [[ -n "${CHAOS_VERSION:-}" ]]; then
+  VERSION="$CHAOS_VERSION"
+else
+  VERSION="$(grep -m1 '^version' "$ROOT_DIR/Cargo.toml" | sed 's/.*= *"\(.*\)"/\1/')"
+  VERSION="${VERSION:-0.1.0}"
+fi
 
 case "$ARCH" in
   amd64|x86_64) ARCH=amd64; PLATFORM=linux/amd64; DAE_ARCH=x86_64 ;;
@@ -56,13 +64,15 @@ docker run --rm --platform "$PLATFORM" \
     set -euo pipefail
     apt-get update
     apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev ca-certificates curl unzip dpkg-dev build-essential \
-      nodejs npm
+      pkg-config libssl-dev ca-certificates curl unzip dpkg-dev build-essential
+    # Node.js 22: the bookworm distro nodejs is 18, but Vite 8 needs >= 20.19.
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+    node --version
     curl -fsSL "https://go.dev/dl/go${CHAOS_GO_VERSION}.linux-${CHAOS_GO_ARCH}.tar.gz" -o /tmp/go.tgz
     rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
     export PATH=/usr/local/go/bin:$PATH
     go version
-    # Node 20+ preferred; if distro node is old, use corepack/npx pnpm via npm
     npm install -g pnpm@10
     # Ensure workspace deps
     if [[ ! -f pnpm-lock.yaml ]]; then
