@@ -465,6 +465,12 @@ impl DaeManager {
             cmd.arg("--disable-sudo");
         }
 
+        // dae sets up its own netns (mounted at /run/netns/daens) at startup and
+        // bails with "file exists" if a stale mount from an unclean exit is still
+        // around. Safe here: all paths into spawn_run have dae stopped already.
+        #[cfg(unix)]
+        cleanup_stale_netns();
+
         // Compatibility defaults for virtualized / vNIC environments (KVM/virtio):
         // dae's userspace TCP relay combined with NIC checksum/segmentation
         // offloads can corrupt forwarded payloads (TLS "bad record mac",
@@ -520,8 +526,19 @@ impl DaeManager {
             );
         }
 
-        // Detach: leave process running without reaping here.
-        std::mem::forget(child);
+        // Detach but keep reaping: a background thread owns the Child handle and
+        // `wait()`s on exit, so a dae that dies later (crash, OOM, kill -9) is
+        // promptly reaped instead of lingering as a zombie under chaos-api.
+        std::thread::spawn(move || {
+            match child.wait() {
+                Ok(status) => {
+                    tracing::info!(pid, status = %status, "dae process exited (reaped)");
+                }
+                Err(error) => {
+                    tracing::warn!(pid, error = %error, "failed to reap dae process");
+                }
+            }
+        });
         Ok(())
     }
 
@@ -540,6 +557,12 @@ fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<
         .map(|s| s.success())
         .unwrap_or(false);
     if !alive {
+        return false;
+    }
+    // A zombie answers `kill -0` but is dead. Treat it as not alive so that
+    // is_running()/stop() never stall on an unreaped child (the spawn_run
+    // reaper thread reaps promptly, but between exit and reap this can occur).
+    if proc_stat_state(pid) == Some('Z') {
         return false;
     }
     use std::os::unix::ffi::OsStrExt;
@@ -580,6 +603,41 @@ fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<
     args.contains(&b"run".as_slice())
         && args.contains(&b"-c".as_slice())
         && args.contains(&config.as_os_str().as_bytes())
+}
+
+/// Parse the process state field (3rd field) from `/proc/<pid>/stat`.
+///
+/// The comm field is wrapped in parens and may itself contain spaces or parens
+/// (e.g. `(dae (worker))`), so we scan for the *last* `)` rather than splitting
+/// on whitespace. Returns `None` for malformed input.
+fn parse_proc_stat_state(stat: &str) -> Option<char> {
+    let close = stat.rfind(')')?;
+    stat.get(close + 1..)?.trim_start().chars().next()
+}
+
+/// Process state for `pid` per `/proc/<pid>/stat`, if readable.
+#[cfg(unix)]
+fn proc_stat_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat_state(&stat)
+}
+
+/// Remove a stale dae network-namespace mount left by an unclean exit (host
+/// reboot mid-upgrade, OOM, `kill -9`). dae refuses to start when
+/// `/run/netns/daens` already exists. Only invoked when no dae process is
+/// running (every call path into `spawn_run` guarantees that), so this is safe;
+/// failures are tolerated and logged at debug level.
+#[cfg(unix)]
+fn cleanup_stale_netns() {
+    const NETNS_PATH: &str = "/run/netns/daens";
+    let commands: [(&str, &[&str]); 2] = [("umount", &[NETNS_PATH]), ("rm", &["-f", NETNS_PATH])];
+    for (cmd, args) in commands {
+        match Command::new(cmd).args(args).status() {
+            Ok(status) if status.success() => tracing::debug!(cmd, "removed stale dae netns mount"),
+            Ok(_) => tracing::debug!(cmd, "no stale dae netns mount to remove"),
+            Err(error) => tracing::debug!(cmd, error = %error, "dae netns cleanup skipped"),
+        }
+    }
 }
 
 /// Set a dae compatibility env var to `"1"` on `cmd` unless the operator has
@@ -769,5 +827,24 @@ mod tests {
         }
         #[cfg(not(windows))]
         assert_eq!(status.kind, "linux-dae");
+    }
+
+    #[test]
+    fn proc_stat_state_parses_zombie_and_normal() {
+        // Classic zombie line: `pid (comm) Z ...`
+        assert_eq!(parse_proc_stat_state("123 (dae) Z 1 2 3"), Some('Z'));
+        assert_eq!(parse_proc_stat_state("123 (dae) S 1 2 3"), Some('S'));
+        // comm may contain spaces and parens; state is after the LAST `)`.
+        assert_eq!(
+            parse_proc_stat_state("456 (dae (with parens)) S 1 2 3"),
+            Some('S')
+        );
+        assert_eq!(
+            parse_proc_stat_state("789 (name with spaces) R 0 0"),
+            Some('R')
+        );
+        // Malformed input: no closing paren / nothing after the comm.
+        assert_eq!(parse_proc_stat_state("no closing paren"), None);
+        assert_eq!(parse_proc_stat_state("123 (dae)"), None);
     }
 }

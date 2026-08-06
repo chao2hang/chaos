@@ -109,7 +109,10 @@
 			const res = await checkUpdate();
 			versionInfo = res.version;
 			updateStatus = res.status;
-			if (res.version.update_available) {
+			if (res.version.error) {
+				// GitHub unreachable: not a chaos failure — show a muted hint.
+				toast.warning({ title: t('settings.updateCheckUnavailable') });
+			} else if (res.version.update_available) {
 				toast.success({ title: t('settings.updateAvailable', { version: res.version.latest ?? '' }) });
 			} else {
 				toast.success({ title: t('settings.noUpdate') });
@@ -217,6 +220,9 @@
 			</div>
 			{#if updateStatus.message}
 				<p class="update-message">{updateStatus.message}</p>
+			{/if}
+			{#if versionInfo?.error}
+				<p class="update-message update-error">{t('settings.updateCheckUnavailable')}</p>
 			{/if}
 			<div class="update-actions">
 				<Button variant="secondary" loading={checking} onclick={() => void checkForUpdates()}>
@@ -352,6 +358,10 @@
 	.update-message {
 		color: var(--ink-muted);
 		font-size: 0.74rem;
+	}
+
+	.update-error {
+		color: var(--warning, #b7791f);
 	}
 
 	.update-actions {

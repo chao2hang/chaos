@@ -34,6 +34,10 @@ pub struct VersionInfo {
     pub download_url: Option<String>,
     pub asset_name: Option<String>,
     pub dae_version: Option<String>,
+    /// Non-empty when the update check could not reach GitHub. Present so the
+    /// UI can show "version unknown / check unavailable" instead of an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,17 +83,81 @@ pub struct ApplyUpdateResponse {
     pub status: UpdateStatus,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GithubRelease {
     tag_name: String,
     html_url: String,
     assets: Vec<GithubAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GithubAsset {
     name: String,
     browser_download_url: String,
+}
+
+/// Last successful release check, cached on disk so a transient GitHub outage
+/// (or a firewall/GFW blocking api.github.com) degrades to stale data instead
+/// of a 500.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedRelease {
+    fetched_at_unix: u64,
+    release: GithubRelease,
+}
+
+/// Where the last successful release check is cached. Overridable via
+/// `CHAOS_UPDATE_CACHE_FILE` (used by tests).
+const UPDATE_CACHE_FILE: &str = "/var/lib/chaos/update-check-cache.json";
+/// A cached release older than this is not served.
+const UPDATE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// `CHAOS_DISABLE_RELEASE_CHECK=1` turns off all outbound GitHub release
+/// checks (for fully offline / firewalled deployments).
+fn release_check_disabled() -> bool {
+    matches!(
+        std::env::var("CHAOS_DISABLE_RELEASE_CHECK")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn update_cache_path() -> PathBuf {
+    std::env::var_os("CHAOS_UPDATE_CACHE_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(UPDATE_CACHE_FILE))
+}
+
+fn write_cached_release(release: &GithubRelease) {
+    let cached = CachedRelease {
+        fetched_at_unix: unix_now(),
+        release: release.clone(),
+    };
+    let path = update_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&cached) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Read the cached release if it is fresh enough to serve. `None` when absent,
+/// stale, or unreadable.
+fn read_cached_release() -> Option<GithubRelease> {
+    let raw = std::fs::read_to_string(update_cache_path()).ok()?;
+    let cached: CachedRelease = serde_json::from_str(&raw).ok()?;
+    (unix_now().saturating_sub(cached.fetched_at_unix) <= UPDATE_CACHE_TTL.as_secs())
+        .then_some(cached.release)
 }
 
 pub fn update_router() -> Router<AppState> {
@@ -103,23 +171,64 @@ async fn check_update(
     _user: AdminUser,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<CheckUpdateResponse>, ApiError> {
-    let latest = fetch_latest_release(locale).await?;
-    let latest_version = latest.tag_name.trim_start_matches('v').to_string();
-    let (download_url, asset_name) = select_asset(&latest.assets);
-    let update_available = newer_version(&latest_version, CURRENT_VERSION);
+    if release_check_disabled() {
+        return Ok(Json(CheckUpdateResponse {
+            version: version_info(None, None, None),
+            status: read_status(),
+        }));
+    }
+
+    // A GitHub outage / blocked network must not surface as a 500 ("chaos is
+    // broken"). Degrade: serve a fresh cached result when available, otherwise
+    // report "version unknown" — always with HTTP 200 and a check_error hint.
+    let (latest, error) = match fetch_latest_release(locale).await {
+        Ok(release) => {
+            write_cached_release(&release);
+            (Some(release), None)
+        }
+        Err(failure) => match read_cached_release() {
+            Some(cached) => (
+                Some(cached),
+                Some("update check failed; showing cached result".to_string()),
+            ),
+            None => (None, Some(format!("update check unavailable: {failure}"))),
+        },
+    };
 
     Ok(Json(CheckUpdateResponse {
-        version: VersionInfo {
-            current: CURRENT_VERSION.to_string(),
-            latest: Some(latest_version),
-            update_available,
-            release_url: Some(latest.html_url),
-            download_url,
-            asset_name,
-            dae_version: read_dae_version(),
-        },
+        version: version_info(
+            latest.as_ref(),
+            error,
+            latest
+                .as_ref()
+                .map(|release| select_asset(&release.assets))
+                .unwrap_or((None, None)),
+        ),
         status: read_status(),
     }))
+}
+
+/// Build a `VersionInfo` from an optional fetched release. When `release` is
+/// `None` the result reports "version unknown" (no update available).
+fn version_info(
+    release: Option<&GithubRelease>,
+    error: Option<String>,
+    (download_url, asset_name): (Option<String>, Option<String>),
+) -> VersionInfo {
+    let latest_version = release
+        .map(|release| release.tag_name.trim_start_matches('v').to_string());
+    VersionInfo {
+        current: CURRENT_VERSION.to_string(),
+        latest: latest_version.clone(),
+        update_available: latest_version
+            .as_deref()
+            .is_some_and(|version| newer_version(version, CURRENT_VERSION)),
+        release_url: release.map(|release| release.html_url.clone()),
+        download_url,
+        asset_name,
+        dae_version: read_dae_version(),
+        error,
+    }
 }
 
 async fn update_status(_user: AdminUser) -> Result<Json<UpdateStatus>, ApiError> {
@@ -230,16 +339,16 @@ async fn fetch_latest_release(locale: chaos_i18n::Locale) -> Result<GithubReleas
         .timeout(HTTP_TIMEOUT)
         .user_agent("chaos-self-update")
         .build()
-        .map_err(|err| ApiError::internal_logged(locale, err))?;
+        .map_err(|err| ApiError::update_check_failed(locale, err))?;
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let response = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|err| ApiError::internal_logged(locale, format!("fetch release: {err}")))?;
+        .map_err(|err| ApiError::update_check_failed(locale, format!("fetch release: {err}")))?;
     if !response.status().is_success() {
-        return Err(ApiError::internal_logged(
+        return Err(ApiError::update_check_failed(
             locale,
             format!("GitHub release API returned {}", response.status()),
         ));
@@ -247,7 +356,7 @@ async fn fetch_latest_release(locale: chaos_i18n::Locale) -> Result<GithubReleas
     response
         .json()
         .await
-        .map_err(|err| ApiError::internal_logged(locale, format!("parse release: {err}")))
+        .map_err(|err| ApiError::update_check_failed(locale, format!("parse release: {err}")))
 }
 
 fn select_asset(assets: &[GithubAsset]) -> (Option<String>, Option<String>) {
@@ -555,6 +664,7 @@ fn read_dae_version() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn parses_versions() {
@@ -634,5 +744,103 @@ mod tests {
             select_checksum(&assets).as_deref(),
             Some("https://example/sums")
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Update-check degradation: cache + disable switch + version_info
+    // ------------------------------------------------------------------
+
+    // Serialize env-mutating tests (set_var/remove_var are global).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn sample_release() -> GithubRelease {
+        GithubRelease {
+            tag_name: "v0.2.0".into(),
+            html_url: "https://github.com/chao2hang/chaos/releases/tag/v0.2.0".into(),
+            assets: vec![
+                GithubAsset {
+                    name: "chaos_0.2.0_amd64.deb".into(),
+                    browser_download_url: "https://example/amd64.deb".into(),
+                },
+                GithubAsset {
+                    name: "SHA256SUMS".into(),
+                    browser_download_url: "https://example/SHA256SUMS".into(),
+                },
+            ],
+        }
+    }
+
+    fn cache_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("chaos-update-cache-{}", std::process::id()))
+    }
+
+    #[test]
+    fn cached_release_round_trips() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cache.json");
+        std::env::set_var("CHAOS_UPDATE_CACHE_FILE", &path);
+
+        write_cached_release(&sample_release());
+        let cached = read_cached_release().expect("fresh cache should be served");
+        assert_eq!(cached.tag_name, "v0.2.0");
+        assert_eq!(cached.assets.len(), 2);
+
+        std::env::remove_var("CHAOS_UPDATE_CACHE_FILE");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_cache_is_not_served() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stale.json");
+        std::env::set_var("CHAOS_UPDATE_CACHE_FILE", &path);
+
+        let stale = CachedRelease {
+            fetched_at_unix: unix_now().saturating_sub(UPDATE_CACHE_TTL.as_secs() + 1),
+            release: sample_release(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert!(read_cached_release().is_none());
+
+        std::env::remove_var("CHAOS_UPDATE_CACHE_FILE");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn release_check_disabled_honors_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for value in ["1", "true", "yes", "TRUE"] {
+            std::env::set_var("CHAOS_DISABLE_RELEASE_CHECK", value);
+            assert!(release_check_disabled(), "value {value} should disable");
+        }
+        for value in ["0", "false", ""] {
+            std::env::set_var("CHAOS_DISABLE_RELEASE_CHECK", value);
+            assert!(!release_check_disabled(), "value {value:?} should not disable");
+        }
+        std::env::remove_var("CHAOS_DISABLE_RELEASE_CHECK");
+        assert!(!release_check_disabled());
+    }
+
+    #[test]
+    fn version_info_reports_unknown_when_check_fails() {
+        let info = version_info(None, Some("network down".into()), (None, None));
+        assert!(info.latest.is_none());
+        assert!(!info.update_available);
+        assert_eq!(info.error.as_deref(), Some("network down"));
+    }
+
+    #[test]
+    fn version_info_reports_update_from_release() {
+        let release = sample_release();
+        let (url, name) = select_asset(&release.assets);
+        let info = version_info(Some(&release), None, (url, name));
+        assert_eq!(info.latest.as_deref(), Some("0.2.0"));
+        assert!(info.update_available);
+        assert!(info.error.is_none());
+        assert_eq!(info.download_url.as_deref(), Some("https://example/amd64.deb"));
     }
 }

@@ -54,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
     let jwt_secret = load_or_create_jwt_secret()?;
     let state = AppState::new(pool, jwt_secret);
     routes::orchestration::recover_pending_publication(&state).await?;
+    // dae FATALs at startup when routing rules reference geoip()/geosite() and
+    // the datasets are absent; make sure they exist before autostarting dae.
+    routes::runtime::ensure_geo_datasets().await;
     routes::runtime::restore_persisted_runtime().await;
 
     let mut app = Router::new()

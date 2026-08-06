@@ -73,6 +73,18 @@ impl ApiError {
         tracing::error!(error = %log, "internal error");
         Self::internal(locale)
     }
+
+    /// External service unreachable (e.g. GitHub release API for the update
+    /// check). Logged at warn, not error: a blocked/offline host is expected in
+    /// many deployments and must not look like chaos itself is broken.
+    pub fn update_check_failed(locale: Locale, detail: impl std::fmt::Display) -> Self {
+        tracing::warn!(error = %detail, "update check failed");
+        Self::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "update_check_failed",
+            locale,
+        )
+    }
 }
 
 #[derive(Serialize)]

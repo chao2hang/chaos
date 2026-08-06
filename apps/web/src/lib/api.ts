@@ -182,6 +182,8 @@ export type VersionInfo = {
 	download_url: string | null;
 	asset_name: string | null;
 	dae_version: string | null;
+	/** Non-empty when the update check could not reach GitHub (version unknown). */
+	error?: string | null;
 };
 
 export type UpdateStatus = {

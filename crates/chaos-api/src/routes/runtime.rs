@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::io::SeekFrom;
+use std::path::PathBuf;
 
 use axum::extract::{Query, State};
 use axum::response::sse::{Event, Sse};
@@ -49,6 +50,11 @@ const GEOIP_DATA_URL: &str = "https://github.com/v2fly/geoip/releases/latest/dow
 const GEOSITE_DATA_URL: &str =
     "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat";
 const MAX_GEO_DATA_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where the .deb / Docker image ships the GeoIP/GeoSite datasets that dae
+/// requires at startup. chaos copies them into the dae work dir when the
+/// work-dir copy is missing (see [`ensure_geo_datasets`]).
+const PACKAGED_GEO_DIR: &str = "/usr/share/chaos";
 
 #[derive(Debug, Serialize)]
 pub struct ApplyResponse {
@@ -264,6 +270,93 @@ async fn download_geo_dataset(
         return Err(ApiError::bad_request(too_large_code, locale));
     }
     Ok(data.to_vec())
+}
+
+/// Whether startup may download a missing geo dataset from the network.
+/// `CHAOS_GEO_DATA_AUTO_FETCH=0` disables the download fallback (the packaged
+/// copy in `PACKAGED_GEO_DIR` is still used when present).
+fn geo_data_auto_fetch_enabled() -> bool {
+    !matches!(
+        std::env::var("CHAOS_GEO_DATA_AUTO_FETCH")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// Ensure the dae GeoIP/GeoSite datasets exist before dae is (auto)started.
+///
+/// Priority, per dataset:
+/// 1. an existing work-dir copy wins (keeps user-updated data);
+/// 2. otherwise copy the copy bundled in `/usr/share/chaos` (new packages);
+/// 3. otherwise download the canonical v2fly dataset, unless
+///    `CHAOS_GEO_DATA_AUTO_FETCH=0`.
+///
+/// All failures are logged as actionable warnings and never crash the API: a
+/// missing dataset only makes dae routing rules that reference geoip()/
+/// geosite() fail with the dae startup FATAL described in the packaging issue.
+pub(crate) async fn ensure_geo_datasets() {
+    let manager = manager_for_status_or_stop();
+    for (filename, url) in [("geoip.dat", GEOIP_DATA_URL), ("geosite.dat", GEOSITE_DATA_URL)] {
+        if manager.work_dir.join(filename).is_file() {
+            continue;
+        }
+
+        let packaged = PathBuf::from(PACKAGED_GEO_DIR).join(filename);
+        if packaged.is_file() {
+            match tokio::fs::copy(&packaged, manager.work_dir.join(filename)).await {
+                Ok(_) => {
+                    tracing::info!(
+                        filename,
+                        from = %packaged.display(),
+                        "copied bundled geo dataset"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(filename, error = %error, "failed to copy bundled geo dataset");
+                }
+            }
+        }
+
+        if !geo_data_auto_fetch_enabled() {
+            tracing::warn!(
+                filename,
+                "missing geo dataset and CHAOS_GEO_DATA_AUTO_FETCH is disabled; \
+                 use the dashboard (GeoIP/GeoSite update) before applying routing rules"
+            );
+            continue;
+        }
+
+        match download_geo_dataset(url, "geoip_data_too_large", Locale::En).await {
+            Ok(data) => {
+                let result = match filename {
+                    "geoip.dat" => manager.write_geoip_data(&data).await,
+                    _ => manager.write_geosite_data(&data).await,
+                };
+                match result {
+                    Ok(_) => tracing::info!(filename, "downloaded geo dataset at startup"),
+                    Err(error) => {
+                        tracing::warn!(
+                            filename,
+                            error = %error,
+                            "failed to write downloaded geo dataset"
+                        );
+                    }
+                }
+            }
+            Err(api_error) => {
+                tracing::warn!(
+                    filename,
+                    error = %api_error.message,
+                    "failed to download geo dataset at startup; \
+                     use the dashboard (GeoIP/GeoSite update) to retry"
+                );
+            }
+        }
+    }
 }
 
 async fn update_geoip_data(
