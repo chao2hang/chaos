@@ -9,7 +9,7 @@ on:
       version:
         description: "Package version without leading v (default: 0.1.0)"
         required: false
-        default: "0.1.16"
+        default: "0.1.17"
 
 permissions:
   contents: write
@@ -39,7 +39,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            dpkg-dev curl ca-certificates unzip xz-utils
+            build-essential pkg-config libssl-dev dpkg-dev curl ca-certificates unzip xz-utils
 
       - uses: dtolnay/rust-toolchain@stable
 
