@@ -5,14 +5,17 @@ use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::extract::State;
 use axum::http::request::Parts;
-use axum::routing::{get, post};
+use axum::http::StatusCode;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chaos_i18n::Locale;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::rngs::OsRng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
@@ -79,7 +82,8 @@ impl LoginRateLimiter {
     }
 }
 
-static RATE_LIMITER: LazyLock<Mutex<LoginRateLimiter>> = LazyLock::new(|| Mutex::new(LoginRateLimiter::new()));
+static RATE_LIMITER: LazyLock<Mutex<LoginRateLimiter>> =
+    LazyLock::new(|| Mutex::new(LoginRateLimiter::new()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -101,6 +105,38 @@ pub struct AuthUser {
     pub user_id: String,
     pub username: String,
     pub role: String,
+}
+
+/// Authenticated caller for automation endpoints. JWT callers retain the
+/// existing behaviour; API-key callers are additionally checked against the
+/// requested scope by the endpoint.
+#[derive(Debug, Clone)]
+pub struct ExternalUser {
+    pub user: AuthUser,
+    pub scopes: HashSet<String>,
+    pub api_key: bool,
+}
+
+impl ExternalUser {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        !self.api_key || self.scopes.contains(scope)
+    }
+
+    pub fn require_scope(&self, scope: &'static str, locale: Locale) -> Result<(), ApiError> {
+        if self.has_scope(scope) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("api_key_scope_required", locale))
+        }
+    }
+
+    pub fn require_admin(&self, locale: Locale) -> Result<(), ApiError> {
+        if self.user.is_admin() {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("admin_required", locale))
+        }
+    }
 }
 
 impl AuthUser {
@@ -155,6 +191,123 @@ pub fn auth_router() -> Router<AppState> {
         .route("/setup", post(setup))
         .route("/login", post(login))
         .route("/status", get(status))
+        .route("/api-keys", get(list_keys).post(create_key))
+        .route("/api-keys/{id}", delete(revoke_key))
+}
+
+const API_KEY_PREFIX: &str = "chaos_sk_";
+const API_KEY_SCOPES: [&str; 6] = [
+    "orchestration:read",
+    "orchestration:validate",
+    "orchestration:simulate",
+    "orchestration:plan",
+    "orchestration:publish",
+    "diagnostics:read",
+];
+
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyRequest {
+    name: String,
+    #[serde(default = "default_api_key_scopes")]
+    scopes: Vec<String>,
+}
+
+fn default_api_key_scopes() -> Vec<String> {
+    vec![
+        "orchestration:read".into(),
+        "orchestration:validate".into(),
+        "orchestration:simulate".into(),
+        "orchestration:plan".into(),
+        "diagnostics:read".into(),
+    ]
+}
+
+#[derive(Debug, Serialize)]
+struct ApiKeyResponse {
+    id: String,
+    name: String,
+    key_prefix: String,
+    scopes: Vec<String>,
+    created_at: String,
+    last_used_at: Option<String>,
+    revoked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+}
+
+fn api_key_response(key: chaos_store::ApiKey, secret: Option<String>) -> ApiKeyResponse {
+    let scopes = serde_json::from_str(&key.scopes).unwrap_or_default();
+    ApiKeyResponse {
+        id: key.id,
+        name: key.name,
+        key_prefix: key.key_prefix,
+        scopes,
+        created_at: key.created_at,
+        last_used_at: key.last_used_at,
+        revoked_at: key.revoked_at,
+        key: secret,
+    }
+}
+
+async fn create_key(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+    Json(body): Json<CreateApiKeyRequest>,
+) -> Result<Json<ApiKeyResponse>, ApiError> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() || name.len() > 128 || body.scopes.is_empty() {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    let mut scopes = body.scopes;
+    scopes.sort();
+    scopes.dedup();
+    if scopes
+        .iter()
+        .any(|scope| !API_KEY_SCOPES.contains(&scope.as_str()))
+    {
+        return Err(ApiError::bad_request("invalid_request", locale));
+    }
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    let secret = format!("{API_KEY_PREFIX}{}", hex::encode(bytes));
+    let hash = Sha256::digest(secret.as_bytes());
+    let key = chaos_store::create_api_key(
+        &state.pool,
+        &admin.0.user_id,
+        &name,
+        &secret[..API_KEY_PREFIX.len() + 8],
+        &hex::encode(hash),
+        &serde_json::to_string(&scopes).map_err(|e| ApiError::internal_logged(locale, e))?,
+    )
+    .await?;
+    Ok(Json(api_key_response(key, Some(secret))))
+}
+
+async fn list_keys(
+    admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ApiKeyResponse>>, ApiError> {
+    let keys = chaos_store::list_api_keys(&state.pool, &admin.0.user_id).await?;
+    Ok(Json(
+        keys.into_iter()
+            .map(|key| api_key_response(key, None))
+            .collect(),
+    ))
+}
+
+async fn revoke_key(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    RequestLocale(locale): RequestLocale,
+) -> Result<StatusCode, ApiError> {
+    let keys = chaos_store::list_api_keys(&state.pool, &admin.0.user_id).await?;
+    if !keys.iter().any(|key| key.id == id) {
+        return Err(ApiError::not_found("not_found", locale));
+    }
+    chaos_store::revoke_api_key(&state.pool, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Load JWT secret from `CHAOS_JWT_SECRET` or `./data/jwt.secret`.
@@ -437,6 +590,63 @@ impl FromRequestParts<AppState> for AuthUser {
             user_id: user.id,
             username: user.username,
             role: user.role,
+        })
+    }
+}
+
+impl FromRequestParts<AppState> for ExternalUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let locale = Locale::from_accept_language(
+            parts
+                .headers
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok()),
+        );
+        let auth = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| ApiError::unauthorized("unauthorized", locale))?;
+        let token = auth
+            .strip_prefix("Bearer ")
+            .or_else(|| auth.strip_prefix("bearer "))
+            .ok_or_else(|| ApiError::unauthorized("unauthorized", locale))?;
+
+        if !token.starts_with(API_KEY_PREFIX) {
+            return Ok(Self {
+                user: AuthUser::from_request_parts(parts, state).await?,
+                scopes: API_KEY_SCOPES.iter().map(|s| (*s).to_string()).collect(),
+                api_key: false,
+            });
+        }
+        if token.len() != API_KEY_PREFIX.len() + 64 {
+            return Err(ApiError::unauthorized("invalid_token", locale));
+        }
+        let hash = Sha256::digest(token.as_bytes());
+        let key = chaos_store::find_active_api_key(&state.pool, &hex::encode(hash))
+            .await?
+            .ok_or_else(|| ApiError::unauthorized("invalid_token", locale))?;
+        let user = chaos_store::find_user_by_id(&state.pool, &key.owner_user_id)
+            .await?
+            .ok_or_else(|| ApiError::unauthorized("invalid_token", locale))?;
+        let scopes = serde_json::from_str::<Vec<String>>(&key.scopes)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        chaos_store::touch_api_key(&state.pool, &key.id).await?;
+        Ok(Self {
+            user: AuthUser {
+                user_id: user.id,
+                username: user.username,
+                role: user.role,
+            },
+            scopes,
+            api_key: true,
         })
     }
 }

@@ -667,6 +667,8 @@
   "error.already_initialized": "管理员已初始化",
   "error.invalid_request": "请求无效",
   "error.orchestration_invalid": "编排结构或其引用资源无效",
+  "error.orchestration_unhealthy": "编排没有可用的出口节点",
+  "error.api_key_scope_required": "API Key 未授予此操作权限",
   "error.orchestration_not_published": "请先发布有效编排，再应用运行时",
   "error.orchestration_stale": "已发布节点组中的资源已不存在，请检查并重新发布编排",
   "error.orchestration_needs_republish": "编排引用的资源已变化，请重新发布编排后再应用",

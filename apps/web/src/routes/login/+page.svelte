@@ -58,7 +58,10 @@
 		void checkApi();
 	});
 
-	$effect(() => {
+	// Toast creation reads and writes the shared toast state. Doing that from a
+	// reactive effect makes the effect subscribe to the state it mutates and can
+	// trigger Svelte's effect_update_depth_exceeded loop on this page.
+	onMount(() => {
 		if (expired) {
 			toast.info({ id: 'auth-expired', title: t('auth.login.expired'), duration: 0 });
 		} else {

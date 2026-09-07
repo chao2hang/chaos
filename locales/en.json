@@ -667,6 +667,8 @@
   "error.already_initialized": "An administrator is already initialized",
   "error.invalid_request": "Invalid request",
   "error.orchestration_invalid": "The orchestration graph or one of its resources is invalid",
+  "error.orchestration_unhealthy": "The orchestration has no healthy outbound member",
+  "error.api_key_scope_required": "The API key does not grant this operation",
   "error.orchestration_not_published": "Publish a valid orchestration before applying the runtime",
   "error.orchestration_stale": "A published node-group member no longer exists; review and publish the orchestration again",
   "error.orchestration_needs_republish": "An orchestration source changed; publish the orchestration again before applying",

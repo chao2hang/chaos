@@ -1,5 +1,6 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
+pub mod api_keys;
 pub mod config_plane;
 pub mod config_profiles;
 pub mod latency;
@@ -8,6 +9,9 @@ pub mod nodes;
 pub mod subscriptions;
 pub mod users;
 
+pub use api_keys::{
+    create_api_key, find_active_api_key, list_api_keys, revoke_api_key, touch_api_key, ApiKey,
+};
 pub use config_plane::{
     add_group_member, clear_groups, delete_group, delete_meta, ensure_config_defaults, get_meta,
     insert_group, list_all_group_members, list_dns_rules, list_dns_upstreams, list_group_members,
@@ -162,6 +166,7 @@ mod tests {
             "dns_upstreams",
             "dns_rules",
             "config_meta",
+            "api_keys",
         ] {
             let n: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&pool)

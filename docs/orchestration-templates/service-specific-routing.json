@@ -1,0 +1,17 @@
+{
+  "version": 4,
+  "nodes": [
+    {"id":"start","type":"start","position":{"x":0,"y":0},"data":{}},
+    {"id":"services","type":"rule","position":{"x":220,"y":-80},"data":{"matcher":{"kind":"domain_suffix","pattern":"google.com, youtube.com, github.com"},"priority":10}},
+    {"id":"service-proxy","type":"node_group","position":{"x":500,"y":-80},"data":{"name":"{{SERVICE_GROUP_NAME}}","policy":"min_moving_avg","sources":[{"kind":"node","id":"{{NODE_ID_SERVICE_1}}","weight":1},{"kind":"node","id":"{{NODE_ID_SERVICE_2}}","weight":1}]}},
+    {"id":"default-proxy","type":"node_group","position":{"x":500,"y":120},"data":{"name":"{{DEFAULT_GROUP_NAME}}","policy":"min_moving_avg","sources":[{"kind":"node","id":"{{NODE_ID_DEFAULT_1}}","weight":1},{"kind":"node","id":"{{NODE_ID_DEFAULT_2}}","weight":1}]}},
+    {"id":"direct","type":"builtin","position":{"x":500,"y":300},"data":{"builtin":"direct"}},
+    {"id":"end","type":"end","position":{"x":780,"y":0},"data":{}}
+  ],
+  "edges":[
+    {"id":"start-services","source":"start","target":"services"},
+    {"id":"services-proxy","source":"services","target":"service-proxy"},
+    {"id":"end-default","source":"end","target":"default-proxy"}
+  ],
+  "viewport":{"x":0,"y":0,"zoom":1}
+}

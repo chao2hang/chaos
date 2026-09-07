@@ -14,7 +14,7 @@ use chaos_store::{PublishedGroup, PublishedOrchestrationPlan, PublishedRoutingRu
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{AdminUser, AuthUser};
+use crate::auth::ExternalUser;
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::runtime::ApplyResponse;
@@ -133,6 +133,42 @@ pub fn orchestration_router() -> Router<AppState> {
         .route("/orchestration/validate", post(validate_document))
         .route("/orchestration/publish", post(publish_document))
         .route("/orchestration/simulate", post(simulate_document))
+        .route("/orchestration/plan", post(plan_document))
+        .route("/orchestration/capabilities", get(capabilities))
+}
+
+#[derive(Debug, Serialize)]
+struct CapabilitiesResponse {
+    api_version: &'static str,
+    document_version: u32,
+    authentication: Vec<&'static str>,
+    operations: Vec<&'static str>,
+    publish_requires: Vec<&'static str>,
+    validation_rules: Vec<&'static str>,
+}
+
+async fn capabilities(
+    user: ExternalUser,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<CapabilitiesResponse>, ApiError> {
+    user.require_scope("orchestration:read", locale)?;
+    Ok(Json(CapabilitiesResponse {
+        api_version: "v1",
+        document_version: ORCHESTRATION_VERSION,
+        authentication: vec!["Bearer JWT", "Bearer chaos_sk_<secret>"],
+        operations: vec!["validate", "simulate", "plan", "publish"],
+        publish_requires: vec![
+            "admin user",
+            "orchestration:publish scope",
+            "healthy outbound",
+        ],
+        validation_rules: vec![
+            "graph structure and matcher syntax",
+            "resource references and expanded group membership",
+            "known dead nodes cannot be the only members of a group",
+            "a single healthy member is allowed but reported as degraded",
+        ],
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,10 +179,11 @@ struct SimulateRequest {
 }
 
 async fn simulate_document(
-    _user: AuthUser,
+    user: ExternalUser,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<SimulateRequest>,
 ) -> Result<Json<RouteSimulation>, ApiError> {
+    user.require_scope("orchestration:simulate", locale)?;
     let document = normalize_document(body.document);
     check_document_limits(&document, locale)?;
     let compiled = document.compile().map_err(|report| {
@@ -157,9 +194,11 @@ async fn simulate_document(
 }
 
 async fn get_orchestration(
-    _user: AuthUser,
+    user: ExternalUser,
     State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
 ) -> Result<Json<OrchestrationResponse>, ApiError> {
+    user.require_scope("orchestration:read", locale)?;
     // Drafts are intentionally preferred in the editor, while runtime only ever
     // consumes META_ORCHESTRATION_FLOW (the last successful publication).
     let raw = chaos_store::get_meta(&state.pool, chaos_store::META_ORCHESTRATION_DRAFT)
@@ -195,11 +234,12 @@ async fn get_orchestration(
 }
 
 async fn put_orchestration(
-    _admin: AdminUser,
+    admin: ExternalUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<OrchestrationDocument>, ApiError> {
+    admin.require_admin(locale)?;
     let _runtime_guard = state.runtime_lock.lock().await;
     // Migrate first so v2 drafts are accepted and limits see version 3.
     let document = normalize_document(document);
@@ -211,27 +251,197 @@ async fn put_orchestration(
 }
 
 async fn validate_document(
-    _user: AuthUser,
+    user: ExternalUser,
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<ValidationReport>, ApiError> {
+    user.require_scope("orchestration:validate", locale)?;
     let document = normalize_document(document);
     check_document_limits(&document, locale)?;
     Ok(Json(document.validate()))
 }
 
+#[derive(Debug, Deserialize)]
+struct PlanRequest {
+    document: OrchestrationDocument,
+    /// If true, the caller explicitly accepts groups with only one healthy
+    /// member. This only affects the recommendation, never graph validity.
+    #[serde(default)]
+    allow_degraded_groups: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GroupPlan {
+    node_id: String,
+    name: String,
+    policy: String,
+    member_count: usize,
+    healthy_member_count: usize,
+    unknown_member_count: usize,
+    members: Vec<GroupMemberPlan>,
+}
+
+#[derive(Debug, Serialize)]
+struct GroupMemberPlan {
+    node_id: String,
+    name: Option<String>,
+    alive: Option<bool>,
+    latency_ms: Option<i64>,
+    tested_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanIssue {
+    severity: &'static str,
+    code: &'static str,
+    node_id: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanResponse {
+    document: OrchestrationDocument,
+    validation: ValidationReport,
+    fallback: String,
+    groups: Vec<GroupPlan>,
+    issues: Vec<PlanIssue>,
+    publishable: bool,
+    requires_confirmation: bool,
+}
+
+async fn plan_document(
+    user: ExternalUser,
+    State(state): State<AppState>,
+    RequestLocale(locale): RequestLocale,
+    Json(body): Json<PlanRequest>,
+) -> Result<Json<PlanResponse>, ApiError> {
+    user.require_scope("orchestration:plan", locale)?;
+    let document = normalize_document(body.document);
+    check_document_limits(&document, locale)?;
+    let validation = document.validate();
+    let catalog = SourceCatalog::load(&state).await?;
+    let node_names: HashMap<String, String> = chaos_store::list_nodes(&state.pool)
+        .await?
+        .into_iter()
+        .map(|node| (node.id, node.name))
+        .collect();
+    let latency: HashMap<String, chaos_store::LatencyResult> =
+        chaos_store::list_latency_results(&state.pool)
+            .await?
+            .into_iter()
+            .map(|result| (result.node_id.clone(), result))
+            .collect();
+    let mut issues = Vec::new();
+    let mut groups = Vec::new();
+    let mut fallback = "direct".to_string();
+
+    if let Ok(compiled) = document.compile() {
+        fallback = compiled.fallback;
+    }
+    match expand_document_groups(&document, &catalog) {
+        Ok(expanded) => {
+            for node in document
+                .nodes
+                .iter()
+                .filter(|node| node.kind == FlowNodeKind::NodeGroup)
+            {
+                let members = expanded.get(&node.id).cloned().unwrap_or_default();
+                let details = members
+                    .iter()
+                    .map(|(node_id, _)| {
+                        let result = latency.get(node_id);
+                        GroupMemberPlan {
+                            node_id: node_id.clone(),
+                            name: node_names.get(node_id).cloned(),
+                            alive: result.map(|r| r.alive != 0),
+                            latency_ms: result.and_then(|r| r.latency_ms),
+                            tested_at: result.map(|r| r.tested_at.clone()),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let healthy = details.iter().filter(|m| m.alive == Some(true)).count();
+                let unknown = details.iter().filter(|m| m.alive.is_none()).count();
+                if details.is_empty() {
+                    issues.push(PlanIssue {
+                        severity: "error",
+                        code: "group_source_empty",
+                        node_id: Some(node.id.clone()),
+                        message: "node group expands to no nodes".into(),
+                    });
+                } else if healthy == 0 && unknown == 0 {
+                    issues.push(PlanIssue {
+                        severity: "error",
+                        code: "group_all_members_dead",
+                        node_id: Some(node.id.clone()),
+                        message: "all expanded members failed the latest health test".into(),
+                    });
+                } else if healthy == 1 && unknown == 0 && !body.allow_degraded_groups {
+                    issues.push(PlanIssue {
+                        severity: "warning",
+                        code: "group_no_redundancy",
+                        node_id: Some(node.id.clone()),
+                        message: "only one healthy member; failover is unavailable".into(),
+                    });
+                } else if unknown > 0 {
+                    issues.push(PlanIssue {
+                        severity: "warning",
+                        code: "group_health_unknown",
+                        node_id: Some(node.id.clone()),
+                        message: "one or more members have no recorded health result".into(),
+                    });
+                }
+                groups.push(GroupPlan {
+                    node_id: node.id.clone(),
+                    name: node.data.name.clone(),
+                    policy: node.data.policy.clone(),
+                    member_count: details.len(),
+                    healthy_member_count: healthy,
+                    unknown_member_count: unknown,
+                    members: details,
+                });
+            }
+        }
+        Err(issue) => issues.push(PlanIssue {
+            severity: "error",
+            code: issue.code,
+            node_id: Some(issue.node_id),
+            message: "group source cannot be expanded from current resources".into(),
+        }),
+    }
+    let graph_ok = validation.valid && validation.dae_compatible;
+    let has_error = issues.iter().any(|issue| issue.severity == "error");
+    let has_degraded = issues
+        .iter()
+        .any(|issue| issue.code == "group_no_redundancy");
+    Ok(Json(PlanResponse {
+        document,
+        validation,
+        fallback,
+        groups,
+        publishable: graph_ok && !has_error,
+        requires_confirmation: has_degraded
+            || issues
+                .iter()
+                .any(|issue| issue.code == "group_health_unknown"),
+        issues,
+    }))
+}
+
 async fn publish_document(
-    _admin: AdminUser,
+    admin: ExternalUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(document): Json<OrchestrationDocument>,
 ) -> Result<Json<PublishResponse>, ApiError> {
+    admin.require_admin(locale)?;
+    admin.require_scope("orchestration:publish", locale)?;
     let _runtime_guard = state.runtime_lock.lock().await;
     let document = normalize_document(document);
     check_document_limits(&document, locale)?;
     let catalog = SourceCatalog::load(&state).await?;
     let (document, plan) = prepare_publish_plan(document, &catalog)
         .map_err(|error| map_prepare_error(error, locale))?;
+    ensure_publish_health(&state, &plan, locale).await?;
     let failed_draft = serde_json::to_string(&document)
         .map_err(|error| ApiError::internal_logged(locale, error))?;
     let snapshot = chaos_store::snapshot_orchestration_publication(&state.pool).await?;
@@ -374,6 +584,67 @@ fn prepare_publish_plan(
     ))
 }
 
+async fn ensure_publish_health(
+    state: &AppState,
+    plan: &PublishedOrchestrationPlan,
+    locale: chaos_i18n::Locale,
+) -> Result<(), ApiError> {
+    let document: OrchestrationDocument = serde_json::from_str(&plan.document)
+        .map_err(|error| ApiError::internal_logged(locale, error))?;
+    let compiled = document
+        .compile()
+        .map_err(|_| ApiError::bad_request("orchestration_invalid", locale))?;
+    let fallback_outbound = compiled.fallback.clone();
+    let mut active_outbounds: HashSet<String> = compiled
+        .conditions
+        .into_iter()
+        .map(|route| route.outbound)
+        .collect();
+    active_outbounds.insert(fallback_outbound);
+    let active_group_nodes: HashSet<String> = document
+        .nodes
+        .iter()
+        .filter(|node| node.kind == FlowNodeKind::NodeGroup)
+        .filter(|node| {
+            active_outbounds.contains(&chaos_core::config_render::dae_identifier(&node.data.name))
+        })
+        .map(|node| node.id.clone())
+        .collect();
+    let results: HashMap<String, chaos_store::LatencyResult> =
+        chaos_store::list_latency_results(&state.pool)
+            .await?
+            .into_iter()
+            .map(|result| (result.node_id.clone(), result))
+            .collect();
+    for group in &plan.groups {
+        if !active_group_nodes.contains(&group.node_id) {
+            continue;
+        }
+        if group.members.is_empty() {
+            continue;
+        }
+        let known = group
+            .members
+            .iter()
+            .filter_map(|(node_id, _)| results.get(node_id))
+            .count();
+        let healthy = group
+            .members
+            .iter()
+            .filter_map(|(node_id, _)| results.get(node_id))
+            .filter(|result| result.alive != 0)
+            .count();
+        if known == group.members.len() && healthy == 0 {
+            tracing::warn!(
+                node_id = group.node_id,
+                "orchestration health gate rejected publication"
+            );
+            return Err(ApiError::bad_request("orchestration_unhealthy", locale));
+        }
+    }
+    Ok(())
+}
+
 fn expand_document_groups(
     document: &OrchestrationDocument,
     catalog: &SourceCatalog,
@@ -409,7 +680,6 @@ fn expand_document_groups(
 
     Ok(cache)
 }
-
 
 fn resolve_flow_group(
     group_id: &str,
@@ -659,11 +929,7 @@ fn check_document_limits(
                 .sources
                 .iter()
                 .any(|source| source.id().len() > 128)
-            || node
-                .data
-                .hops
-                .iter()
-                .any(|hop| hop.id().len() > 128)
+            || node.data.hops.iter().any(|hop| hop.id().len() > 128)
     });
     let oversized_edge = document
         .edges
@@ -917,7 +1183,12 @@ mod tests {
         mut extra_nodes: Vec<FlowNode>,
         mut rule_target_edges: Vec<FlowEdge>,
     ) -> OrchestrationDocument {
-        let mut nodes = vec![start_node(), rule_node("example.com"), direct_node(), end_node()];
+        let mut nodes = vec![
+            start_node(),
+            rule_node("example.com"),
+            direct_node(),
+            end_node(),
+        ];
         nodes.append(&mut extra_nodes);
         let mut edges = vec![
             FlowEdge::new("start-rule", "start", "rule"),
@@ -949,7 +1220,6 @@ mod tests {
             .collect();
         assert!(check_document_limits(&document, Locale::En).is_err());
     }
-
 
     #[test]
     fn normalizes_v3_chain_documents_before_publish() {
@@ -990,7 +1260,10 @@ mod tests {
         };
         let normalized = normalize_document(document);
         assert_eq!(normalized.version, ORCHESTRATION_VERSION);
-        assert!(!normalized.nodes.iter().any(|n| n.kind == FlowNodeKind::Chain));
+        assert!(!normalized
+            .nodes
+            .iter()
+            .any(|n| n.kind == FlowNodeKind::Chain));
         assert!(normalized
             .edges
             .iter()
