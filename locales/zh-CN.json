@@ -244,6 +244,7 @@
   "settings.apiKeySecretHint": "请立即复制完整密钥。离开此页面后无法再次查看。",
   "settings.copyApiKey": "复制密钥",
   "settings.apiKeyCopied": "API Key 已复制",
+  "settings.apiKeyCopyFailed": "复制失败，请手动选中并复制密钥",
   "settings.apiKeyCreated": "API Key 创建成功",
   "settings.apiKeyInvalid": "请输入名称并至少选择一个权限范围",
   "settings.apiKeyCreateFailed": "创建 API Key 失败",

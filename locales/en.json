@@ -244,6 +244,7 @@
   "settings.apiKeySecretHint": "Copy this secret now. It cannot be displayed again after leaving this page.",
   "settings.copyApiKey": "Copy key",
   "settings.apiKeyCopied": "API key copied",
+  "settings.apiKeyCopyFailed": "Copy failed; select and copy the key manually",
   "settings.apiKeyCreated": "API key created",
   "settings.apiKeyInvalid": "Enter a name and select at least one scope",
   "settings.apiKeyCreateFailed": "Failed to create API key",

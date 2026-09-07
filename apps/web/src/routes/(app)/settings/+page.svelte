@@ -118,9 +118,25 @@
 	}
 
 	async function copyKey() {
-		if (!newKeySecret || !navigator.clipboard) return;
-		await navigator.clipboard.writeText(newKeySecret);
-		toast.success({ title: t('settings.apiKeyCopied') });
+		if (!newKeySecret) return;
+		try {
+			if (navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(newKeySecret);
+			} else {
+				const input = document.createElement('textarea');
+				input.value = newKeySecret;
+				input.setAttribute('readonly', '');
+				input.style.position = 'fixed';
+				input.style.opacity = '0';
+				document.body.appendChild(input);
+				input.select();
+				if (!document.execCommand('copy')) throw new Error('copy command failed');
+				input.remove();
+			}
+			toast.success({ title: t('settings.apiKeyCopied') });
+		} catch {
+			toast.error({ title: t('settings.apiKeyCopyFailed') });
+		}
 	}
 
 	async function confirmRevokeKey() {
