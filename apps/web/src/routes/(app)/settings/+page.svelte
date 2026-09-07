@@ -1,15 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Plus, Shield, Trash2, UserPlus } from '@lucide/svelte';
+	import { Copy, KeyRound, Plus, Shield, Trash2, UserPlus } from '@lucide/svelte';
 	import {
 		listUsers,
 		createUser,
 		deleteUser,
+		listApiKeys,
+		createApiKey,
+		revokeApiKey,
 		checkUpdate,
 		getUpdateStatus,
 		applyUpdate,
 		ApiClientError,
 		type UserDto,
+		type ApiKeyDto,
 		type VersionInfo,
 		type UpdateStatus
 	} from '$lib/api';
@@ -33,6 +37,27 @@
 	let newRole = $state('user');
 	let deleteTarget = $state<UserDto | null>(null);
 	let deleting = $state(false);
+	let apiKeys = $state<ApiKeyDto[]>([]);
+	let keyOpen = $state(false);
+	let creatingKey = $state(false);
+	let keyName = $state('');
+	let keyScopes = $state<string[]>([
+		'orchestration:read',
+		'orchestration:validate',
+		'orchestration:simulate',
+		'orchestration:plan'
+	]);
+	let newKeySecret = $state<string | null>(null);
+	let revokeKeyTarget = $state<ApiKeyDto | null>(null);
+	let revokingKey = $state(false);
+	const availableKeyScopes = [
+		'orchestration:read',
+		'orchestration:validate',
+		'orchestration:simulate',
+		'orchestration:plan',
+		'orchestration:publish',
+		'diagnostics:read'
+	];
 	let versionInfo = $state<VersionInfo | null>(null);
 	let updateStatus = $state<UpdateStatus>({
 		phase: 'idle',
@@ -48,8 +73,9 @@
 
 	async function load() {
 		try {
-			const res = await listUsers();
-			users = res.users;
+			const [userRes, keyRes] = await Promise.all([listUsers(), listApiKeys()]);
+			users = userRes.users;
+			apiKeys = keyRes;
 		} catch (cause) {
 			if (cause instanceof ApiClientError && cause.code === 'admin_required') {
 				toast.error({ title: t('settings.adminRequired') });
@@ -60,6 +86,57 @@
 			}
 		} finally {
 			loaded = true;
+		}
+	}
+
+	function toggleKeyScope(scope: string) {
+		keyScopes = keyScopes.includes(scope)
+			? keyScopes.filter((item) => item !== scope)
+			: [...keyScopes, scope];
+	}
+
+	async function onCreateKey() {
+		if (!keyName.trim() || keyScopes.length === 0) {
+			toast.error({ title: t('settings.apiKeyInvalid') });
+			return;
+		}
+		creatingKey = true;
+		try {
+			const created = await createApiKey(keyName.trim(), keyScopes);
+			newKeySecret = created.key ?? null;
+			keyName = '';
+			keyOpen = false;
+			toast.success({ title: t('settings.apiKeyCreated') });
+			await load();
+		} catch (cause) {
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.apiKeyCreateFailed')
+			});
+		} finally {
+			creatingKey = false;
+		}
+	}
+
+	async function copyKey() {
+		if (!newKeySecret || !navigator.clipboard) return;
+		await navigator.clipboard.writeText(newKeySecret);
+		toast.success({ title: t('settings.apiKeyCopied') });
+	}
+
+	async function confirmRevokeKey() {
+		if (!revokeKeyTarget) return;
+		revokingKey = true;
+		try {
+			await revokeApiKey(revokeKeyTarget.id);
+			toast.success({ title: t('settings.apiKeyRevoked') });
+			revokeKeyTarget = null;
+			await load();
+		} catch (cause) {
+			toast.error({
+				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('settings.apiKeyRevokeFailed')
+			});
+		} finally {
+			revokingKey = false;
 		}
 	}
 
@@ -240,6 +317,45 @@
 		</div>
 	</Section>
 
+	<Section title={t('settings.apiKeysTitle')} description={t('settings.apiKeysDescription')}>
+		<div class="key-toolbar">
+			<Button variant="secondary" icon={KeyRound} onclick={() => (keyOpen = !keyOpen)}>
+				{keyOpen ? t('common.close') : t('settings.createApiKey')}
+			</Button>
+		</div>
+		{#if newKeySecret}
+			<div class="secret-panel">
+				<strong>{t('settings.apiKeySecretTitle')}</strong>
+				<p>{t('settings.apiKeySecretHint')}</p>
+				<div class="secret-row"><code>{newKeySecret}</code><Button variant="secondary" size="sm" icon={Copy} onclick={() => void copyKey()}>{t('settings.copyApiKey')}</Button></div>
+			</div>
+		{/if}
+		{#if keyOpen}
+			<form class="form-stack key-form" onsubmit={(e) => { e.preventDefault(); void onCreateKey(); }}>
+				<Field label={t('settings.apiKeyName')} forId="api-key-name">
+					<input id="api-key-name" type="text" bind:value={keyName} disabled={creatingKey} placeholder="orchestration-agent" required />
+				</Field>
+				<div class="scope-grid">
+					{#each availableKeyScopes as scope}
+						<label class="scope-option"><input type="checkbox" checked={keyScopes.includes(scope)} onchange={() => toggleKeyScope(scope)} /> <span>{scope}</span></label>
+					{/each}
+				</div>
+				<div class="form-footer"><span>{t('settings.apiKeyScopeHint')}</span><Button type="submit" variant="primary" loading={creatingKey}>{t('common.create')}</Button></div>
+			</form>
+		{/if}
+		{#if apiKeys.length > 0}
+			<TableFrame>
+				<table>
+					<thead><tr><th>{t('settings.apiKeyName')}</th><th>{t('settings.apiKeyPrefix')}</th><th>{t('settings.apiKeyScopes')}</th><th>{t('settings.apiKeyLastUsed')}</th><th class="actions-col">{t('common.actions')}</th></tr></thead>
+					<tbody>{#each apiKeys as apiKey (apiKey.id)}<tr>
+						<td><strong>{apiKey.name}</strong></td><td><code>{apiKey.key_prefix}…</code></td><td class="scope-list">{apiKey.scopes.join(', ')}</td><td class="date">{apiKey.last_used_at ? formatDate(apiKey.last_used_at) : t('settings.apiKeyNeverUsed')}</td>
+						<td><Button variant="ghost" size="icon" icon={Trash2} title={t('settings.revokeApiKey')} onclick={() => (revokeKeyTarget = apiKey)} /></td>
+					</tr>{/each}</tbody>
+				</table>
+			</TableFrame>
+		{:else}<p class="empty-hint">{t('settings.apiKeyEmpty')}</p>{/if}
+	</Section>
+
 	{#if createOpen}
 		<Section title={t('settings.createUserTitle')}>
 			<form class="form-stack" onsubmit={(e) => { e.preventDefault(); void onCreate(); }}>
@@ -322,6 +438,18 @@
 />
 
 <ConfirmDialog
+	open={!!revokeKeyTarget}
+	title={t('settings.revokeApiKeyTitle')}
+	description={t('settings.revokeApiKeyDescription', { name: revokeKeyTarget?.name ?? '' })}
+	confirmLabel={t('settings.revokeApiKey')}
+	cancelLabel={t('common.cancel')}
+	busy={revokingKey}
+	danger
+	onconfirm={confirmRevokeKey}
+	oncancel={() => (revokeKeyTarget = null)}
+/>
+
+<ConfirmDialog
 	open={!!deleteTarget}
 	title={t('settings.deleteUserTitle')}
 	description={t('settings.deleteUserDescription', { name: deleteTarget?.username ?? '' })}
@@ -338,6 +466,16 @@
 		display: grid;
 		gap: var(--space-4);
 	}
+
+	.key-toolbar { display: flex; justify-content: flex-end; }
+	.key-form { margin-top: var(--space-4); }
+	.scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+	.scope-option { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.72rem; }
+	.secret-panel { display: grid; gap: var(--space-2); margin: var(--space-4) 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-subtle); }
+	.secret-panel p, .empty-hint { margin: 0; color: var(--ink-muted); font-size: 0.78rem; }
+	.secret-row { display: flex; align-items: center; gap: var(--space-3); }
+	.secret-row code { flex: 1; overflow-wrap: anywhere; padding: var(--space-2); background: var(--surface); font-size: 0.72rem; }
+	.scope-list { max-width: 28rem; color: var(--ink-muted); font-family: var(--font-mono); font-size: 0.68rem; }
 
 	.update-metrics {
 		display: grid;
@@ -400,8 +538,10 @@
 
 	@media (max-width: 720px) {
 		.form-grid,
-		.update-metrics {
+		.update-metrics,
+		.scope-grid {
 			grid-template-columns: 1fr;
 		}
+		.secret-row { align-items: stretch; flex-direction: column; }
 	}
 </style>
