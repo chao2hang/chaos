@@ -173,7 +173,7 @@ async fn check_update(
 ) -> Result<Json<CheckUpdateResponse>, ApiError> {
     if release_check_disabled() {
         return Ok(Json(CheckUpdateResponse {
-            version: version_info(None, None, None),
+            version: version_info(None, None, (None, None)),
             status: read_status(),
         }));
     }
