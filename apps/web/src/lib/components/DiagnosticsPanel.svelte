@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CheckCircle2, XCircle, AlertTriangle, Cpu, ShieldCheck, Network } from '@lucide/svelte';
-	import { getDiagnostics, type DiagnosticsResponse } from '$lib/api';
+	import { CheckCircle2, XCircle, AlertTriangle, Cpu, ShieldCheck, Network, Copy, Wrench } from '@lucide/svelte';
+	import { getDiagnostics, fixDiagnosticOffloads, type DiagnosticsResponse } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
+	import { toast } from '$lib/toast.svelte';
 
 	let diagnostics = $state<DiagnosticsResponse | null>(null);
 	let error = $state('');
 	let loading = $state(true);
+	let fixing = $state(false);
+	let hostCommand = $state('');
 
 	onMount(async () => {
 		try {
@@ -20,6 +23,47 @@
 
 	function statusIcon(ok: boolean) {
 		return ok ? CheckCircle2 : XCircle;
+	}
+
+	async function fixOffloads() {
+		fixing = true;
+		try {
+			const result = await fixDiagnosticOffloads();
+			diagnostics = result.diagnostics;
+			if (result.ok) {
+				toast.success({ title: t('diagnostics.offloadFixSuccess') });
+			} else {
+				hostCommand = result.host_command;
+				toast.warning({ title: t('diagnostics.offloadFixPartial') });
+			}
+		} catch {
+			if (diagnostics) hostCommand = diagnostics.host_command;
+			toast.error({ title: t('diagnostics.offloadFixFailed') });
+		} finally {
+			fixing = false;
+		}
+	}
+
+	async function copyHostCommand() {
+		if (!hostCommand) return;
+		try {
+			if (navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(hostCommand);
+			} else {
+				const input = document.createElement('textarea');
+				input.value = hostCommand;
+				input.setAttribute('readonly', '');
+				input.style.position = 'fixed';
+				input.style.opacity = '0';
+				document.body.appendChild(input);
+				input.select();
+				document.execCommand('copy');
+				input.remove();
+			}
+			toast.success({ title: t('diagnostics.commandCopied') });
+		} catch {
+			toast.error({ title: t('diagnostics.commandCopyFailed') });
+		}
 	}
 </script>
 
@@ -173,9 +217,26 @@
 			{/if}
 
 			{#if diagnostics.offload_warning}
-				<p class="offload-hint">
-					<AlertTriangle size={13} /> {t('diagnostics.offloadHint')}
-				</p>
+				<div class="offload-alert">
+					<p class="offload-hint">
+						<AlertTriangle size={13} /> {t('diagnostics.offloadHint')}
+					</p>
+					<p class="offload-explanation">{t('diagnostics.offloadExplanation')}</p>
+					<button class="fix-button" type="button" disabled={fixing} onclick={() => void fixOffloads()}>
+						{#if fixing}<span class="spinner"></span>{:else}<Wrench size={14} />{/if}
+						{t('diagnostics.fixOffload')}
+					</button>
+					{#if hostCommand}
+						<div class="manual-fix">
+							<strong>{t('diagnostics.manualFixTitle')}</strong>
+							<span>{t('diagnostics.manualFixHint')}</span>
+							<div class="command-row">
+								<code>{hostCommand}</code>
+								<button type="button" title={t('diagnostics.copyCommand')} onclick={() => void copyHostCommand()}><Copy size={14} /></button>
+							</div>
+						</div>
+					{/if}
+				</div>
 			{/if}
 		</dl>
 	{/if}
@@ -303,5 +364,101 @@
 		font-size: 0.7rem;
 		color: var(--ink-muted);
 		line-height: 1.35;
+	}
+
+	.offload-alert {
+		margin-top: var(--space-2);
+		padding: var(--space-3);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-md);
+		background: var(--surface-raised);
+	}
+
+	.offload-alert .offload-hint {
+		margin-top: 0;
+		color: var(--ink);
+	}
+
+	.offload-explanation,
+	.manual-fix span {
+		margin: 0 0 var(--space-3);
+		color: var(--ink-muted);
+		font-size: 0.72rem;
+		line-height: 1.45;
+	}
+
+	.fix-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 10px;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-sm);
+		background: var(--ink);
+		color: var(--surface);
+		font-size: 0.72rem;
+		cursor: pointer;
+	}
+
+	.fix-button:disabled {
+		cursor: wait;
+		opacity: 0.65;
+	}
+
+	.manual-fix {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: var(--space-3);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--line);
+	}
+
+	.manual-fix strong {
+		font-size: 0.74rem;
+	}
+
+	.command-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.command-row code {
+		min-width: 0;
+		flex: 1;
+		overflow-x: auto;
+		padding: 6px 8px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		font-size: 0.68rem;
+		white-space: nowrap;
+	}
+
+	.command-row button {
+		display: grid;
+		place-items: center;
+		width: 28px;
+		height: 28px;
+		flex: 0 0 auto;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--ink);
+		cursor: pointer;
+	}
+
+	.spinner {
+		width: 13px;
+		height: 13px;
+		border: 2px solid currentColor;
+		border-right-color: transparent;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 </style>

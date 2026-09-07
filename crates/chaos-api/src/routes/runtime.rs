@@ -1211,6 +1211,8 @@ pub struct DiagnosticsResponse {
     pub offloads: Vec<InterfaceOffload>,
     /// True when a virtualized NIC still has risky offloads enabled.
     pub offload_warning: bool,
+    /// One copyable command for the physical host fallback.
+    pub host_command: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1229,6 +1231,18 @@ pub struct InterfaceOffload {
 }
 
 #[derive(Debug, Serialize)]
+pub struct OffloadFixResponse {
+    /// True when no risky offload remains on interfaces that chaos can control.
+    pub ok: bool,
+    pub changed: Vec<String>,
+    pub failed: Vec<String>,
+    pub diagnostics: DiagnosticsResponse,
+    /// A single command for the physical host. A guest cannot reliably change
+    /// the host NIC, so this is always returned as the final fallback.
+    pub host_command: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct DiagnosticsPermissions {
     pub root: bool,
     pub cap_net_admin: bool,
@@ -1237,6 +1251,10 @@ pub struct DiagnosticsPermissions {
 
 /// Check system environment for dae requirements.
 async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
+    Json(read_diagnostics())
+}
+
+fn read_diagnostics() -> DiagnosticsResponse {
     let kernel_version = read_kernel_version();
     let kernel_ok = check_kernel_version(&kernel_version);
     let ebpf_supported = kernel_ok; // eBPF requires kernel >= 5.17
@@ -1249,16 +1267,9 @@ async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
     let virtualization = detect_virtualization();
     let compat = read_compat_flags();
     let offloads = read_interface_offloads(&interfaces);
-    let offload_warning = virtualization.is_some()
-        && offloads.iter().any(|o| {
-            is_physical_nic(&o.name)
-                && (o.tx_checksum_ip_generic.unwrap_or(false)
-                    || o.tso.unwrap_or(false)
-                    || o.gso.unwrap_or(false)
-                    || o.gro.unwrap_or(false))
-        });
+    let offload_warning = has_offload_warning(virtualization.as_deref(), &offloads);
 
-    Json(DiagnosticsResponse {
+    DiagnosticsResponse {
         kernel_version,
         kernel_ok,
         ebpf_supported,
@@ -1272,7 +1283,83 @@ async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
         compat,
         offloads,
         offload_warning,
-    })
+        host_command: host_offload_command(),
+    }
+}
+
+fn has_offload_warning(virtualization: Option<&str>, offloads: &[InterfaceOffload]) -> bool {
+    virtualization.is_some()
+        && offloads.iter().any(|o| {
+            is_physical_nic(&o.name)
+                && (o.tx_checksum_ip_generic.unwrap_or(false)
+                    || o.tso.unwrap_or(false)
+                    || o.gso.unwrap_or(false)
+                    || o.gro.unwrap_or(false))
+        })
+}
+
+/// Try to disable risky offloads on the current machine. In a VM this changes
+/// the guest vNIC only; the returned host command is still needed when the
+/// warning persists because the physical NIC belongs to the host.
+async fn fix_offloads(_admin: AdminUser) -> Result<Json<OffloadFixResponse>, ApiError> {
+    let before = read_diagnostics();
+    let candidates: Vec<String> = before
+        .offloads
+        .iter()
+        .filter(|o| {
+            is_physical_nic(&o.name)
+                && (o.tx_checksum_ip_generic.unwrap_or(false)
+                    || o.tso.unwrap_or(false)
+                    || o.gso.unwrap_or(false)
+                    || o.gro.unwrap_or(false))
+        })
+        .map(|o| o.name.clone())
+        .collect();
+
+    let mut changed = Vec::new();
+    let mut failed = Vec::new();
+    for name in candidates {
+        let result = std::process::Command::new("ethtool")
+            .args([
+                "-K",
+                &name,
+                "tx-checksum-ip-generic",
+                "off",
+                "tso",
+                "off",
+                "gso",
+                "off",
+                "gro",
+                "off",
+            ])
+            .output();
+        match result {
+            Ok(output) if output.status.success() => changed.push(name),
+            Ok(output) => {
+                tracing::warn!(interface = %name, stderr = %String::from_utf8_lossy(&output.stderr), "failed to disable NIC offloads");
+                failed.push(name);
+            }
+            Err(err) => {
+                tracing::warn!(interface = %name, error = %err, "failed to execute ethtool");
+                failed.push(name);
+            }
+        }
+    }
+
+    let diagnostics = read_diagnostics();
+    let host_command = diagnostics.host_command.clone();
+    let ok = !diagnostics.offload_warning;
+    Ok(Json(OffloadFixResponse {
+        ok,
+        changed,
+        failed,
+        diagnostics,
+        host_command,
+    }))
+}
+
+fn host_offload_command() -> String {
+    "iface=$(ip -o route show default | awk 'NR==1{print $5}'); sudo ethtool -K \"$iface\" tx-checksum-ip-generic off tso off gso off gro off".to_string()
 }
 
 /// Best-effort virtualization detection ("kvm", "vmware", etc.) or `None` on
@@ -1524,6 +1611,7 @@ pub fn runtime_router() -> Router<AppState> {
         .route("/runtime/logs", get(get_logs))
         .route("/runtime/logs/stream", get(stream_logs))
         .route("/runtime/diagnostics", get(get_diagnostics))
+        .route("/runtime/diagnostics/offloads/fix", post(fix_offloads))
         .route("/runtime/connections", get(get_connections))
         .route("/runtime/geoip/update", post(update_geoip_data))
         .route("/runtime/geosite/update", post(update_geosite_data))

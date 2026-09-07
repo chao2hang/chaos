@@ -335,6 +335,7 @@ export type DiagnosticsResponse = {
 	offloads: InterfaceOffload[];
 	/** True when a virtualized physical NIC still has risky offloads enabled. */
 	offload_warning: boolean;
+	host_command: string;
 };
 
 export type InterfaceOffload = {
@@ -343,6 +344,14 @@ export type InterfaceOffload = {
 	tso: boolean | null;
 	gso: boolean | null;
 	gro: boolean | null;
+};
+
+export type OffloadFixResponse = {
+	ok: boolean;
+	changed: string[];
+	failed: string[];
+	diagnostics: DiagnosticsResponse;
+	host_command: string;
 };
 
 export type OrchestrationNodeKind = 'start' | 'end' | 'rule' | 'node_group' | 'builtin';
@@ -721,6 +730,10 @@ export function getLogs(lines = 100) {
 
 export function getDiagnostics() {
 	return api<DiagnosticsResponse>('/api/v1/runtime/diagnostics');
+}
+
+export function fixDiagnosticOffloads() {
+	return api<OffloadFixResponse>('/api/v1/runtime/diagnostics/offloads/fix', { method: 'POST' });
 }
 
 export type GroupMemberDto = {
