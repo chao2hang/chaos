@@ -182,9 +182,6 @@ Package: $PKG_NAME
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: chaos <chaos@localhost>
-# Built inside Debian 12 (glibc 2.36); the version bound turns a runtime
-# restart-loop into a clear dpkg error on older hosts. curl is used by the
-# in-app self-update script.
 Depends: libc6 (>= 2.36), ca-certificates, curl
 Description: Modern control plane for dae
  Chaos is a modern proxy control plane: Rust REST API + SvelteKit console
