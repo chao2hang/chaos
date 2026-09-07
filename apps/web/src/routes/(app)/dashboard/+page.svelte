@@ -11,10 +11,12 @@ import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } 
 			updateGeoIpData,
 			updateGeositeData,
 			listLatency,
+			listNodes,
 			ApiClientError,
 			type HealthResponse,
 			type RuntimeStatus,
 			type LatencyDto,
+			type NodeDto,
 			type HealthCheckReport
 		} from '$lib/api';
 		import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
@@ -31,12 +33,12 @@ import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } 
 		import Notice from '$lib/components/ui/Notice.svelte';
 		import PageHeader from '$lib/components/ui/PageHeader.svelte';
 		import Section from '$lib/components/ui/Section.svelte';
-		import Status from '$lib/components/ui/Status.svelte';
 		import { toast } from '$lib/toast.svelte';
 
 	let healthInfo = $state<HealthResponse | null>(null);
 	let runtime = $state<RuntimeStatus | null>(null);
 	let latency = $state<LatencyDto[]>([]);
+	let nodes = $state<NodeDto[]>([]);
 	let busy = $state<'refresh' | 'latency' | 'apply' | 'reload' | 'stop' | 'geoip' | 'geosite' | ''>('');
 	let loaded = $state(false);
 	let confirmStop = $state(false);
@@ -56,14 +58,16 @@ import { Activity, Download, Gauge, Play, Power, RefreshCw, RotateCcw, Square } 
 	async function refresh() {
 		busy = 'refresh';
 		try {
-			const [healthResult, runtimeResult, latencyResult] = await Promise.all([
+			const [healthResult, runtimeResult, latencyResult, nodesResult] = await Promise.all([
 				health(),
 				getRuntime(),
-				listLatency()
+				listLatency(),
+				listNodes()
 			]);
 			healthInfo = healthResult;
 			runtime = runtimeResult;
 			latency = latencyResult.results;
+			nodes = nodesResult.nodes;
 			syncNeedsRepublishToast(runtimeResult.needs_republish === true);
 		} catch (cause) {
 			toast.error({
@@ -254,6 +258,11 @@ async function onReload() {
 	});
 
 	const sortedLatency = $derived(sortByLatency(latency, (result) => result));
+	const nodeNames = $derived(new Map(nodes.map((node) => [node.id, node.name])));
+
+	function latencyDisplayName(result: LatencyDto) {
+		return nodeNames.get(result.id) || result.id.slice(0, 12);
+	}
 </script>
 
 <AppPage>
@@ -284,13 +293,52 @@ async function onReload() {
 				<a class="republish-link" href="/orchestrate">{t('dashboard.openOrchestrate')}</a>
 			</div>
 		{/if}
-		<section class="metrics" aria-label={t('dashboard.title')}>
-			<Metric
-				label={t('dashboard.field.running')}
-				value={runtime?.running ? t('common.on') : t('common.off')}
-				note={t('dashboard.daeRuntime')}
-				tone={runtime?.running ? 'positive' : 'negative'}
-			/>
+		<section class="status-card" aria-label={t('dashboard.runtime')}>
+			<div class="status-card__main">
+				<span class="eyebrow">{t('dashboard.daeRuntime')}</span>
+				<div class="status-card__title">
+					<span class:status-dot--on={runtime?.running} class="status-dot" aria-hidden="true"></span>
+					<strong>{runtime?.running ? t('common.running') : t('common.stopped')}</strong>
+				</div>
+				<p>
+					{runtime?.data_plane ?? t('common.unknown')}
+					<span aria-hidden="true"> · </span>
+					{healthInfo?.api_version ?? t('common.unknown')}
+				</p>
+			</div>
+			<div class="status-card__actions">
+				<Button variant="primary" icon={Play} loading={busy === 'apply'} disabled={!!busy || !!runtime?.needs_republish} onclick={onApply}>
+					{busy === 'apply' ? t('dashboard.applying') : t('dashboard.apply')}
+				</Button>
+				<Button
+					icon={RotateCcw}
+					loading={busy === 'reload'}
+					disabled={!!busy || !runtime?.running || !!runtime?.needs_republish}
+					onclick={onReload}
+				>
+					{busy === 'reload' ? t('dashboard.reloading') : t('dashboard.reload')}
+				</Button>
+				<Button icon={Square} disabled={!!busy || !runtime?.running} onclick={() => (confirmStop = true)}>
+					{t('dashboard.stop')}
+				</Button>
+			</div>
+			<div class="status-card__facts">
+				<div>
+					<span>{t('dashboard.field.configExists')}</span>
+					<strong>{runtime ? String(runtime.config_exists) : t('common.unknown')}</strong>
+				</div>
+				<div>
+					<span>{t('dashboard.field.dataPlane')}</span>
+					<strong>{runtime?.data_plane ?? t('common.unknown')}</strong>
+				</div>
+				<div>
+					<span>dae</span>
+					<strong>{healthInfo?.dae_binary_ok ? t('common.ready') : t('common.missing')}</strong>
+				</div>
+			</div>
+		</section>
+
+		<section class="metrics metrics--compact" aria-label={t('dashboard.title')}>
 			<Metric
 				label={t('dashboard.latencySummary')}
 				value={`${latencySummary.alive}/${latencySummary.total}`}
@@ -304,7 +352,7 @@ async function onReload() {
 				tone={healthInfo?.ok ? 'positive' : 'negative'}
 			/>
 			<Metric
-				label="dae"
+				label={t('dashboard.field.daeBinaryOk')}
 				value={healthInfo?.dae_binary_ok ? t('common.ready') : t('common.missing')}
 				note={healthInfo?.dae_binary ?? t('common.none')}
 				tone={healthInfo?.dae_binary_ok ? 'positive' : 'negative'}
@@ -312,93 +360,7 @@ async function onReload() {
 		</section>
 
 		<div class="page-grid">
-			<div class="span-6">
-				<Section title={t('dashboard.runtime')} description={t('dashboard.runtimeDescription')}>
-					<div class="runtime-row">
-						<Status
-							label={runtime?.running ? t('common.running') : t('common.stopped')}
-							tone={runtime?.running ? 'positive' : 'neutral'}
-						/>
-					<div class="inline-actions">
-							<Button variant="primary" icon={Play} loading={busy === 'apply'} disabled={!!busy || !!runtime?.needs_republish} onclick={onApply}>
-								{busy === 'apply' ? t('dashboard.applying') : t('dashboard.apply')}
-							</Button>
-							<Button
-								icon={RotateCcw}
-								loading={busy === 'reload'}
-								disabled={!!busy || !runtime?.running || !!runtime?.needs_republish}
-								onclick={onReload}
-							>
-								{busy === 'reload' ? t('dashboard.reloading') : t('dashboard.reload')}
-							</Button>
-							<Button
-								icon={Square}
-								disabled={!!busy || !runtime?.running}
-								onclick={() => (confirmStop = true)}
-							>
-								{t('dashboard.stop')}
-							</Button>
-						</div>
-					</div>
-					<div class="runtime-row geoip-row">
-						<div>
-							<strong>{t('dashboard.geoip')}</strong>
-							<p>{t('dashboard.geoipDescription')}</p>
-						</div>
-						<Button
-							icon={Download}
-							loading={busy === 'geoip'}
-							disabled={!!busy}
-							onclick={onUpdateGeoIp}
-						>
-							{t('dashboard.updateGeoip')}
-						</Button>
-								<Button
-									icon={Download}
-									loading={busy === 'geosite'}
-									disabled={!!busy}
-									onclick={onUpdateGeosite}
-								>
-									{t('dashboard.updateGeosite')}
-								</Button>
-					</div>
-					<dl class="details">
-						<div>
-							<dt>{t('dashboard.field.configExists')}</dt>
-							<dd>{runtime ? String(runtime.config_exists) : t('common.unknown')}</dd>
-						</div>
-						<div>
-							<dt>{t('dashboard.field.workDir')}</dt>
-							<dd><code>{runtime?.work_dir ?? t('common.unknown')}</code></dd>
-						</div>
-						<div>
-							<dt>{t('dashboard.field.dataPlane')}</dt>
-							<dd><code>{runtime?.data_plane ?? t('common.unknown')}</code></dd>
-						</div>
-						<div>
-							<dt>{t('dashboard.field.geoipData')}</dt>
-							<dd>{runtime?.geoip_data.exists ? formatBytes(runtime.geoip_data.bytes) : t('common.missing')}</dd>
-						</div>
-					</dl>
-				</Section>
-			</div>
-
-			<div class="span-6">
-				<Section title={t('dashboard.apiHealth')} description={t('dashboard.systemDescription')}>
-					<dl class="details system-details">
-						<div>
-							<dt>{t('dashboard.field.apiVersion')}</dt>
-							<dd><code>{healthInfo?.api_version ?? t('common.unknown')}</code></dd>
-						</div>
-						<div>
-							<dt>{t('dashboard.field.daeBinary')}</dt>
-							<dd><code>{healthInfo?.dae_binary ?? t('common.none')}</code></dd>
-						</div>
-					</dl>
-				</Section>
-			</div>
-
-			<div class="span-12">
+			<div class="span-8">
 				<Section
 					title={t('dashboard.latencySummary')}
 					description={t('dashboard.latencyDescription')}
@@ -409,7 +371,7 @@ async function onReload() {
 						<ul class="latency-list">
 							{#each sortedLatency.slice(0, 12) as result (result.id)}
 								<li>
-									<code>{result.id.slice(0, 12)}</code>
+									<code>{latencyDisplayName(result)}</code>
 									<span class={latencyClass(latencyTone(result.latency_ms, result.alive))}>
 										{formatLatencyMs(result.latency_ms, result.alive)}
 									</span>
@@ -430,14 +392,51 @@ async function onReload() {
 				</Section>
 			</div>
 
-			<div class="span-12">
-				<LogPanel />
+			<div class="span-4">
+				<Section title={t('dashboard.apiHealth')} description={t('dashboard.systemDescription')}>
+					<dl class="details">
+						<div>
+							<dt>{t('dashboard.field.apiVersion')}</dt>
+							<dd><code>{healthInfo?.api_version ?? t('common.unknown')}</code></dd>
+						</div>
+						<div>
+							<dt>{t('dashboard.field.daeBinary')}</dt>
+							<dd><code>{healthInfo?.dae_binary ?? t('common.none')}</code></dd>
+						</div>
+						<div>
+							<dt>{t('dashboard.field.workDir')}</dt>
+							<dd><code>{runtime?.work_dir ?? t('common.unknown')}</code></dd>
+						</div>
+					</dl>
+					<div class="dataset-actions">
+						<div>
+							<strong>{t('dashboard.geoip')}</strong>
+							<span>{runtime?.geoip_data.exists ? formatBytes(runtime.geoip_data.bytes) : t('common.missing')}</span>
+						</div>
+						<div class="inline-actions">
+							<Button size="sm" icon={Download} loading={busy === 'geoip'} disabled={!!busy} onclick={onUpdateGeoIp}>
+								{t('dashboard.updateGeoip')}
+							</Button>
+							<Button size="sm" icon={Download} loading={busy === 'geosite'} disabled={!!busy} onclick={onUpdateGeosite}>
+								{t('dashboard.updateGeosite')}
+							</Button>
+						</div>
+					</div>
+				</Section>
 			</div>
 
-			<div class="span-6">
-				<Section title={t('diagnostics.title')} description={t('dashboard.systemDescription')}>
+			<div class="span-12">
+				<details class="advanced-panel">
+					<summary>{t('logs.title')}</summary>
+					<LogPanel />
+				</details>
+			</div>
+
+			<div class="span-12">
+				<details class="advanced-panel">
+					<summary>{t('diagnostics.title')}</summary>
 					<DiagnosticsPanel />
-				</Section>
+				</details>
 			</div>
 		</div>
 	{/if}
@@ -455,6 +454,97 @@ async function onReload() {
 />
 
 <style>
+	.status-card {
+		display: grid;
+		grid-template-columns: minmax(12rem, 1fr) auto;
+		gap: var(--space-5);
+		padding: var(--space-5);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
+	}
+
+	.status-card__main {
+		min-width: 0;
+	}
+
+	.eyebrow {
+		color: var(--ink-muted);
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.status-card__title {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-top: var(--space-2);
+	}
+
+	.status-card__title strong {
+		font-size: 1.35rem;
+		letter-spacing: -0.02em;
+	}
+
+	.status-card__main p {
+		margin: var(--space-2) 0 0;
+		color: var(--ink-muted);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+	}
+
+	.status-dot {
+		width: 0.62rem;
+		height: 0.62rem;
+		border-radius: 50%;
+		background: var(--ink-faint);
+		box-shadow: 0 0 0 4px var(--surface-subtle);
+	}
+
+	.status-dot--on {
+		background: #4f8a58;
+	}
+
+	.status-card__actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+
+	.status-card__facts {
+		display: grid;
+		grid-column: 1 / -1;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: var(--space-4);
+		padding-top: var(--space-4);
+		border-top: 1px solid var(--line);
+	}
+
+	.status-card__facts div {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.status-card__facts span {
+		color: var(--ink-muted);
+		font-size: 0.7rem;
+	}
+
+	.status-card__facts strong {
+		overflow: hidden;
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.metrics {
 		display: grid;
 		grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -464,33 +554,10 @@ async function onReload() {
 		overflow: hidden;
 	}
 
-	.runtime-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		padding-bottom: var(--space-5);
+	.metrics--compact {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 	}
 
-	.geoip-row {
-		padding-top: var(--space-4);
-		border-top: 1px solid var(--line);
-	}
-
-	.geoip-row strong,
-	.geoip-row p {
-		display: block;
-	}
-
-	.geoip-row strong {
-		font-size: 0.82rem;
-	}
-
-	.geoip-row p {
-		margin: var(--space-1) 0 0;
-		color: var(--ink-muted);
-		font-size: 0.75rem;
-	}
 
 	.details {
 		display: flex;
@@ -524,9 +591,36 @@ async function onReload() {
 		word-break: break-word;
 	}
 
+	.dataset-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		margin-top: var(--space-4);
+		padding-top: var(--space-4);
+		border-top: 1px solid var(--line);
+	}
+
+	.dataset-actions > div:first-child {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.dataset-actions strong {
+		font-size: 0.78rem;
+	}
+
+	.dataset-actions span {
+		color: var(--ink-muted);
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+	}
+
 	.latency-list {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		margin: 0;
 		padding: 0;
 		list-style: none;
@@ -537,21 +631,50 @@ async function onReload() {
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--space-3);
-		padding: var(--space-3) var(--space-4);
-		border-right: 1px solid var(--line);
+		min-height: 3.3rem;
+		padding: var(--space-3) var(--space-5);
 		border-bottom: 1px solid var(--line);
 	}
 
-	.latency-list li:nth-child(3n) {
-		border-right: 0;
+	.latency-list li:nth-child(2n) {
+		border-left: 1px solid var(--line);
 	}
 
 	.latency-list code {
 		min-width: 0;
 		overflow: hidden;
-		color: var(--ink-muted);
+		color: var(--ink);
+		font-family: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.advanced-panel {
+		border: 1px solid var(--line);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
+		overflow: hidden;
+	}
+
+	.advanced-panel summary {
+		padding: var(--space-4) var(--space-5);
+		color: var(--ink-muted);
+		cursor: pointer;
+		font-size: 0.8rem;
+		font-weight: 650;
+		list-style-position: inside;
+	}
+
+	.advanced-panel[open] summary {
+		border-bottom: 1px solid var(--line);
+	}
+
+	.advanced-panel :global(.log-panel),
+	.advanced-panel :global(.diagnostics) {
+		border: 0;
+		border-radius: 0;
 	}
 
 	@media (max-width: 960px) {
@@ -559,24 +682,12 @@ async function onReload() {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 
-		.metrics :global(.metric:nth-child(2)) {
-			border-right: 0;
-		}
-
-		.metrics :global(.metric:nth-child(-n + 2)) {
-			border-bottom: 1px solid var(--line);
-		}
-
 		.latency-list {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-
-		.latency-list li:nth-child(3n) {
-			border-right: 1px solid var(--line);
+			grid-template-columns: 1fr;
 		}
 
 		.latency-list li:nth-child(2n) {
-			border-right: 0;
+			border-left: 0;
 		}
 	}
 
@@ -612,6 +723,23 @@ async function onReload() {
 	}
 
 	@media (max-width: 680px) {
+		.status-card {
+			grid-template-columns: 1fr;
+		}
+
+		.status-card__actions {
+			justify-content: flex-start;
+		}
+
+		.status-card__actions :global(.ui-command) {
+			flex: 1 1 auto;
+		}
+
+		.status-card__facts {
+			grid-template-columns: 1fr;
+			gap: var(--space-3);
+		}
+
 		.metrics {
 			grid-template-columns: 1fr;
 		}
@@ -621,18 +749,13 @@ async function onReload() {
 			border-bottom: 1px solid var(--line);
 		}
 
-		.runtime-row {
+		.dataset-actions {
 			align-items: flex-start;
 			flex-direction: column;
 		}
 
-		.latency-list {
-			grid-template-columns: 1fr;
-		}
-
-		.latency-list li,
-		.latency-list li:nth-child(3n) {
-			border-right: 0;
+		.dataset-actions .inline-actions {
+			width: 100%;
 		}
 	}
 </style>

@@ -24,8 +24,6 @@
 </script>
 
 <div class="diagnostics">
-	<h3>{t('diagnostics.title')}</h3>
-	
 	{#if loading}
 		<p class="loading">{t('common.loading')}</p>
 	{:else if error}
@@ -186,12 +184,6 @@
 <style>
 	.diagnostics {
 		padding: var(--space-4);
-	}
-
-	h3 {
-		margin: 0 0 var(--space-4);
-		font-size: 0.85rem;
-		font-weight: 650;
 	}
 
 	.loading,
