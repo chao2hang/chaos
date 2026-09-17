@@ -64,8 +64,7 @@ pub fn network_router() -> Router<AppState> {
 }
 
 pub(crate) async fn load_network_config(state: &AppState) -> Result<NetworkConfig, ApiError> {
-    let Some(raw) =
-        chaos_store::get_meta(&state.pool, chaos_store::META_NETWORK_DOCUMENT).await?
+    let Some(raw) = chaos_store::get_meta(&state.pool, chaos_store::META_NETWORK_DOCUMENT).await?
     else {
         return Ok(NetworkConfig::default());
     };
@@ -480,8 +479,8 @@ mod tests {
         .execute(&state.pool)
         .await
         .unwrap();
-        let token = crate::auth::issue_token_role("u2", "viewer", "user", &state.jwt_secret)
-            .unwrap();
+        let token =
+            crate::auth::issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
 
         let res = app
             .oneshot(

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::Path as AxumPath;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -129,7 +129,7 @@ async fn create_backup(
     let dae_dir = dae_work_dir();
     let config_path = dae_dir.join("config.dae");
 
-    let mut staging = tempfile_dir(&dir, locale)?;
+    let staging = tempfile_dir(&dir, locale)?;
     let staging_path = staging.clone();
 
     if db.is_file() {

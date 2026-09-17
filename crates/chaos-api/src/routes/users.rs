@@ -90,8 +90,8 @@ async fn create_user(
     }
 
     let hash = hash_password_locale(&body.password, locale)?;
-    let user = chaos_store::users::create_user_with_role(&state.pool, username, &hash, &role)
-        .await?;
+    let user =
+        chaos_store::users::create_user_with_role(&state.pool, username, &hash, &role).await?;
 
     Ok(Json(CreateUserResponse {
         user: UserDto {

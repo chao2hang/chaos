@@ -220,10 +220,7 @@ pub async fn set_subscription_refresh_schedule(
 }
 
 /// Mark a subscription as refreshed and schedule the next refresh.
-pub async fn mark_subscription_refreshed(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<(), sqlx::Error> {
+pub async fn mark_subscription_refreshed(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
     let now = now_rfc3339();
     // Get the interval to compute next refresh
     let sub = get_subscription(pool, id).await?;

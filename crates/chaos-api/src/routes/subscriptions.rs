@@ -864,8 +864,9 @@ mod tests {
         chaos_store::publish_orchestration_v2(
             &state.pool,
             &chaos_store::PublishedOrchestrationPlan {
-                document: r#"{"version":4,"nodes":[],"edges":[],"viewport":{"x":0.0,"y":0.0,"zoom":1.0}}"#
-                    .to_string(),
+                document:
+                    r#"{"version":4,"nodes":[],"edges":[],"viewport":{"x":0.0,"y":0.0,"zoom":1.0}}"#
+                        .to_string(),
                 groups: vec![chaos_store::PublishedGroup {
                     node_id: "g1".into(),
                     id: "runtime-g1".into(),

@@ -330,7 +330,12 @@ routing {
         let parsed = parse_dae_config(config);
         assert_eq!(parsed.dns_upstreams.len(), 2);
         assert_eq!(parsed.dns_upstreams[0].name, "alidns");
-        assert_eq!(parsed.dns_rules.len(), 1, "dns_rules: {:?}", parsed.dns_rules);
+        assert_eq!(
+            parsed.dns_rules.len(),
+            1,
+            "dns_rules: {:?}",
+            parsed.dns_rules
+        );
         assert_eq!(parsed.dns_fallback, "googledns");
     }
 

@@ -299,7 +299,10 @@ fn geo_data_auto_fetch_enabled() -> bool {
 /// geosite() fail with the dae startup FATAL described in the packaging issue.
 pub(crate) async fn ensure_geo_datasets() {
     let manager = manager_for_status_or_stop();
-    for (filename, url) in [("geoip.dat", GEOIP_DATA_URL), ("geosite.dat", GEOSITE_DATA_URL)] {
+    for (filename, url) in [
+        ("geoip.dat", GEOIP_DATA_URL),
+        ("geosite.dat", GEOSITE_DATA_URL),
+    ] {
         if manager.work_dir.join(filename).is_file() {
             continue;
         }
@@ -544,7 +547,7 @@ async fn probe_dataplane() -> HealthCheckReport {
                     ok,
                     latency_ms: Some(latency_ms),
                     status: Some(status),
-                    error: ok.then_some(String::new).and_then(|_| None),
+                    error: ok.then_some(String::new).and(None),
                 }
             }
             Err(error) => HealthProbeResult {
@@ -1792,8 +1795,10 @@ mod tests {
     fn probe_report_ok_threshold() {
         // Sanity-check the constants so tuning doesn't silently make the
         // probe impossible to satisfy or trivially pass.
-        assert!(HEALTH_PROBE_REQUIRED_OK >= 1);
-        assert!(HEALTH_PROBE_REQUIRED_OK <= HEALTH_PROBE_ATTEMPTS);
+        const {
+            assert!(HEALTH_PROBE_REQUIRED_OK >= 1);
+            assert!(HEALTH_PROBE_REQUIRED_OK <= HEALTH_PROBE_ATTEMPTS);
+        }
         assert!(!HEALTH_PROBE_TARGETS.is_empty());
         // Each attempt targets a URL; ensure all are HTTP so TLS corruption
         // surfaces as a transport error we can classify.

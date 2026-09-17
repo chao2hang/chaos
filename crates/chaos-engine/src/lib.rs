@@ -164,7 +164,12 @@ impl WindowsDataPlane {
             },
             engine: EngineStatus {
                 engine_type: self.config.engine_type.as_str().to_string(),
-                available: self.config.engine_bin.as_ref().map(|p| p.is_file()).unwrap_or(false),
+                available: self
+                    .config
+                    .engine_bin
+                    .as_ref()
+                    .map(|p| p.is_file())
+                    .unwrap_or(false),
                 version: None,
                 running: false,
             },
@@ -235,7 +240,12 @@ rules:
             self.config.dns_server,
             rules
                 .iter()
-                .map(|r| format!("  - {},{},{}", r.rule_type.to_uppercase(), r.pattern, r.outbound))
+                .map(|r| format!(
+                    "  - {},{},{}",
+                    r.rule_type.to_uppercase(),
+                    r.pattern,
+                    r.outbound
+                ))
                 .collect::<Vec<_>>()
                 .join("\n")
         )

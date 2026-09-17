@@ -11,7 +11,6 @@ pub mod orchestration;
 pub mod profiles;
 pub mod routing;
 pub mod runtime;
-pub mod stats;
 pub mod subscriptions;
 pub mod update;
 pub mod users;

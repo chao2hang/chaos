@@ -529,14 +529,12 @@ impl DaeManager {
         // Detach but keep reaping: a background thread owns the Child handle and
         // `wait()`s on exit, so a dae that dies later (crash, OOM, kill -9) is
         // promptly reaped instead of lingering as a zombie under chaos-api.
-        std::thread::spawn(move || {
-            match child.wait() {
-                Ok(status) => {
-                    tracing::info!(pid, status = %status, "dae process exited (reaped)");
-                }
-                Err(error) => {
-                    tracing::warn!(pid, error = %error, "failed to reap dae process");
-                }
+        std::thread::spawn(move || match child.wait() {
+            Ok(status) => {
+                tracing::info!(pid, status = %status, "dae process exited (reaped)");
+            }
+            Err(error) => {
+                tracing::warn!(pid, error = %error, "failed to reap dae process");
             }
         });
         Ok(())

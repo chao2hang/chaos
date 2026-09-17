@@ -139,32 +139,36 @@ async fn serve_web_ui(web_dir: PathBuf, req: Request<Body>) -> Response {
                 .body(Body::empty())
                 .unwrap_or_else(|_| Request::new(Body::empty()));
             *html_req.headers_mut() = req.headers().clone();
-            let mut dir = ServeDir::new(&web_dir);
-            if let Ok(res) = dir.oneshot(html_req).await {
-                if res.status() != StatusCode::NOT_FOUND {
-                    return res.into_response();
-                }
+            let dir = ServeDir::new(&web_dir);
+            // ServeDir::oneshot is infallible (Infallible error type).
+            let res = dir
+                .oneshot(html_req)
+                .await
+                .unwrap_or_else(|never| match never {});
+            if res.status() != StatusCode::NOT_FOUND {
+                return res.into_response();
             }
         }
     }
 
     // Exact file / directory / assets
-    let mut dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
-    if let Ok(res) = dir.oneshot(req).await {
-        if res.status() != StatusCode::NOT_FOUND {
-            return res.into_response();
-        }
+    let dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
+    let res = dir
+        .oneshot(req)
+        .await
+        .unwrap_or_else(|never| match never {});
+    if res.status() != StatusCode::NOT_FOUND {
+        return res.into_response();
     }
 
     // SPA fallback shell
     if index.is_file() {
-        let mut file = ServeFile::new(index);
-        if let Ok(res) = file
+        let file = ServeFile::new(index);
+        let res = file
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
-        {
-            return res.into_response();
-        }
+            .unwrap_or_else(|never| match never {});
+        return res.into_response();
     }
 
     StatusCode::NOT_FOUND.into_response()
@@ -200,7 +204,9 @@ async fn refresh_due_subscriptions(state: &AppState) -> anyhow::Result<()> {
             }
             Err(e) => {
                 tracing::warn!(id = %sub.id, error = %e, "subscription refresh failed");
-                let _ = chaos_store::update_subscription_meta(&state.pool, &sub.id, "refresh_failed").await;
+                let _ =
+                    chaos_store::update_subscription_meta(&state.pool, &sub.id, "refresh_failed")
+                        .await;
             }
         }
         // Mark as refreshed (or failed) and schedule next.

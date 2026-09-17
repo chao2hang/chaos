@@ -52,10 +52,13 @@ impl Serialize for FlowNode {
         node.serialize_field("id", &self.id)?;
         node.serialize_field("type", &self.kind)?;
         node.serialize_field("position", &self.position)?;
-        node.serialize_field("data", &FlowNodeDataByKind {
-            kind: self.kind,
-            data: &self.data,
-        })?;
+        node.serialize_field(
+            "data",
+            &FlowNodeDataByKind {
+                kind: self.kind,
+                data: &self.data,
+            },
+        )?;
         node.end()
     }
 }
@@ -531,9 +534,9 @@ fn match_matcher(matcher: &RuleMatcher, probe: &RouteProbe) -> MatchDecision {
             if patterns.is_empty() {
                 return no("empty_pattern");
             }
-            let hit = patterns.iter().any(|pattern| {
-                domain == *pattern || domain.ends_with(&format!(".{pattern}"))
-            });
+            let hit = patterns
+                .iter()
+                .any(|pattern| domain == *pattern || domain.ends_with(&format!(".{pattern}")));
             yes_or_no(hit, "domain_suffix_match", "domain_suffix_miss")
         }
         RuleMatcherKind::DomainFull => {
@@ -544,7 +547,7 @@ fn match_matcher(matcher: &RuleMatcher, probe: &RouteProbe) -> MatchDecision {
             if patterns.is_empty() {
                 return no("empty_pattern");
             }
-            let hit = patterns.iter().any(|pattern| domain == *pattern);
+            let hit = patterns.contains(&domain);
             yes_or_no(hit, "domain_full_match", "domain_full_miss")
         }
         RuleMatcherKind::DomainKeyword => {
@@ -555,14 +558,8 @@ fn match_matcher(matcher: &RuleMatcher, probe: &RouteProbe) -> MatchDecision {
             if patterns.is_empty() {
                 return no("empty_pattern");
             }
-            let hit = patterns
-                .iter()
-                .any(|pattern| domain.contains(pattern));
-            yes_or_no(
-                hit,
-                "domain_keyword_match",
-                "domain_keyword_miss",
-            )
+            let hit = patterns.iter().any(|pattern| domain.contains(pattern));
+            yes_or_no(hit, "domain_keyword_match", "domain_keyword_miss")
         }
         RuleMatcherKind::Geosite => {
             if probe.geosite.is_empty() {
@@ -657,19 +654,22 @@ fn yes_or_no(hit: bool, yes_reason: &str, no_reason: &str) -> MatchDecision {
 }
 
 fn port_list_contains(pattern: &str, port: u16) -> bool {
-    pattern.split([',', ' ']).filter(|s| !s.is_empty()).any(|part| {
-        if let Some((a, b)) = part.split_once('-') {
-            let Ok(lo) = a.trim().parse::<u16>() else {
-                return false;
-            };
-            let Ok(hi) = b.trim().parse::<u16>() else {
-                return false;
-            };
-            (lo.min(hi)..=lo.max(hi)).contains(&port)
-        } else {
-            part.trim().parse::<u16>().ok() == Some(port)
-        }
-    })
+    pattern
+        .split([',', ' '])
+        .filter(|s| !s.is_empty())
+        .any(|part| {
+            if let Some((a, b)) = part.split_once('-') {
+                let Ok(lo) = a.trim().parse::<u16>() else {
+                    return false;
+                };
+                let Ok(hi) = b.trim().parse::<u16>() else {
+                    return false;
+                };
+                (lo.min(hi)..=lo.max(hi)).contains(&port)
+            } else {
+                part.trim().parse::<u16>().ok() == Some(port)
+            }
+        })
 }
 
 /// Return true when `ip` is contained in `cidr` (`x.x.x.x/n` or bare IP).
@@ -728,12 +728,7 @@ impl Default for OrchestrationDocument {
     fn default() -> Self {
         Self {
             version: ORCHESTRATION_VERSION,
-            nodes: vec![
-                start_node(),
-                default_group(),
-                direct_builtin(),
-                end_node(),
-            ],
+            nodes: vec![start_node(), default_group(), direct_builtin(), end_node()],
             edges: vec![FlowEdge::new("end-direct", "end", "direct")],
             viewport: FlowViewport::default(),
         }
@@ -741,7 +736,9 @@ impl Default for OrchestrationDocument {
 }
 
 /// Ensure start/end/direct anchors and start→rule / end→terminal edges for v3 documents.
-pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> OrchestrationDocument {
+pub fn migrate_orchestration_document(
+    mut document: OrchestrationDocument,
+) -> OrchestrationDocument {
     // If already v3 and has start+end, still ensure invariants (idempotent).
     if !document.nodes.iter().any(|n| n.kind == FlowNodeKind::Start) {
         document.nodes.push(start_node());
@@ -749,9 +746,11 @@ pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> Or
     if !document.nodes.iter().any(|n| n.kind == FlowNodeKind::End) {
         document.nodes.push(end_node());
     }
-    if !document.nodes.iter().any(|n| {
-        n.kind == FlowNodeKind::Builtin && n.data.builtin == Some(BuiltinKind::Direct)
-    }) {
+    if !document
+        .nodes
+        .iter()
+        .any(|n| n.kind == FlowNodeKind::Builtin && n.data.builtin == Some(BuiltinKind::Direct))
+    {
         document.nodes.push(direct_builtin());
     }
     // Ensure start → each rule
@@ -767,9 +766,11 @@ pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> Or
             .iter()
             .any(|e| e.source == "start" && e.target == rule_id);
         if !has {
-            document
-                .edges
-                .push(FlowEdge::new(&format!("start-{rule_id}"), "start", &rule_id));
+            document.edges.push(FlowEdge::new(
+                &format!("start-{rule_id}"),
+                "start",
+                &rule_id,
+            ));
         }
     }
     // Ensure end has exactly one outbound to terminal; default direct if missing
@@ -822,9 +823,7 @@ pub fn migrate_orchestration_document(mut document: OrchestrationDocument) -> Or
             document
                 .edges
                 .retain(|e| !chain_ids.contains(&e.source) && !chain_ids.contains(&e.target));
-            document
-                .nodes
-                .retain(|n| n.kind != FlowNodeKind::Chain);
+            document.nodes.retain(|n| n.kind != FlowNodeKind::Chain);
         }
     }
 
@@ -963,15 +962,10 @@ pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationRep
                 // no inbound required; outbounds already constrained by edge_allowed
             }
             FlowNodeKind::End => {
-                if outs.is_empty() {
-                    graph(&mut issues, "end_target_required", Some(&node.id), None);
-                } else if outs.len() != 1 {
+                if outs.len() != 1 {
                     graph(&mut issues, "end_target_required", Some(&node.id), None);
                 } else if let Some(target) = nodes.get(outs[0].target.as_str()) {
-                    if !matches!(
-                        target.kind,
-                        FlowNodeKind::NodeGroup | FlowNodeKind::Builtin
-                    ) {
+                    if !matches!(target.kind, FlowNodeKind::NodeGroup | FlowNodeKind::Builtin) {
                         graph(&mut issues, "end_target_invalid", Some(&node.id), None);
                     }
                 }
@@ -1001,14 +995,10 @@ pub fn validate_orchestration(document: &OrchestrationDocument) -> ValidationRep
 fn edge_allowed(source: &FlowNode, target: &FlowNode) -> bool {
     match source.kind {
         FlowNodeKind::Start => target.kind == FlowNodeKind::Rule,
-        FlowNodeKind::Rule => matches!(
-            target.kind,
-            FlowNodeKind::NodeGroup | FlowNodeKind::Builtin
-        ),
-        FlowNodeKind::End => matches!(
-            target.kind,
-            FlowNodeKind::NodeGroup | FlowNodeKind::Builtin
-        ),
+        FlowNodeKind::Rule => {
+            matches!(target.kind, FlowNodeKind::NodeGroup | FlowNodeKind::Builtin)
+        }
+        FlowNodeKind::End => matches!(target.kind, FlowNodeKind::NodeGroup | FlowNodeKind::Builtin),
         _ => false,
     }
 }
@@ -1429,9 +1419,9 @@ fn valid_mac(value: &str) -> bool {
     if parts.len() != 6 {
         return false;
     }
-    parts.iter().all(|p| {
-        p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit())
-    })
+    parts
+        .iter()
+        .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 fn start_node() -> FlowNode {
     FlowNode {
@@ -1564,7 +1554,6 @@ mod tests {
         vec![start_node(), end_node(), direct_builtin(), group()]
     }
 
-
     fn chain_node(id: &str, name: &str, hops: Vec<GroupSource>) -> FlowNode {
         FlowNode {
             id: id.into(),
@@ -1662,10 +1651,7 @@ mod tests {
         };
         let report = document.validate();
         assert!(!report.valid);
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == "chain_unsupported"));
+        assert!(report.issues.iter().any(|i| i.code == "chain_unsupported"));
     }
 
     #[test]
@@ -1920,12 +1906,7 @@ mod tests {
             version: ORCHESTRATION_VERSION,
             nodes: vec![
                 start_node(),
-                rule(
-                    "rule-geoip",
-                    RuleMatcherKind::Geoip,
-                    "us",
-                    Some(1),
-                ),
+                rule("rule-geoip", RuleMatcherKind::Geoip, "us", Some(1)),
                 rule(
                     "rule-domain",
                     RuleMatcherKind::DomainSuffix,
@@ -2231,18 +2212,8 @@ mod tests {
                     "fast.com",
                     Some(1),
                 ),
-                rule(
-                    "rule-geosite",
-                    RuleMatcherKind::Geosite,
-                    "netflix",
-                    Some(2),
-                ),
-                rule(
-                    "rule-geoip",
-                    RuleMatcherKind::Geoip,
-                    "us",
-                    Some(3),
-                ),
+                rule("rule-geosite", RuleMatcherKind::Geosite, "netflix", Some(2)),
+                rule("rule-geoip", RuleMatcherKind::Geoip, "us", Some(3)),
                 rule(
                     "rule-cidr",
                     RuleMatcherKind::DestinationCidr,
@@ -2279,7 +2250,10 @@ mod tests {
         });
         assert!(result.matched);
         assert_eq!(result.outbound, "Proxy");
-        assert_eq!(result.matched_matcher_kind.as_deref(), Some("domain_suffix"));
+        assert_eq!(
+            result.matched_matcher_kind.as_deref(),
+            Some("domain_suffix")
+        );
         assert_eq!(result.matched_pattern.as_deref(), Some("fast.com"));
     }
 
@@ -2320,7 +2294,10 @@ mod tests {
         });
         assert!(private.matched);
         assert_eq!(private.outbound, "direct");
-        assert_eq!(private.matched_matcher_kind.as_deref(), Some("destination_cidr"));
+        assert_eq!(
+            private.matched_matcher_kind.as_deref(),
+            Some("destination_cidr")
+        );
 
         let miss = compiled.simulate(&RouteProbe {
             dest_ip: Some("1.2.3.4".into()),

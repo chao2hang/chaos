@@ -44,8 +44,7 @@ async fn get_routing(
         let document: chaos_core::orchestration::OrchestrationDocument =
             serde_json::from_str(&plan.document)
                 .map_err(|error| ApiError::internal_logged(chaos_i18n::Locale::En, error))?;
-        let document =
-            chaos_core::orchestration::migrate_orchestration_document(document);
+        let document = chaos_core::orchestration::migrate_orchestration_document(document);
         let compiled = document.compile().map_err(|report| {
             tracing::error!(issues = ?report.issues, "published routing graph is invalid");
             ApiError::internal(chaos_i18n::Locale::En)

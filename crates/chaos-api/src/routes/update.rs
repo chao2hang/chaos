@@ -9,9 +9,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 
 use crate::auth::AdminUser;
 use crate::error::ApiError;
@@ -215,8 +212,8 @@ fn version_info(
     error: Option<String>,
     (download_url, asset_name): (Option<String>, Option<String>),
 ) -> VersionInfo {
-    let latest_version = release
-        .map(|release| release.tag_name.trim_start_matches('v').to_string());
+    let latest_version =
+        release.map(|release| release.tag_name.trim_start_matches('v').to_string());
     VersionInfo {
         current: CURRENT_VERSION.to_string(),
         latest: latest_version.clone(),
@@ -819,7 +816,10 @@ mod tests {
         }
         for value in ["0", "false", ""] {
             std::env::set_var("CHAOS_DISABLE_RELEASE_CHECK", value);
-            assert!(!release_check_disabled(), "value {value:?} should not disable");
+            assert!(
+                !release_check_disabled(),
+                "value {value:?} should not disable"
+            );
         }
         std::env::remove_var("CHAOS_DISABLE_RELEASE_CHECK");
         assert!(!release_check_disabled());
@@ -841,6 +841,9 @@ mod tests {
         assert_eq!(info.latest.as_deref(), Some("0.2.0"));
         assert!(info.update_available);
         assert!(info.error.is_none());
-        assert_eq!(info.download_url.as_deref(), Some("https://example/amd64.deb"));
+        assert_eq!(
+            info.download_url.as_deref(),
+            Some("https://example/amd64.deb")
+        );
     }
 }

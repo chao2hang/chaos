@@ -103,7 +103,6 @@ fn default_role() -> String {
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: String,
-    pub username: String,
     pub role: String,
 }
 
@@ -313,8 +312,10 @@ async fn revoke_key(
 /// Load JWT secret from `CHAOS_JWT_SECRET` or `./data/jwt.secret`.
 ///
 /// `CHAOS_JWT_SECRET` may be either:
+///
 /// - a raw secret string (≥ 32 bytes), or
 /// - a filesystem path (contains `/` or `\\`, or exists as a file) whose contents are the secret.
+///
 /// Packaging sets a path under `/var/lib/chaos/jwt.secret`.
 pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
     if let Ok(raw) = std::env::var("CHAOS_JWT_SECRET") {
@@ -588,7 +589,6 @@ impl FromRequestParts<AppState> for AuthUser {
             .ok_or_else(|| ApiError::unauthorized("invalid_token", locale))?;
         Ok(AuthUser {
             user_id: user.id,
-            username: user.username,
             role: user.role,
         })
     }
@@ -642,7 +642,6 @@ impl FromRequestParts<AppState> for ExternalUser {
         Ok(Self {
             user: AuthUser {
                 user_id: user.id,
-                username: user.username,
                 role: user.role,
             },
             scopes,

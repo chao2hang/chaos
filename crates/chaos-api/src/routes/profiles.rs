@@ -99,11 +99,9 @@ async fn create_profile(
     // Use provided document or snapshot current orchestration draft.
     let document = match body.document {
         Some(doc) => doc,
-        None => {
-            chaos_store::get_meta(&state.pool, chaos_store::META_ORCHESTRATION_FLOW)
-                .await?
-                .unwrap_or_else(|| "{}".to_string())
-        }
+        None => chaos_store::get_meta(&state.pool, chaos_store::META_ORCHESTRATION_FLOW)
+            .await?
+            .unwrap_or_else(|| "{}".to_string()),
     };
 
     let profile = chaos_store::create_profile(&state.pool, name, &body.description, &document)
@@ -162,8 +160,7 @@ async fn delete_profile(
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteProfileResponse>, ApiError> {
-    let deleted = chaos_store::delete_profile(&state.pool, &id)
-        .await?;
+    let deleted = chaos_store::delete_profile(&state.pool, &id).await?;
     if !deleted {
         return Err(ApiError::not_found("not_found", locale));
     }

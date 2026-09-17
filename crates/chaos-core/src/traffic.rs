@@ -104,9 +104,9 @@ fn extract_field(line: &str, prefix: &str) -> Option<String> {
     let start = line.find(prefix)? + prefix.len();
     let rest = &line[start..];
 
-    if rest.starts_with('"') {
+    if let Some(quoted) = rest.strip_prefix('"') {
         // Quoted value
-        let end = rest[1..].find('"')? + 1;
+        let end = quoted.find('"')? + 1;
         Some(rest[1..end].to_string())
     } else {
         // Unquoted value (until space)
@@ -183,7 +183,8 @@ mod tests {
 
     #[test]
     fn parses_connection_open() {
-        let msg = "connection opened: src=192.168.1.100:54321 dst=1.1.1.1:443 outbound=proxy proto=tcp";
+        let msg =
+            "connection opened: src=192.168.1.100:54321 dst=1.1.1.1:443 outbound=proxy proto=tcp";
         let conn = parse_connection_from_message(msg).unwrap();
         assert_eq!(conn.action, ConnectionAction::Open);
         assert_eq!(conn.source, "192.168.1.100:54321");

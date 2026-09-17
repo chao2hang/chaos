@@ -16,12 +16,6 @@ use crate::routes::network::load_network_config;
 use crate::routes::runtime::load_config_plane;
 use crate::state::AppState;
 
-#[derive(Debug, Serialize)]
-pub struct ExportConfigResponse {
-    pub config: String,
-    pub nodes: usize,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ImportConfigRequest {
     /// Raw dae config content to parse and import.
