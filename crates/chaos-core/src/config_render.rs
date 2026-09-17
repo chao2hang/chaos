@@ -481,7 +481,7 @@ fn escape_single_quotes(s: &str) -> String {
     s.replace(['\r', '\n'], " ").replace('\'', "%27")
 }
 
-/// Split an endpoint string into a host and an optional numeric port.
+/// Split an endpoint string into a host and an optional port spec.
 ///
 /// Endpoints come from [`crate::link::detect_address`] and may be:
 ///   - IPv4 + port:      `1.2.3.4:443`
@@ -489,6 +489,10 @@ fn escape_single_quotes(s: &str) -> String {
 ///   - bare IPv6:        `2001:db8::1` (no port; the whole string parses as an address)
 ///   - bare IPv6 + port: `2001:db8::0:1:443` (unusual; the last colon splits the port)
 ///   - hostname:         `example.com` / `example.com:443`
+///
+/// The port may also be a hop range / union (`30000-30049` or
+/// `30000-30049,31000-31049`) as used by hysteria2 port-hopping links; those
+/// are returned verbatim so the routing renderer can emit `dport(<range>)`.
 fn split_host_port(addr: &str) -> Option<(String, Option<String>)> {
     let addr = addr.trim();
     if let Some(rest) = addr.strip_prefix('[') {
@@ -500,7 +504,7 @@ fn split_host_port(addr: &str) -> Option<(String, Option<String>)> {
         }
         let port = tail
             .strip_prefix(':')
-            .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            .filter(|p| is_port_spec(p))
             .map(|p| p.to_string());
         return Some((host.to_string(), port));
     }
@@ -508,15 +512,30 @@ fn split_host_port(addr: &str) -> Option<(String, Option<String>)> {
     if addr.parse::<std::net::IpAddr>().is_ok() {
         return Some((addr.to_string(), None));
     }
-    // IPv4 / hostname with a trailing port.
+    // IPv4 / hostname with a trailing port (or port range).
     match addr.rsplit_once(':') {
-        Some((host, port))
-            if !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) =>
-        {
+        Some((host, port)) if !host.is_empty() && is_port_spec(port) => {
             Some((host.to_string(), Some(port.to_string())))
         }
         _ => Some((addr.to_string(), None)),
     }
+}
+
+/// Whether `spec` is a port number, range, or comma-separated union of both
+/// (`443`, `30000-30049`, `30000-30049,31000-31049`) — the shapes the dae
+/// grammar and its outbound URI parser accept after `host:`. Guards the
+/// rendered `dport(...)` expressions against config-grammar injection.
+fn is_port_spec(spec: &str) -> bool {
+    !spec.is_empty()
+        && spec.split(',').all(|part| match part.split_once('-') {
+            Some((start, end)) => {
+                !start.is_empty()
+                    && !end.is_empty()
+                    && start.bytes().all(|b| b.is_ascii_digit())
+                    && end.bytes().all(|b| b.is_ascii_digit())
+            }
+            None => part.bytes().all(|b| b.is_ascii_digit()),
+        })
 }
 
 /// Build `routing { ... -> must_direct }` expressions that keep each proxy
@@ -638,7 +657,9 @@ mod tests {
                 link: "trojan://x@1.2.3.4:443".into(),
             },
         ]);
-        assert!(s.contains("dip(\"2605:9880:200:0401:0135:7700:ef0a:0e05\") && dport(54835) -> must_direct"));
+        assert!(s.contains(
+            "dip(\"2605:9880:200:0401:0135:7700:ef0a:0e05\") && dport(54835) -> must_direct"
+        ));
         assert!(s.contains("dip(\"2001:db8::1\") -> must_direct"));
         assert!(s.contains("dip(1.2.3.4) && dport(443) -> must_direct"));
         // The broken unquoted form must never be emitted.
@@ -650,12 +671,21 @@ mod tests {
     fn split_host_port_handles_ipv6_shapes() {
         assert_eq!(
             split_host_port("[2605:9880:200:401:135:7700:ef0a:0]:443"),
-            Some(("2605:9880:200:401:135:7700:ef0a:0".into(), Some("443".into())))
+            Some((
+                "2605:9880:200:401:135:7700:ef0a:0".into(),
+                Some("443".into())
+            ))
         );
-        assert_eq!(split_host_port("2001:db8::1"), Some(("2001:db8::1".into(), None)));
+        assert_eq!(
+            split_host_port("2001:db8::1"),
+            Some(("2001:db8::1".into(), None))
+        );
         assert_eq!(
             split_host_port("2605:9880:200:401:135:7700:ef0a:0:443"),
-            Some(("2605:9880:200:401:135:7700:ef0a:0".into(), Some("443".into())))
+            Some((
+                "2605:9880:200:401:135:7700:ef0a:0".into(),
+                Some("443".into())
+            ))
         );
         assert_eq!(
             split_host_port("1.2.3.4:443"),
@@ -665,8 +695,68 @@ mod tests {
             split_host_port("example.com:8443"),
             Some(("example.com".into(), Some("8443".into())))
         );
-        assert_eq!(split_host_port("onlybase64"), Some(("onlybase64".into(), None)));
+        assert_eq!(
+            split_host_port("onlybase64"),
+            Some(("onlybase64".into(), None))
+        );
         assert_eq!(split_host_port("[]:443"), None);
+    }
+
+    #[test]
+    fn split_host_port_handles_port_ranges() {
+        // Hysteria2 port-hopping links put a range (or union) in the authority.
+        assert_eq!(
+            split_host_port("example.com:30000-30049"),
+            Some(("example.com".into(), Some("30000-30049".into())))
+        );
+        assert_eq!(
+            split_host_port("1.2.3.4:30000-30049,31000-31049"),
+            Some(("1.2.3.4".into(), Some("30000-30049,31000-31049".into())))
+        );
+        assert_eq!(
+            split_host_port("[2001:db8::1]:30000-30049"),
+            Some(("2001:db8::1".into(), Some("30000-30049".into())))
+        );
+        // Malformed specs fall back to "no port" so the whole endpoint stays
+        // reachable through an unscoped bypass rule.
+        assert_eq!(
+            split_host_port("example.com:-"),
+            Some(("example.com:-".into(), None))
+        );
+        assert_eq!(
+            split_host_port("example.com:1-2-3"),
+            Some(("example.com:1-2-3".into(), None))
+        );
+    }
+
+    #[test]
+    fn bypass_rules_scope_hysteria2_hop_ranges_with_dport() {
+        // The range must land in dport(), never inside domain() — the old
+        // `domain(host:30000-30049)` shape can never match and left hop-range
+        // nodes without a bypass (tproxy loop → endless timeouts).
+        let s = render_minimal_dae_config(&[
+            NodeForConfig {
+                id: "r1".into(),
+                name: "hy2range".into(),
+                link: "hysteria2://pass@example.com:30000-30049/?insecure=1#node".into(),
+            },
+            NodeForConfig {
+                id: "r2".into(),
+                name: "hy2union".into(),
+                link: "hysteria2://pass@1.2.3.4:30000-30049,31000-31049/?insecure=1#node".into(),
+            },
+            NodeForConfig {
+                id: "r3".into(),
+                name: "hy2v6".into(),
+                link: "hysteria2://pass@[2001:db8::1]:30000-30049/?insecure=1#node".into(),
+            },
+        ]);
+        assert!(s.contains("domain(example.com) && dport(30000-30049) -> must_direct"));
+        assert!(s.contains("dip(1.2.3.4) && dport(30000-30049,31000-31049) -> must_direct"));
+        assert!(s.contains("dip(\"2001:db8::1\") && dport(30000-30049) -> must_direct"));
+        // The broken dead-rule shape must never be emitted.
+        assert!(!s.contains("domain(example.com:30000-30049)"));
+        assert!(!s.contains("dport(:"));
     }
 
     #[test]

@@ -31,6 +31,10 @@ pub struct NodeDto {
     pub subscription_id: Option<String>,
     pub created_at: String,
     pub country_code: Option<String>,
+    /// Non-empty only on import / edit responses for links whose parameters
+    /// the bundled dae silently drops (e.g. hysteria2 salamander obfs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ImportWarning>,
 }
 
 impl From<Node> for NodeDto {
@@ -45,8 +49,28 @@ impl From<Node> for NodeDto {
             subscription_id: n.subscription_id,
             created_at: n.created_at,
             country_code: n.country_code,
+            warnings: Vec::new(),
         }
     }
+}
+
+/// A compatibility warning attached to an imported/edited node: the link
+/// parses, but carries parameters the bundled dae ignores.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportWarning {
+    pub code: String,
+    pub message: String,
+}
+
+/// Localized warnings for parameters the bundled dae silently drops.
+fn compatibility_warnings(locale: chaos_i18n::Locale, link: &str) -> Vec<ImportWarning> {
+    chaos_core::link::link_compatibility_warnings(link)
+        .into_iter()
+        .map(|code| ImportWarning {
+            code: code.to_string(),
+            message: chaos_i18n::t(locale, &format!("warning.{code}")),
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -203,9 +227,11 @@ async fn import_nodes(
                     node.tag.as_deref(),
                 )
                 .await?;
+                let mut dto = NodeDto::from(node);
+                dto.warnings = compatibility_warnings(locale, raw);
                 results.push(ImportItemResult::Ok {
                     ok: true,
-                    node: NodeDto::from(node),
+                    node: dto,
                 });
             }
             Err(e) => {
@@ -265,9 +291,8 @@ async fn update_node_handler(
         return Err(ApiError::bad_request("link_required", locale));
     }
 
-    let protocol = chaos_core::link::detect_protocol(raw).ok_or_else(|| {
-        ApiError::bad_request("unrecognized_scheme", locale)
-    })?;
+    let protocol = chaos_core::link::detect_protocol(raw)
+        .ok_or_else(|| ApiError::bad_request("unrecognized_scheme", locale))?;
     let address = chaos_core::link::detect_address(raw);
 
     let existing = get_node(&state.pool, &id)
@@ -295,12 +320,7 @@ async fn update_node_handler(
     let name = if let Some(name) = explicit_name {
         name
     } else {
-        chaos_core::link::node_name(
-            tag_owned.as_deref(),
-            None,
-            Some(protocol.as_str()),
-            &id,
-        )
+        chaos_core::link::node_name(tag_owned.as_deref(), None, Some(protocol.as_str()), &id)
     };
 
     let address_changed = existing.address.as_deref() != address.as_deref();
@@ -324,6 +344,7 @@ async fn update_node_handler(
     .ok_or_else(|| ApiError::not_found("not_found", locale))?;
 
     let mut dto = NodeDto::from(node);
+    dto.warnings = compatibility_warnings(locale, raw);
 
     if link_changed {
         let _ = mark_republish_if_published_source_changed(&state, "node", &id).await?;
@@ -494,6 +515,8 @@ mod tests {
         assert_eq!(patched["protocol"], "hysteria2");
         assert_eq!(patched["address"], "9.9.9.9:8443");
         assert_eq!(patched["link"], "hysteria2://u@9.9.9.9:8443#sg");
+        // Plain links carry no warnings; absent from the JSON entirely.
+        assert!(patched.get("warnings").is_none());
 
         let del = app
             .oneshot(
@@ -508,6 +531,43 @@ mod tests {
             .unwrap();
         assert_eq!(del.status(), StatusCode::OK);
         assert_eq!(json_body(del).await["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn import_obfs_link_warns_instead_of_dropping_silently() {
+        let (app, state) = test_app().await;
+        let token = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let import = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/nodes")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .header("accept-language", "zh-CN")
+                    .body(Body::from(
+                        r#"{"links":[{"link":"hysteria2://u@9.9.9.9:8443/?obfs=salamander&obfs-password=pw&insecure=1&sni=9.9.9.9#obfs"},{"link":"hysteria2://u@9.9.9.9:30000-30049/?insecure=1#range"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(import.status(), StatusCode::OK);
+        let body = json_body(import).await;
+
+        // obfs link imports fine but must carry an explicit warning.
+        assert_eq!(body["results"][0]["ok"], true);
+        let warnings = body["results"][0]["node"]["warnings"]
+            .as_array()
+            .expect("obfs import must carry warnings");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["code"], "hysteria2_obfs_unsupported");
+        assert!(warnings[0]["message"].as_str().unwrap().contains("dae"));
+
+        // Port-range links are supported by the bundled dae: no warnings.
+        assert_eq!(body["results"][1]["ok"], true);
+        assert!(body["results"][1]["node"]["warnings"].is_null());
     }
 
     #[tokio::test]

@@ -10,7 +10,9 @@
 		testLatency,
 		ApiClientError,
 		type NodeDto,
-		type LatencyDto
+		type LatencyDto,
+		type ImportItemResult,
+		type ImportWarning
 	} from '$lib/api';
 	import { latencyTone, formatLatencyMs, latencyClass } from '$lib/latency';
 	import { sortByLatency } from '$lib/latencySessionCore';
@@ -72,6 +74,32 @@
 		void load();
 	});
 
+	/** Surface link params the bundled dae drops (e.g. hysteria2 salamander obfs). */
+	function warnCompatibility(warned: { name: string; warnings: ImportWarning[] }[]) {
+		const byCode = new Map<string, { message: string; nodes: string[] }>();
+		for (const node of warned) {
+			for (const warning of node.warnings) {
+				const entry = byCode.get(warning.code) ?? { message: warning.message, nodes: [] };
+				entry.nodes.push(node.name);
+				byCode.set(warning.code, entry);
+			}
+		}
+		for (const [code, entry] of byCode) {
+			toast.warning({
+				id: `compat-${code}`,
+				title: t('nodes.compatWarningTitle', { count: entry.nodes.length }),
+				description: entry.message
+			});
+		}
+	}
+
+	function warnedNodes(results: ImportItemResult[]) {
+		return results
+			.filter((result): result is Extract<ImportItemResult, { ok: true }> => result.ok)
+			.filter((result) => (result.node.warnings?.length ?? 0) > 0)
+			.map((result) => ({ name: result.node.name, warnings: result.node.warnings ?? [] }));
+	}
+
 	async function onImport() {
 		const links = importText
 			.split(/\r?\n/)
@@ -86,6 +114,7 @@
 		try {
 			const response = await importNodes(links.map((link) => ({ link })));
 			const successful = response.results.filter((result) => result.ok).length;
+			warnCompatibility(warnedNodes(response.results));
 			const failedResults = response.results.filter(
 				(result): result is Extract<typeof result, { ok: false }> => !result.ok
 			);
@@ -183,6 +212,9 @@
 			editTag = '';
 			editLink = '';
 			toast.success({ title: t('nodes.saved') });
+			if (updated.warnings?.length) {
+				warnCompatibility([{ name: updated.name, warnings: updated.warnings }]);
+			}
 		} catch (cause) {
 			toast.error({
 				title: cause instanceof ApiClientError ? apiErrorText(cause) : t('nodes.saveFailed')

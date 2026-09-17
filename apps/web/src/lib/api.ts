@@ -231,6 +231,13 @@ export type NodeDto = {
 	subscription_id: string | null;
 	created_at: string;
 	country_code: string | null;
+	/** Present on import/edit responses when the bundled dae drops link params. */
+	warnings?: ImportWarning[];
+};
+
+export type ImportWarning = {
+	code: string;
+	message: string;
 };
 
 export type ImportItemResult =

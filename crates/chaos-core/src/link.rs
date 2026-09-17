@@ -32,6 +32,51 @@ pub fn is_udp_only_protocol(protocol: &str) -> bool {
     )
 }
 
+/// Stable code for a hysteria2 link carrying `obfs` parameters that the
+/// bundled dae data plane silently drops.
+pub const WARN_HYSTERIA2_OBFS_UNSUPPORTED: &str = "hysteria2_obfs_unsupported";
+
+/// Inspect a share link for parameters the bundled dae silently drops.
+///
+/// The vendored dae (olicesx/outbound fork, as bundled in dae v2.0.0) does not
+/// implement hysteria2 salamander obfuscation — its dialer still carries a
+/// `TODO: support salamander obfuscation`. `obfs` / `obfs-password` are ignored
+/// and the resulting bare-QUIC dialer can never reach a server that enables the
+/// plugin, so the node appears importable yet times out forever with no hint.
+/// Callers (import / node edit) should surface the returned codes as explicit
+/// warnings instead of letting the parameters vanish silently.
+///
+/// Returns stable warning codes (see the `WARN_*` constants).
+pub fn link_compatibility_warnings(link: &str) -> Vec<&'static str> {
+    let link = link.trim();
+    let Some((scheme, rest)) = link.split_once("://") else {
+        return Vec::new();
+    };
+    if scheme.is_empty() {
+        return Vec::new();
+    }
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "hysteria2" | "hy2") {
+        return Vec::new();
+    }
+
+    // Query sits between the first '?' and the fragment ('#').
+    let before_fragment = rest.split('#').next().unwrap_or(rest);
+    let Some(query) = before_fragment.split_once('?').map(|(_, query)| query) else {
+        return Vec::new();
+    };
+    let has_key = |name: &str| {
+        query.split('&').any(|pair| {
+            let (key, _) = pair.split_once('=').unwrap_or((pair, ""));
+            key == name
+        })
+    };
+    if has_key("obfs") || has_key("obfs-password") {
+        vec![WARN_HYSTERIA2_OBFS_UNSUPPORTED]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Best-effort host:port (or host) extraction from a URL-ish share link.
 pub fn detect_address(link: &str) -> Option<String> {
     let link = link.trim();
@@ -206,5 +251,35 @@ mod tests {
         assert_eq!(detect_tag("vless://u@1.2.3.4:443#"), None);
         // Whitespace-only fragment
         assert_eq!(detect_tag("vless://u@1.2.3.4:443#%20%20"), None);
+    }
+
+    #[test]
+    fn warns_on_hysteria2_obfs_params() {
+        assert_eq!(
+            link_compatibility_warnings(
+                "hysteria2://pass@h:8443/?obfs=salamander&obfs-password=pw&insecure=1#n"
+            ),
+            vec![WARN_HYSTERIA2_OBFS_UNSUPPORTED]
+        );
+        // `hy2` alias and `obfs` alone also warn.
+        assert_eq!(
+            link_compatibility_warnings("hy2://pass@h:8443/?obfs=salamander#n"),
+            vec![WARN_HYSTERIA2_OBFS_UNSUPPORTED]
+        );
+        assert_eq!(
+            link_compatibility_warnings("hysteria2://pass@h:8443/?obfs-password=pw#n"),
+            vec![WARN_HYSTERIA2_OBFS_UNSUPPORTED]
+        );
+        // Plain hysteria2 and other protocols are silent.
+        assert!(
+            link_compatibility_warnings("hysteria2://pass@h:8443/?insecure=1&sni=h#n").is_empty()
+        );
+        assert!(link_compatibility_warnings("hysteria://pass@h:8443/?obfs=x#n").is_empty());
+        assert!(link_compatibility_warnings("trojan://u@h:443?obfs=x#n").is_empty());
+        assert!(link_compatibility_warnings("not-a-link").is_empty());
+        // Range-port links work on the bundled dae; no warning for them.
+        assert!(
+            link_compatibility_warnings("hysteria2://pass@h:30000-30049/?insecure=1#n").is_empty()
+        );
     }
 }
