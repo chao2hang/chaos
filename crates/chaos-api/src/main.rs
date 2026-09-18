@@ -1,5 +1,11 @@
 //! chaos-api — REST JSON API on 0.0.0.0:2030.
 
+#[cfg(not(unix))]
+compile_error!(
+    "chaos-api is Unix-only: it drives the dae data plane through POSIX process and \
+     network primitives. Windows support was removed in 0.1.27."
+);
+
 mod auth;
 mod error;
 mod health;

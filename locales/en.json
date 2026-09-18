@@ -706,7 +706,6 @@
   "error.orchestration_not_published": "Publish a valid orchestration before applying the runtime",
   "error.orchestration_stale": "A published node-group member no longer exists; review and publish the orchestration again",
   "error.orchestration_needs_republish": "An orchestration source changed; publish the orchestration again before applying",
-  "error.windows_data_plane_unavailable": "The Windows data plane is not configured; connect a signed Wintun adapter with sing-box or mihomo",
   "error.resource_in_use": "This resource is referenced by the orchestration and cannot be removed yet",
   "error.invalid_username": "The username must be 1 to 64 characters",
   "error.invalid_password": "The password must be at least 8 characters",

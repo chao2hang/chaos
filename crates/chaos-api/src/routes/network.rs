@@ -230,8 +230,9 @@ fn default_route_interfaces() -> HashSet<String> {
 fn interface_ips() -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
 
-    // IPv4 addresses from /proc/net/fib_trie are awkward, so on Unix we ask
-    // `getifaddrs(3)`. Windows has no such call and gets an empty map.
+    // IPv4 addresses from /proc/net/fib_trie are awkward, so ask
+    // `getifaddrs(3)` instead. Non-Unix hosts are not supported at all (the
+    // crates fail to compile there).
     collect_ips_getifaddrs(&mut map);
 
     for ips in map.values_mut() {
@@ -242,7 +243,6 @@ fn interface_ips() -> HashMap<String, Vec<String>> {
 }
 
 /// Collect every interface address into `map`, keyed by interface name.
-#[cfg(unix)]
 fn collect_ips_getifaddrs(map: &mut HashMap<String, Vec<String>>) {
     unsafe {
         let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -273,12 +273,6 @@ fn collect_ips_getifaddrs(map: &mut HashMap<String, Vec<String>>) {
     }
 }
 
-/// Windows exposes interface addresses through `GetAdaptersAddresses`, which we
-/// do not call: the control plane's network view is Linux-only for now.
-#[cfg(not(unix))]
-fn collect_ips_getifaddrs(_map: &mut HashMap<String, Vec<String>>) {}
-
-#[cfg(unix)]
 unsafe fn sockaddr_to_ip_string(addr: *const libc::sockaddr) -> Option<String> {
     if addr.is_null() {
         return None;

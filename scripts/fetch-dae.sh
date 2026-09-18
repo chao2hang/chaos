@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "error: dae is a Linux-only data plane; use docs/platform/windows-data-plane.md on Windows" >&2
+  echo "error: dae is a Linux-only data plane, and chaos targets Linux only" >&2
   exit 1
 fi
 

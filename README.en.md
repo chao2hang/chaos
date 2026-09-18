@@ -198,7 +198,7 @@ chaos does **not** use dae-wing GraphQL.
 
 ## Platform notes
 
-- Vendored **dae** is **Linux-only**. See [docs/platform/windows-data-plane.md](docs/platform/windows-data-plane.md)
+- chaos is **Linux-only**: both the control plane and the vendored **dae** data plane rely on Linux kernel features (eBPF, netns, `/proc`). Windows support was removed in 0.1.27, and a non-Unix target now fails at compile time
 - GeoIP is **off** by default
 - Design: [docs/superpowers/specs/2026-07-18-chaos-product-design.md](docs/superpowers/specs/2026-07-18-chaos-product-design.md)
 

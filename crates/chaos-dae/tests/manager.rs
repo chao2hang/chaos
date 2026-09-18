@@ -1,5 +1,6 @@
 //! Integration tests for DaeManager using the fake-dae fixture.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,17 +23,14 @@ fn temp_work_dir() -> PathBuf {
     dir
 }
 
-/// The fixture is a POSIX shell script, so the tests that spawn a daemon are
-/// Unix-only; the portable ones below still run on Windows.
-#[cfg(unix)]
+/// The fixture is a POSIX shell script, so the tests that spawn a daemon need a
+/// Unix host — which is the only place this workspace builds.
 fn chmod_755(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(path, perms).unwrap();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn write_config_and_reload_with_long_lived_fake() {
     let _guard = TEST_LOCK.lock().await;
@@ -54,18 +52,15 @@ async fn write_config_and_reload_with_long_lived_fake() {
         .await
         .expect("write_config");
     assert_eq!(config_path, work_dir.join("config.dae"));
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&config_path)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "dae requires private config mode, got {mode:o}"
-        );
-    }
+    let mode = std::fs::metadata(&config_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "dae requires private config mode, got {mode:o}"
+    );
 
     mgr.reload().await.expect("reload/spawn");
     assert!(mgr.pid_path().is_file());
@@ -99,7 +94,6 @@ async fn write_config_and_reload_with_long_lived_fake() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn immediate_exit_fake_reports_error() {
     let _guard = TEST_LOCK.lock().await;
@@ -164,7 +158,6 @@ async fn geoip_data_replaces_existing_file_atomically() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn stop_still_works_after_binary_is_deleted() {
     let _guard = TEST_LOCK.lock().await;

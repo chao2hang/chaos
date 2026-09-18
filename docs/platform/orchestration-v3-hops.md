@@ -23,13 +23,12 @@ chain.on_failure = reject | direct | next_available
 The compiler should retain an ordered `CompiledHopChain` in a backend-neutral
 IR. Each hop must be resolved to an immutable node identity at publication;
 missing nodes, cycles, duplicate hops, and unsupported protocols fail closed.
-The Linux and Windows renderers then advertise capabilities independently:
+The renderer then advertises the capability explicitly:
 
-- Linux: only enable after a real engine can enforce ordered proxy dialing and
-  DNS/UDP behavior; dae's current group renderer is not sufficient evidence.
-- Windows: render to the selected sing-box/mihomo engine together with Wintun;
-  never synthesize chains from edge conditions or pretend a flattened group is
-  serial.
+- Linux (the only data plane since Windows support was removed in 0.1.27): only
+  enable after a real engine can enforce ordered proxy dialing and DNS/UDP
+  behavior; dae's current group renderer is not sufficient evidence. Never
+  synthesize chains from edge conditions or pretend a flattened group is serial.
 
 The UI should add chains as an ordered list inside the inspector, with explicit
 add/remove/reorder actions, a hop preview, and a capability/error panel. The
@@ -38,8 +37,8 @@ not by adding legacy branch/start/end nodes.
 
 Acceptance gates before enabling V3 publication:
 
-1. Linux and Windows renderers agree on the IR semantics for TCP, UDP, DNS,
-   IPv4, and IPv6.
+1. The renderer's IR semantics for TCP, UDP, DNS, IPv4, and IPv6 are documented
+   and covered by tests.
 2. A network test proves the destination sees the final hop and cannot observe
    the original endpoint when the chain is enabled.
 3. Crash/reload tests restore routes, DNS, and engine processes without leaking

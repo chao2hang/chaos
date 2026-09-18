@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::io::SeekFrom;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 use axum::extract::{Query, State};
@@ -154,8 +155,8 @@ pub async fn restore_persisted_runtime() {
     if !env_flag("CHAOS_AUTOSTART_DAE") {
         return;
     }
-    let backend = chaos_dae::platform_backend().status();
-    if backend.kind != "linux-dae" || !backend.ready {
+    let backend = chaos_dae::data_plane_status();
+    if !backend.ready {
         tracing::warn!(reason = backend.reason, "dae autostart skipped");
         return;
     }
@@ -192,16 +193,10 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn manager_or_missing(locale: Locale) -> Result<DaeManager, ApiError> {
-    let backend = chaos_dae::platform_backend().status();
-    if !backend.ready {
-        let code = if backend.kind == "windows-wintun-engine" {
-            "windows_data_plane_unavailable"
-        } else {
-            "dae_binary_missing"
-        };
+    if !chaos_dae::data_plane_status().ready {
         return Err(ApiError::coded(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            code,
+            "dae_binary_missing",
             locale,
         ));
     }
@@ -234,10 +229,9 @@ async fn get_runtime(
 ) -> Result<Json<RuntimeStatus>, ApiError> {
     let bin = resolve_dae_bin();
     let work_dir = dae_work_dir();
-    let data_plane = chaos_dae::platform_backend().status();
-    let bin = (data_plane.kind == "linux-dae").then_some(bin).flatten();
+    let data_plane = chaos_dae::data_plane_status();
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);
-    let running = data_plane.kind == "linux-dae" && manager_for_status_or_stop().is_running();
+    let running = manager_for_status_or_stop().is_running();
     let config_exists = work_dir.join("config.dae").is_file();
     let geoip_data = geo_data_status(&work_dir, "geoip.dat");
     let geosite_data = geo_data_status(&work_dir, "geosite.dat");
@@ -509,7 +503,7 @@ pub(crate) async fn apply_current_config_locked(
         config_path: config_path.display().to_string(),
         nodes: for_config.len(),
         needs_republish: false,
-        data_plane: chaos_dae::platform_backend().status().kind,
+        data_plane: chaos_dae::DATA_PLANE_KIND,
         reload_method,
         health_check: Some(health_check),
     })
@@ -653,17 +647,6 @@ async fn verify_or_rollback(
             error: None,
         });
     }
-    // Only verify on the linux tproxy data plane.
-    if chaos_dae::platform_backend().status().kind != "linux-dae" {
-        return Ok(HealthCheckReport {
-            ok: true,
-            attempts: 0,
-            successes: 0,
-            results: vec![],
-            error: None,
-        });
-    }
-
     let report = probe_dataplane().await;
     if report.ok {
         return Ok(report);
@@ -712,14 +695,6 @@ async fn stop_runtime(
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<RuntimeStatus>, ApiError> {
     let _runtime_guard = state.runtime_lock.lock().await;
-    let data_plane = chaos_dae::platform_backend().status();
-    if data_plane.kind != "linux-dae" {
-        return Err(ApiError::coded(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "windows_data_plane_unavailable",
-            locale,
-        ));
-    }
     manager_for_status_or_stop()
         .stop()
         .await
@@ -727,7 +702,6 @@ async fn stop_runtime(
     let bin = resolve_dae_bin();
     let work_dir = dae_work_dir();
     let needs_republish = orchestration_needs_republish(&state).await?;
-    let bin = (data_plane.kind == "linux-dae").then_some(bin).flatten();
     let bin_ok = bin.as_ref().map(|p| dae_bin_ok(p)).unwrap_or(false);
     Ok(Json(RuntimeStatus {
         running: false,
@@ -736,8 +710,8 @@ async fn stop_runtime(
         work_dir: work_dir.display().to_string(),
         config_exists: work_dir.join("config.dae").is_file(),
         needs_republish,
-        data_plane: data_plane.kind,
-        data_plane_ready: data_plane.ready,
+        data_plane: chaos_dae::DATA_PLANE_KIND,
+        data_plane_ready: bin_ok,
         geoip_data: geo_data_status(&work_dir, "geoip.dat"),
         geosite_data: geo_data_status(&work_dir, "geosite.dat"),
     }))
@@ -1095,9 +1069,7 @@ async fn reload_runtime(
     // Same post-reload verification as apply. There is no previous-config
     // backup here because the file was not changed, so a failure is reported
     // (and the daemon left running) rather than rolled back.
-    let health_check = if dataplane_verification_enabled()
-        && chaos_dae::platform_backend().status().kind == "linux-dae"
-    {
+    let health_check = if dataplane_verification_enabled() {
         let report = probe_dataplane().await;
         if !report.ok {
             return Err(ApiError::new(
@@ -1120,7 +1092,7 @@ async fn reload_runtime(
         config_path: config_path.display().to_string(),
         nodes: 0,
         needs_republish: false,
-        data_plane: chaos_dae::platform_backend().status().kind,
+        data_plane: chaos_dae::DATA_PLANE_KIND,
         reload_method,
         health_check,
     }))
@@ -1205,26 +1177,16 @@ async fn read_log_tail(path: &std::path::Path, max_lines: usize) -> Option<Vec<S
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct FileStamp {
     len: u64,
-    #[cfg(unix)]
     dev: u64,
-    #[cfg(unix)]
     ino: u64,
 }
 
 impl FileStamp {
     fn from_metadata(meta: &std::fs::Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Self {
-                len: meta.len(),
-                dev: meta.dev(),
-                ino: meta.ino(),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            Self { len: meta.len() }
+        Self {
+            len: meta.len(),
+            dev: meta.dev(),
+            ino: meta.ino(),
         }
     }
 
@@ -1232,15 +1194,7 @@ impl FileStamp {
     /// refers to the file we already have open (as opposed to a replacement
     /// written by a rotation or a fresh `File::create`).
     fn same_file(&self, other: &Self) -> bool {
-        #[cfg(unix)]
-        {
-            self.dev == other.dev && self.ino == other.ino
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = other;
-            true
-        }
+        self.dev == other.dev && self.ino == other.ino
     }
 }
 
@@ -1729,15 +1683,8 @@ fn check_permissions() -> DiagnosticsPermissions {
 }
 
 /// Whether this process runs as uid 0.
-#[cfg(unix)]
 fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
-}
-
-/// Windows has no POSIX uid and the control plane never runs elevated there.
-#[cfg(not(unix))]
-fn running_as_root() -> bool {
-    false
 }
 
 fn read_capabilities() -> (bool, bool) {

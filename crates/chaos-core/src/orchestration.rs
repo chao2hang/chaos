@@ -347,7 +347,8 @@ pub struct ValidationReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompiledRoute {
-    /// Backend-neutral matcher retained for Windows and future renderers.
+    /// Structured form of the matcher, kept alongside the rendered dae
+    /// expression so the dry-run tester can report which rule fired.
     pub matcher: RuleMatcher,
     pub priority: u32,
     /// dae-specific expression retained for the Linux renderer.

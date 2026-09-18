@@ -4,7 +4,6 @@ members = [
   "crates/chaos-api",
   "crates/chaos-core",
   "crates/chaos-dae",
-  "crates/chaos-engine",
   "crates/chaos-i18n",
   "crates/chaos-store",
 ]
@@ -12,7 +11,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.1.26"
+version = "0.1.27"
 
 [workspace.dependencies]
 anyhow = "1"

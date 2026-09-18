@@ -203,7 +203,7 @@ chaos **不使用** dae-wing GraphQL。
 
 ## 平台说明
 
-- 内置 **dae** 数据面为 **Linux**。Windows 上控制面可编译，Apply 会提示数据面不可用，见 [docs/platform/windows-data-plane.md](docs/platform/windows-data-plane.md)
+- chaos 仅支持 **Linux**：控制面与内置 **dae** 数据面都依赖 Linux 内核能力（eBPF、netns、`/proc`）。Windows 支持已于 0.1.27 移除，非 Unix 平台在编译期直接报错
 - GeoIP 查询会把节点地址发往第三方服务，**默认关闭**
 - 产品设计：[docs/superpowers/specs/2026-07-18-chaos-product-design.md](docs/superpowers/specs/2026-07-18-chaos-product-design.md)
 

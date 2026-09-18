@@ -2,6 +2,12 @@
 //!
 //! Catalogs live at monorepo `locales/{en,zh-CN}.json` and are embedded at compile time.
 
+#[cfg(not(unix))]
+compile_error!(
+    "chaos-i18n is Unix-only: chaos is a Linux dae control plane. Windows support \
+     was removed in 0.1.27."
+);
+
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashMap;

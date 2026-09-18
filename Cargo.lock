@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-api"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "argon2",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-core"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "base64",
  "futures",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-dae"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "libc",
@@ -286,19 +286,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "chaos-engine"
-version = "0.1.26"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "chaos-i18n"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "once_cell",
  "serde_json",
@@ -306,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-store"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "chrono",

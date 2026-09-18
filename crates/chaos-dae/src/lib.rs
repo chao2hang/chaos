@@ -11,19 +11,33 @@
 //!
 //! Flags match a typical dae CLI surface (`run -c <config-dir-or-file>`). Real
 //! eBPF apply is out of scope for unit tests; use `tests/fixtures/fake-dae.sh`.
+//!
+//! # Platform
+//!
+//! The vendored `dae` data plane is Linux-only, and so is chaos: the manager
+//! relies on `/proc`, POSIX signals, `getifaddrs(3)` and netns mounts. There is
+//! no Windows backend — a non-Unix build fails early with a `compile_error!`
+//! below instead of failing at runtime.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
-/// Backend-neutral data-plane capability exposed to the control plane.
-///
-/// Linux currently uses dae. Windows deliberately reports an unavailable
-/// backend until a signed Wintun + sing-box/mihomo implementation is wired in;
-/// this prevents the API from accidentally trying to run a Linux dae config on
-/// Windows.
+#[cfg(not(unix))]
+compile_error!(
+    "chaos is Unix-only: the data plane shells out to `dae`, which needs a Linux \
+     kernel with eBPF support. The Windows backend was removed in 0.1.27."
+);
+
+/// Reported to clients as `data_plane`; the API and the web console match on
+/// this value, so treat it as part of the HTTP contract.
+pub const DATA_PLANE_KIND: &str = "linux-dae";
+
+/// Capability report for the dae data plane, surfaced through `/health` and the
+/// runtime endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataPlaneStatus {
     pub kind: &'static str,
@@ -31,69 +45,17 @@ pub struct DataPlaneStatus {
     pub reason: &'static str,
 }
 
-pub trait DataPlaneBackend: Send + Sync {
-    fn status(&self) -> DataPlaneStatus;
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LinuxDaeBackend;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct WindowsWintunBackend;
-
-impl DataPlaneBackend for LinuxDaeBackend {
-    fn status(&self) -> DataPlaneStatus {
-        let ready = resolve_dae_bin().is_some_and(|path| dae_bin_ok(&path));
-        DataPlaneStatus {
-            kind: "linux-dae",
-            ready,
-            reason: if ready {
-                "dae backend ready"
-            } else {
-                "dae binary missing"
-            },
-        }
-    }
-}
-
-impl DataPlaneBackend for WindowsWintunBackend {
-    fn status(&self) -> DataPlaneStatus {
-        DataPlaneStatus {
-            kind: "windows-wintun-engine",
-            ready: false,
-            reason: "Windows data plane requires a signed Wintun adapter and a configured sing-box or mihomo engine",
-        }
-    }
-}
-
-pub enum PlatformBackend {
-    Linux(LinuxDaeBackend),
-    Windows(WindowsWintunBackend),
-}
-
-impl DataPlaneBackend for PlatformBackend {
-    fn status(&self) -> DataPlaneStatus {
-        match self {
-            Self::Linux(backend) => backend.status(),
-            Self::Windows(backend) => backend.status(),
-        }
-    }
-}
-
-impl PlatformBackend {
-    pub fn status(&self) -> DataPlaneStatus {
-        <Self as DataPlaneBackend>::status(self)
-    }
-}
-
-pub fn platform_backend() -> PlatformBackend {
-    #[cfg(windows)]
-    {
-        return PlatformBackend::Windows(WindowsWintunBackend);
-    }
-    #[cfg(not(windows))]
-    {
-        PlatformBackend::Linux(LinuxDaeBackend)
+/// Whether the vendored `dae` binary is present and usable.
+pub fn data_plane_status() -> DataPlaneStatus {
+    let ready = resolve_dae_bin().is_some_and(|path| dae_bin_ok(&path));
+    DataPlaneStatus {
+        kind: DATA_PLANE_KIND,
+        ready,
+        reason: if ready {
+            "dae backend ready"
+        } else {
+            "dae binary missing"
+        },
     }
 }
 
@@ -195,16 +157,8 @@ impl DaeManager {
         tokio::fs::write(&temp, content)
             .await
             .with_context(|| format!("write geo data {}", temp.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644))
-                .with_context(|| format!("chmod 0644 {}", temp.display()))?;
-        }
-        #[cfg(windows)]
-        if path.exists() {
-            let _ = tokio::fs::remove_file(&path).await;
-        }
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("chmod 0644 {}", temp.display()))?;
         tokio::fs::rename(&temp, &path)
             .await
             .with_context(|| format!("replace geo data {}", path.display()))?;
@@ -229,20 +183,9 @@ impl DaeManager {
         tokio::fs::write(&temp, content)
             .await
             .with_context(|| format!("write config {}", temp.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&temp, perms)
-                .with_context(|| format!("chmod 0600 {}", temp.display()))?;
-        }
-        #[cfg(windows)]
-        if path.exists() {
-            // Windows cannot rename over an existing file. The destination is
-            // still private to the work directory; the next write is complete
-            // before this replacement occurs.
-            let _ = tokio::fs::remove_file(&path).await;
-        }
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&temp, perms)
+            .with_context(|| format!("chmod 0600 {}", temp.display()))?;
         tokio::fs::rename(&temp, &path)
             .await
             .with_context(|| format!("replace config {}", path.display()))?;
@@ -430,11 +373,7 @@ impl DaeManager {
             .with_context(|| format!("canonicalize work_dir {}", self.work_dir.display()))?;
 
         // Re-assert mode in case an older write left 0644 on disk.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600));
-        }
+        let _ = std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600));
 
         let log_path = work_dir.join("dae.log");
         // Append rather than truncate: a restart used to wipe the log, which is
@@ -445,12 +384,8 @@ impl DaeManager {
             .append(true)
             .open(&log_path)
             .with_context(|| format!("open log {}", log_path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 0600 {}", log_path.display()))?;
-        }
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", log_path.display()))?;
         let log_err = log_file
             .try_clone()
             .with_context(|| format!("clone log handle {}", log_path.display()))?;
@@ -474,7 +409,6 @@ impl DaeManager {
         // dae sets up its own netns (mounted at /run/netns/daens) at startup and
         // bails with "file exists" if a stale mount from an unclean exit is still
         // around. Safe here: all paths into spawn_run have dae stopped already.
-        #[cfg(unix)]
         cleanup_stale_netns();
 
         // Compatibility defaults for virtualized / vNIC environments (KVM/virtio):
@@ -542,7 +476,6 @@ impl DaeManager {
     }
 }
 
-#[cfg(unix)]
 fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<&Path>) -> bool {
     // Signal 0 checks existence / permission without sending a signal. Go
     // through the syscall rather than the `kill(1)` binary: spawning a process
@@ -608,14 +541,12 @@ fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<
 /// The comm field is wrapped in parens and may itself contain spaces or parens
 /// (e.g. `(dae (worker))`), so we scan for the *last* `)` rather than splitting
 /// on whitespace. Returns `None` for malformed input.
-#[cfg(unix)]
 fn parse_proc_stat_state(stat: &str) -> Option<char> {
     let close = stat.rfind(')')?;
     stat.get(close + 1..)?.trim_start().chars().next()
 }
 
 /// Process state for `pid` per `/proc/<pid>/stat`, if readable.
-#[cfg(unix)]
 fn proc_stat_state(pid: u32) -> Option<char> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     parse_proc_stat_state(&stat)
@@ -626,7 +557,6 @@ fn proc_stat_state(pid: u32) -> Option<char> {
 /// `/run/netns/daens` already exists. Only invoked when no dae process is
 /// running (every call path into `spawn_run` guarantees that), so this is safe;
 /// failures are tolerated and logged at debug level.
-#[cfg(unix)]
 fn cleanup_stale_netns() {
     const NETNS_PATH: &str = "/run/netns/daens";
 
@@ -641,7 +571,6 @@ fn cleanup_stale_netns() {
 }
 
 /// Whether `/proc/self/mountinfo` lists `path` as a mount point (field 5).
-#[cfg(unix)]
 fn is_mount_point(path: &str) -> bool {
     std::fs::read_to_string("/proc/self/mountinfo")
         .map(|info| {
@@ -652,7 +581,6 @@ fn is_mount_point(path: &str) -> bool {
 }
 
 /// Run a best-effort helper command with its output discarded.
-#[cfg(unix)]
 fn run_quiet(cmd: &str, args: &[&str]) {
     match Command::new(cmd)
         .args(args)
@@ -774,7 +702,6 @@ fn read_log_excerpt(log_path: &Path, max_chars: usize) -> String {
     }
 }
 
-#[cfg(unix)]
 fn absolute_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| {
         if path.is_absolute() {
@@ -788,31 +715,15 @@ fn absolute_path(path: &Path) -> PathBuf {
 }
 
 fn secure_work_dir(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("chmod work directory {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("chmod work directory {}", path.display()))?;
     Ok(())
-}
-
-#[cfg(windows)]
-fn process_alive(pid: u32, _expected_bin: Option<&Path>, _expected_config: Option<&Path>) -> bool {
-    Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
 }
 
 /// Send `signal` to `pid` through the `kill(2)` syscall.
 ///
 /// Using the syscall instead of the `kill(1)` binary avoids a fork per call and
 /// keeps expected failures out of the service log.
-#[cfg(unix)]
 fn signal_process(pid: u32, signal: i32) -> std::io::Result<()> {
     // Reject pids that do not fit `pid_t` (and pid 0) rather than truncating:
     // a wrapped value would be a negative pid, which `kill(2)` reads as a
@@ -833,38 +744,12 @@ fn signal_process(pid: u32, signal: i32) -> std::io::Result<()> {
     }
 }
 
-#[cfg(unix)]
 fn terminate_process(pid: u32) -> Result<()> {
     signal_process(pid, libc::SIGTERM).with_context(|| format!("send SIGTERM to dae pid {pid}"))
 }
 
-#[cfg(windows)]
-fn terminate_process(pid: u32) -> Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string()])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("taskkill returned {status}")
-    }
-}
-
-#[cfg(unix)]
 fn force_kill_process(pid: u32) -> Result<()> {
     signal_process(pid, libc::SIGKILL).with_context(|| format!("send SIGKILL to dae pid {pid}"))
-}
-
-#[cfg(windows)]
-fn force_kill_process(pid: u32) -> Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("taskkill /F returned {status}")
-    }
 }
 
 #[cfg(test)]
@@ -941,18 +826,12 @@ mod tests {
     }
 
     #[test]
-    fn platform_backend_reports_an_explicit_kind() {
-        let status = platform_backend().status();
-        #[cfg(windows)]
-        {
-            assert_eq!(status.kind, "windows-wintun-engine");
-            assert!(!status.ready);
-        }
-        #[cfg(not(windows))]
+    fn data_plane_status_reports_the_linux_dae_kind() {
+        let status = data_plane_status();
+        assert_eq!(status.kind, DATA_PLANE_KIND);
         assert_eq!(status.kind, "linux-dae");
     }
 
-    #[cfg(unix)]
     #[test]
     fn proc_stat_state_parses_zombie_and_normal() {
         // Classic zombie line: `pid (comm) Z ...`

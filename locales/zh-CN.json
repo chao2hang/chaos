@@ -706,7 +706,6 @@
   "error.orchestration_not_published": "请先发布有效编排，再应用运行时",
   "error.orchestration_stale": "已发布节点组中的资源已不存在，请检查并重新发布编排",
   "error.orchestration_needs_republish": "编排引用的资源已变化，请重新发布编排后再应用",
-  "error.windows_data_plane_unavailable": "Windows 数据面尚未配置；请接入签名 Wintun 与 sing-box 或 mihomo 引擎",
   "error.resource_in_use": "该资源仍被编排引用，暂时不能删除",
   "error.invalid_username": "用户名长度须为 1 到 64 个字符",
   "error.invalid_password": "密码至少需要 8 个字符",

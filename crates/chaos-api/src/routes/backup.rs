@@ -1,5 +1,6 @@
 //! Backup and restore: create / list / download / restore system backups (admin only).
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use axum::body::{Body, Bytes};
@@ -347,11 +348,7 @@ fn restore_backup_blocking(
         let dest = work.join("config.dae");
         std::fs::copy(&cfg_member, &dest)
             .map_err(|e| ApiError::internal_logged(locale, format!("restore config.dae: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
-        }
+        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
         restored.push("config.dae");
     }
 
@@ -388,8 +385,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// Open a pool on a real file, bypassing `sqlite:` URL parsing so the test
-    /// works on Windows paths too.
+    /// Open a pool on a real file, bypassing `sqlite:` URL parsing.
     async fn open_file(path: &Path) -> SqlitePool {
         SqlitePool::connect_with(
             SqliteConnectOptions::new()
@@ -442,7 +438,6 @@ mod tests {
     /// database, archives it, and reports the result. The member names inside
     /// the archive must stay relative, because that is what `restore_backup`
     /// extracts.
-    #[cfg(unix)]
     #[tokio::test]
     async fn create_backup_archives_the_live_database() {
         // The paths below come from process-global environment variables, so

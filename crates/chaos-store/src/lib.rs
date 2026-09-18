@@ -1,5 +1,11 @@
 //! chaos-store — SQLite pool, migrations, and row models.
 
+#[cfg(not(unix))]
+compile_error!(
+    "chaos-store is Unix-only: chaos is a Linux dae control plane. Windows support \
+     was removed in 0.1.27."
+);
+
 pub mod api_keys;
 pub mod config_plane;
 pub mod config_profiles;
@@ -76,22 +82,17 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool> {
 }
 
 fn secure_database_paths(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for candidate in [
-            path.to_path_buf(),
-            Path::new(&format!("{}-wal", path.display())).to_path_buf(),
-            Path::new(&format!("{}-shm", path.display())).to_path_buf(),
-        ] {
-            if candidate.exists() {
-                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600))
-                    .with_context(|| format!("chmod database file {}", candidate.display()))?;
-            }
+    use std::os::unix::fs::PermissionsExt;
+    for candidate in [
+        path.to_path_buf(),
+        Path::new(&format!("{}-wal", path.display())).to_path_buf(),
+        Path::new(&format!("{}-shm", path.display())).to_path_buf(),
+    ] {
+        if candidate.exists() {
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod database file {}", candidate.display()))?;
         }
     }
-    #[cfg(not(unix))]
-    let _ = path;
     Ok(())
 }
 

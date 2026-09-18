@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
@@ -396,11 +397,7 @@ pub fn load_or_create_jwt_secret() -> anyhow::Result<String> {
 fn load_or_create_jwt_secret_file(path: &Path) -> anyhow::Result<String> {
     if path.exists() {
         let secret = fs::read_to_string(path)?.trim().to_string();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        }
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         if secret.len() < MIN_JWT_SECRET_BYTES {
             anyhow::bail!(
                 "JWT secret file must contain at least {MIN_JWT_SECRET_BYTES} bytes: {}",
@@ -413,21 +410,13 @@ fn load_or_create_jwt_secret_file(path: &Path) -> anyhow::Result<String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-            }
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         }
     }
 
     let secret = random_hex_secret(32);
     fs::write(path, &secret)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(secret)
 }
 

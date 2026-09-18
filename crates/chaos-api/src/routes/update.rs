@@ -591,17 +591,11 @@ fn write_script(path: &Path, content: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn set_executable(path: &Path) -> Result<(), ApiError> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::Permissions::from_mode(0o700);
     std::fs::set_permissions(path, mode)
         .map_err(|err| ApiError::internal_logged(chaos_i18n::Locale::En, err))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> Result<(), ApiError> {
-    Ok(())
 }
 
 fn systemd_available() -> bool {
@@ -615,7 +609,6 @@ fn which(program: &str) -> bool {
 
 /// Start the update script in its own session so it survives the API restart
 /// it is about to trigger.
-#[cfg(unix)]
 fn spawn_detached_update(script: &Path) -> Result<(), String> {
     use std::process::Stdio;
 
@@ -642,13 +635,6 @@ fn spawn_detached_update(script: &Path) -> Result<(), String> {
     }
     cmd.spawn().map_err(|err| format!("spawn helper: {err}"))?;
     Ok(())
-}
-
-/// The update helper is a POSIX shell script driven by systemd; `apply_update`
-/// rejects non-Linux targets before reaching here, so this is unreachable.
-#[cfg(not(unix))]
-fn spawn_detached_update(_script: &Path) -> Result<(), String> {
-    Err("self-update is only supported on Linux".to_string())
 }
 
 fn make_update_script(deb_path: &Path, asset_name: &str, target: &str, started_at: &str) -> String {

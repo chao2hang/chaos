@@ -23,17 +23,13 @@ pub fn health_router() -> Router<AppState> {
 }
 
 async fn health() -> Json<HealthResponse> {
-    let dae_path = if cfg!(windows) {
-        None
-    } else {
-        chaos_dae::resolve_dae_bin()
-    };
+    let dae_path = chaos_dae::resolve_dae_bin();
     let dae_binary_ok = dae_path
         .as_ref()
         .map(|p| chaos_dae::dae_bin_ok(p))
         .unwrap_or(false);
     let dae_binary = dae_path.map(|p| p.display().to_string());
-    let data_plane = chaos_dae::platform_backend().status();
+    let data_plane = chaos_dae::data_plane_status();
 
     Json(HealthResponse {
         ok: true,
