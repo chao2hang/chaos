@@ -3,6 +3,7 @@
 mod auth;
 mod error;
 mod health;
+mod http;
 mod locale;
 mod routes;
 mod state;
@@ -37,8 +38,49 @@ use routes::update::update_router;
 use routes::users::users_router;
 use state::AppState;
 
+/// Handle `--version` / `--help` without starting the server. Without this,
+/// running `chaos-api --version` boots the whole process and then fails with
+/// `Address already in use` whenever a server is already running.
+fn handle_cli_flags() -> Option<i32> {
+    let arg = std::env::args().nth(1)?;
+    match arg.as_str() {
+        "-V" | "--version" => {
+            println!("chaos {}", env!("CARGO_PKG_VERSION"));
+            Some(0)
+        }
+        "-h" | "--help" => {
+            println!(
+                "chaos-api {version}
+
+USAGE:
+    chaos-api [OPTIONS]
+
+OPTIONS:
+    -h, --help       Print this help
+    -V, --version    Print version
+
+ENVIRONMENT:
+    CHAOS_BIND               Listen address (default 0.0.0.0:2030)
+    CHAOS_DATABASE_URL       SQLite URL (default sqlite:./data/chaos.db?mode=rwc)
+    CHAOS_WEB_DIR            Directory of the packaged web UI
+    CHAOS_DAE_LOG_LEVEL      dae log level (trace|debug|info|warn|error|fatal)
+    CHAOS_DAE_LOG_MAX_BYTES  dae.log rotation threshold in bytes
+    CHAOS_DAE_ALLOW_SUDO     Allow dae to manage sudo-backed operations
+    RUST_LOG                 tracing filter (default info)",
+                version = env!("CARGO_PKG_VERSION")
+            );
+            Some(0)
+        }
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(code) = handle_cli_flags() {
+        std::process::exit(code);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -109,7 +151,13 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // `ConnectInfo` gives handlers the peer socket address, which the login
+    // rate limiter uses to key attempts by client IP instead of by username.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -197,7 +245,13 @@ async fn refresh_due_subscriptions(state: &AppState) -> anyhow::Result<()> {
     tracing::info!(count = due.len(), "auto-refreshing subscriptions");
 
     for sub in due {
-        tracing::info!(id = %sub.id, url = %sub.url, "refreshing subscription");
+        // Subscription URLs embed their access token in the path, so log a
+        // redacted form (host only) instead of the credential-bearing URL.
+        tracing::info!(
+            id = %sub.id,
+            url = %chaos_core::subscription::redact_subscription_url_for_log(&sub.url),
+            "refreshing subscription"
+        );
         match fetch_and_replace_subscription(state, &sub).await {
             Ok(node_count) => {
                 tracing::info!(id = %sub.id, node_count, "subscription refreshed");

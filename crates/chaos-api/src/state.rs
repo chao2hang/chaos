@@ -70,6 +70,18 @@ mod tests {
 
     static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
+    /// Every test here reads or writes the process-global `CHAOS_PROBER_BIN`,
+    /// so all of them run under `ENV_LOCK` and clear the variable first.
+    fn with_clean_prober_env<T>(body: impl FnOnce() -> T) -> T {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        // SAFETY: serialized by ENV_LOCK while process-global env is mutated.
+        unsafe { std::env::remove_var("CHAOS_PROBER_BIN") };
+        let value = body();
+        unsafe { std::env::remove_var("CHAOS_PROBER_BIN") };
+        drop(guard);
+        value
+    }
+
     #[test]
     fn resolves_prober_next_to_api_binary() {
         let dir = std::env::temp_dir().join(format!("chaos-prober-test-{}", std::process::id()));
@@ -77,7 +89,7 @@ mod tests {
         let prober = dir.join("chaos-prober");
         fs::write(&prober, b"").unwrap();
 
-        let resolved = resolve_prober_bin(Some(dir.join("chaos-api")));
+        let resolved = with_clean_prober_env(|| resolve_prober_bin(Some(dir.join("chaos-api"))));
         let _ = fs::remove_dir_all(&dir);
 
         assert_eq!(resolved.as_deref(), Some(prober.as_path()));
@@ -85,7 +97,6 @@ mod tests {
 
     #[test]
     fn env_override_takes_precedence() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let dir =
             std::env::temp_dir().join(format!("chaos-prober-env-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -94,10 +105,11 @@ mod tests {
         fs::write(&sibling, b"sibling").unwrap();
         fs::write(&override_path, b"override").unwrap();
 
-        // SAFETY: tests are serialized by ENV_LOCK while mutating process-global env.
-        unsafe { std::env::set_var("CHAOS_PROBER_BIN", &override_path) };
-        let resolved = resolve_prober_bin(Some(dir.join("chaos-api")));
-        unsafe { std::env::remove_var("CHAOS_PROBER_BIN") };
+        let resolved = with_clean_prober_env(|| {
+            // SAFETY: serialized by ENV_LOCK while process-global env is mutated.
+            unsafe { std::env::set_var("CHAOS_PROBER_BIN", &override_path) };
+            resolve_prober_bin(Some(dir.join("chaos-api")))
+        });
 
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(resolved.as_deref(), Some(override_path.as_path()));

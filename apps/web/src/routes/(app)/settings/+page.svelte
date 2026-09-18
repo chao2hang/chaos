@@ -196,10 +196,10 @@
 		}
 	}
 
-	async function checkForUpdates() {
+	async function checkForUpdates(force = false) {
 		checking = true;
 		try {
-			const res = await checkUpdate();
+			const res = await checkUpdate(force);
 			versionInfo = res.version;
 			updateStatus = res.status;
 			if (res.version.error) {
@@ -318,7 +318,7 @@
 				<p class="update-message update-error">{t('settings.updateCheckUnavailable')}</p>
 			{/if}
 			<div class="update-actions">
-				<Button variant="secondary" loading={checking} onclick={() => void checkForUpdates()}>
+				<Button variant="secondary" loading={checking} onclick={() => void checkForUpdates(true)}>
 					{t('settings.checkUpdates')}
 				</Button>
 				<Button

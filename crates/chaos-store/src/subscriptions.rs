@@ -219,18 +219,59 @@ pub async fn set_subscription_refresh_schedule(
     get_subscription(pool, id).await
 }
 
+/// Upper bound on how many intervals the scheduler will step through when
+/// re-anchoring. Beyond this (a clock jump or a very long outage) the schedule
+/// restarts from now instead of looping.
+const MAX_SCHEDULE_STEPS: i64 = 100_000;
+
+/// Work out the next refresh time for a subscription.
+///
+/// The next time is advanced by whole intervals from the *previously scheduled*
+/// time, which keeps a stable cadence. Anchoring on the completion time instead
+/// (`now + interval`) pushed each cycle later by however long the refresh took
+/// plus up to one scheduler tick, so the schedule walked forward by minutes per
+/// cycle and eventually fired hours later than configured.
+pub fn next_refresh_at(
+    previous: Option<&str>,
+    interval_hours: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    if interval_hours <= 0 {
+        return None;
+    }
+
+    let interval = chrono::Duration::hours(interval_hours);
+    let anchor = previous
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|parsed| parsed.with_timezone(&chrono::Utc))
+        // No usable anchor (first refresh, or an unparsable stamp): start here.
+        .unwrap_or(now);
+
+    if anchor > now {
+        // The schedule is still ahead of us; leave it where it is.
+        return Some(anchor.to_rfc3339());
+    }
+
+    let interval_secs = interval.num_seconds();
+    // Smallest k with anchor + k * interval > now.
+    let steps = (now - anchor).num_seconds() / interval_secs + 1;
+    if steps > MAX_SCHEDULE_STEPS {
+        return Some((now + interval).to_rfc3339());
+    }
+
+    Some((anchor + interval * steps as i32).to_rfc3339())
+}
+
 /// Mark a subscription as refreshed and schedule the next refresh.
 pub async fn mark_subscription_refreshed(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
     let now = now_rfc3339();
-    // Get the interval to compute next refresh
     let sub = get_subscription(pool, id).await?;
-    let next_refresh_at = sub.and_then(|s| {
-        if s.refresh_interval_hours > 0 {
-            let next = chrono::Utc::now() + chrono::Duration::hours(s.refresh_interval_hours);
-            Some(next.to_rfc3339())
-        } else {
-            None
-        }
+    let next_refresh_at = sub.as_ref().and_then(|s| {
+        next_refresh_at(
+            s.next_refresh_at.as_deref(),
+            s.refresh_interval_hours,
+            chrono::Utc::now(),
+        )
     });
 
     sqlx::query(
@@ -274,6 +315,73 @@ pub async fn list_subscriptions_due_for_refresh(
 mod tests {
     use super::*;
     use crate::{connect, list_nodes, migrate};
+
+    fn at(raw: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn next_refresh_keeps_a_stable_cadence() {
+        // A 6h interval anchored at 08:17:20, observed five minutes late (the
+        // scheduler tick granularity) must schedule 14:17:20 — not 14:22:20,
+        // which is what anchoring on completion time produced, walking the
+        // schedule forward minutes per cycle.
+        let next = next_refresh_at(
+            Some("2026-09-18T08:17:20+00:00"),
+            6,
+            at("2026-09-18T08:22:20+00:00"),
+        )
+        .unwrap();
+
+        assert_eq!(next, at("2026-09-18T14:17:20+00:00").to_rfc3339());
+    }
+
+    #[test]
+    fn next_refresh_steps_over_missed_intervals() {
+        // A long outage must not queue up one refresh per missed interval.
+        let next = next_refresh_at(
+            Some("2026-09-18T08:17:20+00:00"),
+            1,
+            at("2026-09-18T12:30:00+00:00"),
+        )
+        .unwrap();
+
+        assert_eq!(next, at("2026-09-18T13:17:20+00:00").to_rfc3339());
+    }
+
+    #[test]
+    fn next_refresh_keeps_a_future_anchor_and_handles_missing_or_invalid_input() {
+        // Already scheduled ahead: do not move it.
+        let anchor = "2026-09-18T20:00:00+00:00";
+        assert_eq!(
+            next_refresh_at(Some(anchor), 6, at("2026-09-18T12:00:00+00:00")).unwrap(),
+            at(anchor).to_rfc3339()
+        );
+
+        // No anchor, unparsable anchor and disabled interval.
+        let now = at("2026-09-18T12:00:00+00:00");
+        assert_eq!(
+            next_refresh_at(None, 6, now).unwrap(),
+            at("2026-09-18T18:00:00+00:00").to_rfc3339()
+        );
+        assert_eq!(
+            next_refresh_at(Some("garbage"), 6, now).unwrap(),
+            at("2026-09-18T18:00:00+00:00").to_rfc3339()
+        );
+        assert_eq!(next_refresh_at(Some(anchor), 0, now), None);
+        assert_eq!(next_refresh_at(Some(anchor), -3, now), None);
+    }
+
+    #[test]
+    fn next_refresh_falls_back_when_anchor_is_absurdly_old() {
+        // A clock jump far into the past must not spin through millions of steps.
+        let now = at("2026-09-18T10:00:00+00:00");
+        let next = next_refresh_at(Some("1970-01-01T00:00:00+00:00"), 1, now).unwrap();
+
+        assert_eq!(next, at("2026-09-18T11:00:00+00:00").to_rfc3339());
+    }
 
     #[tokio::test]
     async fn insert_replace_delete_subscription() {

@@ -437,8 +437,14 @@ impl DaeManager {
         }
 
         let log_path = work_dir.join("dae.log");
-        let log_file = std::fs::File::create(&log_path)
-            .with_context(|| format!("create log {}", log_path.display()))?;
+        // Append rather than truncate: a restart used to wipe the log, which is
+        // exactly the history needed to explain why the restart happened.
+        rotate_log_if_needed(&log_path)?;
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("open log {}", log_path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -504,18 +510,8 @@ impl DaeManager {
         };
 
         if early_exit.is_some() || !process_alive(pid, Some(&self.bin), Some(&self.config_path())) {
-            let log_tail = tokio::fs::read_to_string(&log_path)
-                .await
-                .unwrap_or_default();
+            let excerpt = read_log_excerpt(&log_path, 2000);
             let _ = tokio::fs::remove_file(self.pid_path()).await;
-            let excerpt: String = log_tail
-                .chars()
-                .rev()
-                .take(2000)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
             bail!(
                 "dae exited immediately after start; log excerpt:\n{}",
                 if excerpt.trim().is_empty() {
@@ -548,12 +544,16 @@ impl DaeManager {
 
 #[cfg(unix)]
 fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<&Path>) -> bool {
-    // `kill -0` checks existence / permission without sending a signal.
-    let alive = Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    // Signal 0 checks existence / permission without sending a signal. Go
+    // through the syscall rather than the `kill(1)` binary: spawning a process
+    // per probe costs a fork, and every "process is gone" answer (the normal
+    // case for a stale pid file) printed `kill: (PID): No such process` into the
+    // service log.
+    let alive = match signal_process(pid, 0) {
+        Ok(()) => true,
+        // EPERM means the process exists but belongs to another user.
+        Err(error) => error.raw_os_error() == Some(libc::EPERM),
+    };
     if !alive {
         return false;
     }
@@ -628,13 +628,40 @@ fn proc_stat_state(pid: u32) -> Option<char> {
 #[cfg(unix)]
 fn cleanup_stale_netns() {
     const NETNS_PATH: &str = "/run/netns/daens";
-    let commands: [(&str, &[&str]); 2] = [("umount", &[NETNS_PATH]), ("rm", &["-f", NETNS_PATH])];
-    for (cmd, args) in commands {
-        match Command::new(cmd).args(args).status() {
-            Ok(status) if status.success() => tracing::debug!(cmd, "removed stale dae netns mount"),
-            Ok(_) => tracing::debug!(cmd, "no stale dae netns mount to remove"),
-            Err(error) => tracing::debug!(cmd, error = %error, "dae netns cleanup skipped"),
-        }
+
+    // Only unmount when the path really is a mount point: `umount` on an
+    // unmounted path exits non-zero and prints `no mount point specified`,
+    // which used to land in the service log on every single start.
+    if is_mount_point(NETNS_PATH) {
+        run_quiet("umount", &[NETNS_PATH]);
+        tracing::debug!(path = NETNS_PATH, "removed stale dae netns mount");
+    }
+    run_quiet("rm", &["-f", NETNS_PATH]);
+}
+
+/// Whether `/proc/self/mountinfo` lists `path` as a mount point (field 5).
+#[cfg(unix)]
+fn is_mount_point(path: &str) -> bool {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .map(|info| {
+            info.lines()
+                .any(|line| line.split_whitespace().nth(4) == Some(path))
+        })
+        .unwrap_or(false)
+}
+
+/// Run a best-effort helper command with its output discarded.
+#[cfg(unix)]
+fn run_quiet(cmd: &str, args: &[&str]) {
+    match Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => tracing::debug!(cmd, %status, "helper command did not succeed"),
+        Err(error) => tracing::debug!(cmd, error = %error, "helper command unavailable"),
     }
 }
 
@@ -662,6 +689,87 @@ fn compat_env_value(name: &str) -> Option<String> {
 fn apply_compat_env(cmd: &mut Command, name: &str) {
     if let Some(value) = compat_env_value(name) {
         cmd.env(name, value);
+    }
+}
+
+/// Size at which `dae.log` is rotated to `dae.log.1`.
+///
+/// The data plane writes one line per proxied connection, which reaches tens of
+/// megabytes a day on a busy host. Without a bound the file grows until the
+/// disk fills; with it, the work directory holds at most two generations.
+const DEFAULT_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Rotation threshold in bytes, overridable with `CHAOS_DAE_LOG_MAX_BYTES`.
+fn log_max_bytes() -> u64 {
+    std::env::var("CHAOS_DAE_LOG_MAX_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes >= 1024)
+        .unwrap_or(DEFAULT_LOG_MAX_BYTES)
+}
+
+/// Rotate `dae.log` to `dae.log.1` once it passes [`log_max_bytes`].
+///
+/// The log is opened in append mode, so this is what keeps it bounded. Rotation
+/// runs from `spawn_run`, which every caller reaches only after stopping dae, so
+/// no process holds the file open and a plain rename cannot lose writes.
+fn rotate_log_if_needed(log_path: &Path) -> Result<()> {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return Ok(()); // No log yet.
+    };
+    if metadata.len() < log_max_bytes() {
+        return Ok(());
+    }
+
+    let rotated = match log_path.file_name().and_then(|name| name.to_str()) {
+        Some(name) => log_path.with_file_name(format!("{name}.1")),
+        None => log_path.with_extension("1"),
+    };
+    std::fs::rename(log_path, &rotated).with_context(|| {
+        format!(
+            "rotate dae log {} -> {}",
+            log_path.display(),
+            rotated.display()
+        )
+    })?;
+    tracing::info!(
+        bytes = metadata.len(),
+        path = %rotated.display(),
+        "rotated dae log"
+    );
+    Ok(())
+}
+
+/// Trailing `max_chars` characters of the log.
+///
+/// Only the end of the file is read: this runs on the startup-failure path,
+/// where loading a multi-megabyte log to show a few hundred characters would be
+/// wasteful.
+fn read_log_excerpt(log_path: &Path, max_chars: usize) -> String {
+    use std::io::{Read, Seek};
+
+    const READ_BYTES: u64 = 16 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let start = len.saturating_sub(READ_BYTES);
+    if start > 0 && file.seek(std::io::SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    // A window cut at an arbitrary offset can split a UTF-8 sequence, so decode
+    // lossily rather than failing.
+    let text = String::from_utf8_lossy(&buf);
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        text.into_owned()
+    } else {
+        chars[chars.len() - max_chars..].iter().collect()
     }
 }
 
@@ -696,14 +804,34 @@ fn process_alive(pid: u32, _expected_bin: Option<&Path>, _expected_config: Optio
         .unwrap_or(false)
 }
 
+/// Send `signal` to `pid` through the `kill(2)` syscall.
+///
+/// Using the syscall instead of the `kill(1)` binary avoids a fork per call and
+/// keeps expected failures out of the service log.
 #[cfg(unix)]
-fn terminate_process(pid: u32) -> Result<()> {
-    let status = Command::new("kill").arg(pid.to_string()).status()?;
-    if status.success() {
+fn signal_process(pid: u32, signal: i32) -> std::io::Result<()> {
+    // Reject pids that do not fit `pid_t` (and pid 0) rather than truncating:
+    // a wrapped value would be a negative pid, which `kill(2)` reads as a
+    // process *group*, and `kill(-1, …)` signals every process we may signal.
+    // No live caller can reach that today — pids come from `/proc` and are
+    // cross-checked against the pid file — but the cast must not be the thing
+    // standing between a future caller and a signal to the whole system.
+    let pid = libc::pid_t::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid pid"))?;
+    // SAFETY: `kill` takes plain integers and shares no memory with the caller.
+    let result = unsafe { libc::kill(pid, signal) };
+    if result == 0 {
         Ok(())
     } else {
-        bail!("kill returned {status}")
+        Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(unix)]
+fn terminate_process(pid: u32) -> Result<()> {
+    signal_process(pid, libc::SIGTERM).with_context(|| format!("send SIGTERM to dae pid {pid}"))
 }
 
 #[cfg(windows)]
@@ -720,14 +848,7 @@ fn terminate_process(pid: u32) -> Result<()> {
 
 #[cfg(unix)]
 fn force_kill_process(pid: u32) -> Result<()> {
-    let status = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("kill -9 returned {status}")
-    }
+    signal_process(pid, libc::SIGKILL).with_context(|| format!("send SIGKILL to dae pid {pid}"))
 }
 
 #[cfg(windows)]

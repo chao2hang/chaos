@@ -55,7 +55,9 @@
 	onMount(() => {
 		void load();
 		interval = setInterval(() => {
-			if (autoRefresh) void load();
+			// A hidden tab has nobody watching the table, so skip the tick rather
+			// than keep re-reading the data-plane log.
+			if (autoRefresh && !document.hidden) void load();
 		}, 5000);
 	});
 

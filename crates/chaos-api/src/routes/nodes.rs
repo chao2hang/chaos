@@ -11,7 +11,7 @@ use chaos_store::{
     delete_node, get_node, insert_node_with_id, list_nodes, update_node, NewNode, Node, UpdateNode,
 };
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::orchestration::{
@@ -149,7 +149,7 @@ async fn list_nodes_handler(
 }
 
 async fn import_nodes(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<ImportNodesRequest>,
@@ -280,7 +280,7 @@ async fn import_nodes(
 }
 
 async fn update_node_handler(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -373,7 +373,7 @@ async fn update_node_handler(
 }
 
 async fn delete_node_handler(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -400,22 +400,26 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::auth::{auth_router, issue_token};
+    use crate::auth::{auth_router, issue_token, issue_token_role};
 
     async fn test_app() -> (Router, AppState) {
         let pool = connect("sqlite::memory:").await.unwrap();
         migrate(&pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind("u1")
-        .bind("admin")
-        .bind("test-hash")
-        .bind("now")
-        .bind("admin")
-        .execute(&pool)
-        .await
-        .unwrap();
+        // `AdminUser` reads the role from the users table rather than the token,
+        // so the non-admin case needs a real row to exist.
+        for (id, username, role) in [("u1", "admin", "admin"), ("u2", "viewer", "user")] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind("test-hash")
+            .bind("now")
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
         let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
         let app = Router::new()
             .nest("/api/v1/auth", auth_router())
@@ -531,6 +535,60 @@ mod tests {
             .unwrap();
         assert_eq!(del.status(), StatusCode::OK);
         assert_eq!(json_body(del).await["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_write_nodes() {
+        let (app, state) = test_app().await;
+        let token = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+
+        let import = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/nodes")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"links":[{"link":"trojan://example@1.2.3.4:443?sni=x#test","tag":"n1"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(import.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(import).await["error"]["code"], "admin_required");
+
+        // Reads stay available to any authenticated user.
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/nodes")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+
+        // Deleting is admin-only too. The rejection happens while extracting
+        // the caller, so a non-existent id is never reached.
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/nodes/does-not-exist")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

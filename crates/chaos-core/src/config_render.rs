@@ -6,6 +6,41 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_DAE_IDENTIFIER_LENGTH: usize = 128;
 
+/// Log levels dae accepts in its `global { log_level }` setting.
+const DAE_LOG_LEVELS: [&str; 6] = ["trace", "debug", "info", "warn", "error", "fatal"];
+
+/// Log level written into dae's `global { log_level }` section.
+///
+/// `info` is the default because the console's connection view is derived from
+/// dae's per-connection `INFO` lines. On a busy data plane those lines are
+/// almost the entire log — tens of megabytes a day — so an operator who does
+/// not need that view can set `CHAOS_DAE_LOG_LEVEL=warn` to silence them. The
+/// log is rotated regardless (see `CHAOS_DAE_LOG_MAX_BYTES`), so a lower level
+/// is about signal-to-noise rather than disk safety.
+///
+/// Unrecognised values fall back to `info` rather than being written through:
+/// dae refuses to start on an invalid level, and a typo in an environment file
+/// should not take the data plane down.
+pub fn dae_log_level() -> &'static str {
+    let Ok(raw) = std::env::var("CHAOS_DAE_LOG_LEVEL") else {
+        return "info";
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    match DAE_LOG_LEVELS
+        .into_iter()
+        .find(|level| *level == normalized)
+    {
+        Some(level) => level,
+        None => {
+            tracing::warn!(
+                value = %raw,
+                "ignoring invalid CHAOS_DAE_LOG_LEVEL (expected one of trace, debug, info, warn, error, fatal); using info"
+            );
+            "info"
+        }
+    }
+}
+
 /// Host network binding for dae `global {}` (WAN / LAN / kernel params).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkConfig {
@@ -173,7 +208,9 @@ pub fn render_dae_config_with_network(
 
     // Global section
     out.push_str("global {\n");
-    out.push_str("  log_level: info\n");
+    out.push_str("  log_level: ");
+    out.push_str(dae_log_level());
+    out.push('\n');
     out.push_str("  tproxy_port: 12345\n");
     out.push_str("  allow_insecure: false\n");
     out.push_str("  wan_interface: ");
@@ -585,6 +622,30 @@ fn build_node_bypass_rules(nodes: &[NodeForConfig]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `dae_log_level` reads process-global environment, so tests that touch it
+    /// must not interleave with each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn dae_log_level_defaults_to_info_and_ignores_invalid_values() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // SAFETY: serialized by ENV_LOCK while process-global env is mutated.
+        unsafe { std::env::remove_var("CHAOS_DAE_LOG_LEVEL") };
+        assert_eq!(dae_log_level(), "info");
+        assert!(render_minimal_dae_config(&[]).contains("log_level: info"));
+
+        unsafe { std::env::set_var("CHAOS_DAE_LOG_LEVEL", "  WARN ") };
+        assert_eq!(dae_log_level(), "warn");
+        assert!(render_minimal_dae_config(&[]).contains("log_level: warn"));
+
+        // An unknown level must not reach the config: dae refuses to start on one.
+        unsafe { std::env::set_var("CHAOS_DAE_LOG_LEVEL", "verbose") };
+        assert_eq!(dae_log_level(), "info");
+
+        unsafe { std::env::remove_var("CHAOS_DAE_LOG_LEVEL") };
+    }
 
     #[test]
     fn renders_node_link_as_node_line() {

@@ -145,6 +145,8 @@ locales/              en + zh-CN 共用文案
 | `CHAOS_JWT_SECRET` | 自动生成 `./data/jwt.secret` | 密钥字符串，或**密钥文件路径** |
 | `CHAOS_DAE_BIN` | `third_party/dae/current/dae` | dae 可执行文件 |
 | `CHAOS_DAE_WORK_DIR` | `./data/dae` | 配置 / pid / 日志 |
+| `CHAOS_DAE_LOG_LEVEL` | `info` | 写入 `config.dae` 的 dae 日志级别（`trace`…`fatal`，非法值回退 `info`） |
+| `CHAOS_DAE_LOG_MAX_BYTES` | `33554432`（32 MiB） | `dae.log` 轮转阈值；保留一代历史，最多占两份文件 |
 | `CHAOS_WEB_DIR` | （未设置则不托管静态站） | 发布包中的控制台目录 |
 | `CHAOS_BACKUP_DIR` | `./data/backups` | 备份目录（包内多为 `/var/lib/chaos/backups`） |
 | `CHAOS_AUTOSTART_DAE` | — | 为 `1` 时尝试恢复上次配置 |
@@ -154,7 +156,7 @@ locales/              en + zh-CN 共用文案
 
 - 空库时仅 **`POST /api/v1/auth/setup`** 可建首个用户，角色固定为 **admin**
 - 之后 `/setup` 关闭；新建用户默认为 `user`
-- **Apply / 停止 / 重载、发布编排、改 DNS/网络、备份** 等需 **admin**（否则 `403 admin_required`）
+- **Apply / 停止 / 重载、发布编排、节点/分组/订阅的写入、改 DNS/网络、备份** 等需 **admin**（否则 `403 admin_required`）
 
 ### Apply 与权限
 
@@ -162,6 +164,7 @@ locales/              en + zh-CN 共用文案
 - Apply 写入 `config.dae`（模式 **0600**）并启动 / 重载 dae
 - 透明代理通常需要 **root 或 CAP_NET_ADMIN / CAP_BPF** 与合适内核
 - 默认不走会卡住的交互式 sudo；可用 root 跑服务，或 `CHAOS_DAE_ALLOW_SUDO=1`（需免密）
+- dae 以追加方式写 `dae.log`，超过 `CHAOS_DAE_LOG_MAX_BYTES` 时轮转，因此工作目录最多保留两份日志
 
 ### 本地打包
 

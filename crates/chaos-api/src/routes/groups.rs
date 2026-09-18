@@ -5,7 +5,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::orchestration::{
@@ -148,35 +148,67 @@ pub fn groups_router() -> Router<AppState> {
         )
 }
 
-async fn enrich_group(state: &AppState, g: chaos_store::Group) -> Result<GroupDto, ApiError> {
-    let members = chaos_store::list_group_members(&state.pool, &g.id).await?;
+/// Enrich `groups` with their members and the member nodes' display fields.
+///
+/// Everything is fetched in three queries regardless of how many groups are
+/// passed: the node table once, and every membership once. The previous
+/// per-group helper issued two queries per group — including a full re-read of
+/// the node table for each one — so a console with N groups cost 2N queries.
+async fn enrich_groups(
+    state: &AppState,
+    groups: Vec<chaos_store::Group>,
+) -> Result<Vec<GroupDto>, ApiError> {
     let nodes = chaos_store::list_nodes(&state.pool).await?;
     let by_id: std::collections::HashMap<_, _> =
         nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-    let members = members
+
+    let mut members_by_group: std::collections::HashMap<String, Vec<chaos_store::GroupMember>> =
+        std::collections::HashMap::new();
+    for member in chaos_store::list_all_group_members(&state.pool).await? {
+        members_by_group
+            .entry(member.group_id.clone())
+            .or_default()
+            .push(member);
+    }
+
+    Ok(groups
         .into_iter()
-        .map(|m| {
-            let n = by_id.get(&m.node_id);
-            GroupMemberDto {
-                node_id: m.node_id,
-                weight: m.weight,
-                sort_order: m.sort_order,
-                name: n.map(|x| x.name.clone()),
-                tag: n.and_then(|x| x.tag.clone()),
-                protocol: n.and_then(|x| x.protocol.clone()),
-                address: n.and_then(|x| x.address.clone()),
+        .map(|g| {
+            let members = members_by_group
+                .remove(&g.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| {
+                    let n = by_id.get(&m.node_id);
+                    GroupMemberDto {
+                        node_id: m.node_id,
+                        weight: m.weight,
+                        sort_order: m.sort_order,
+                        name: n.map(|x| x.name.clone()),
+                        tag: n.and_then(|x| x.tag.clone()),
+                        protocol: n.and_then(|x| x.protocol.clone()),
+                        address: n.and_then(|x| x.address.clone()),
+                    }
+                })
+                .collect();
+            GroupDto {
+                id: g.id,
+                name: g.name,
+                policy: g.policy,
+                filter_tag: g.filter_tag,
+                sort_order: g.sort_order,
+                created_at: g.created_at,
+                members,
             }
         })
-        .collect();
-    Ok(GroupDto {
-        id: g.id,
-        name: g.name,
-        policy: g.policy,
-        filter_tag: g.filter_tag,
-        sort_order: g.sort_order,
-        created_at: g.created_at,
-        members,
-    })
+        .collect())
+}
+
+async fn enrich_group(state: &AppState, g: chaos_store::Group) -> Result<GroupDto, ApiError> {
+    let mut enriched = enrich_groups(state, vec![g]).await?;
+    enriched
+        .pop()
+        .ok_or_else(|| ApiError::internal(chaos_i18n::Locale::En))
 }
 
 async fn list_groups(
@@ -184,15 +216,12 @@ async fn list_groups(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let groups = chaos_store::list_groups(&state.pool).await?;
-    let mut out = Vec::with_capacity(groups.len());
-    for g in groups {
-        out.push(enrich_group(&state, g).await?);
-    }
+    let out = enrich_groups(&state, groups).await?;
     Ok(Json(serde_json::json!({ "groups": out })))
 }
 
 async fn create_group(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<CreateGroupRequest>,
@@ -221,7 +250,7 @@ async fn create_group(
 }
 
 async fn update_group(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -260,7 +289,7 @@ async fn update_group(
 }
 
 async fn delete_group(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -292,7 +321,7 @@ async fn list_members(
 }
 
 async fn replace_members(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -327,7 +356,7 @@ async fn replace_members(
 }
 
 async fn add_member(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -355,7 +384,7 @@ async fn add_member(
 }
 
 async fn remove_member(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path((id, node_id)): Path<(String, String)>,
@@ -370,7 +399,7 @@ async fn remove_member(
 }
 
 async fn patch_weight(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path((id, node_id)): Path<(String, String)>,
@@ -389,4 +418,255 @@ async fn patch_weight(
         "node_id": node_id,
         "weight": body.weight,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use chaos_store::{connect, insert_node, migrate};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::auth::{auth_router, issue_token, issue_token_role};
+
+    async fn test_app() -> (Router, AppState) {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        migrate(&pool).await.unwrap();
+        // `AdminUser` reads the role from the users table rather than from the
+        // token, so the non-admin case needs a real row to exist.
+        for (id, username, role) in [("u1", "admin", "admin"), ("u2", "viewer", "user")] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind("test-hash")
+            .bind("now")
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
+        let app = Router::new()
+            .nest("/api/v1/auth", auth_router())
+            .nest("/api/v1", groups_router())
+            .with_state(state.clone());
+        (app, state)
+    }
+
+    async fn json_body(res: axum::response::Response) -> serde_json::Value {
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn authed(method: &str, uri: &str, token: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_write_groups() {
+        let (app, state) = test_app().await;
+        let admin = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let viewer = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+        let group = chaos_store::insert_group(&state.pool, "g1", "min", None, 0)
+            .await
+            .unwrap();
+        insert_node(
+            &state.pool,
+            "n1",
+            None,
+            "trojan://x@127.0.0.1:443",
+            Some("trojan"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let members = format!("/api/v1/groups/{}/members", group.id);
+
+        let create = app
+            .clone()
+            .oneshot(authed(
+                "POST",
+                "/api/v1/groups",
+                &viewer,
+                r#"{"name":"g2","policy":"min"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(create).await["error"]["code"], "admin_required");
+
+        let update = app
+            .clone()
+            .oneshot(authed(
+                "PATCH",
+                &format!("/api/v1/groups/{}", group.id),
+                &viewer,
+                r#"{"name":"g2","policy":"min"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::FORBIDDEN);
+
+        let delete = app
+            .clone()
+            .oneshot(authed(
+                "DELETE",
+                &format!("/api/v1/groups/{}", group.id),
+                &viewer,
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::FORBIDDEN);
+
+        let replace = app
+            .clone()
+            .oneshot(authed(
+                "PUT",
+                &members,
+                &viewer,
+                r#"{"members":[{"node_id":"n1","weight":1}]}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replace.status(), StatusCode::FORBIDDEN);
+
+        let add = app
+            .clone()
+            .oneshot(authed(
+                "POST",
+                &members,
+                &viewer,
+                r#"{"node_id":"n1","weight":1}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(add.status(), StatusCode::FORBIDDEN);
+
+        let weight = app
+            .clone()
+            .oneshot(authed(
+                "PATCH",
+                &format!("/api/v1/groups/{}/members/n1", group.id),
+                &viewer,
+                r#"{"weight":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(weight.status(), StatusCode::FORBIDDEN);
+
+        // Reads stay open to any authenticated user, and the rejected writes
+        // must not have touched stored state.
+        let list = app
+            .clone()
+            .oneshot(authed("GET", "/api/v1/groups", &viewer, ""))
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+
+        let list = app
+            .oneshot(authed("GET", "/api/v1/groups", &admin, ""))
+            .await
+            .unwrap();
+        let listed = json_body(list).await;
+        let groups = listed["groups"].as_array().unwrap();
+        // The migration seeds a default `proxy` group; the rejected writes must
+        // not have added anything beyond it.
+        assert!(
+            !groups.iter().any(|group| group["name"] == "g2"),
+            "a rejected write created a group: {listed}"
+        );
+        let g1 = groups
+            .iter()
+            .find(|group| group["name"] == "g1")
+            .expect("seeded group is still listed");
+        assert_eq!(g1["members"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn members_are_enriched_from_the_node_table() {
+        let (app, state) = test_app().await;
+        let admin = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let node = insert_node(
+            &state.pool,
+            "n1",
+            Some("hk"),
+            "trojan://x@127.0.0.1:443",
+            Some("trojan"),
+            Some("127.0.0.1:443"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let created = app
+            .clone()
+            .oneshot(authed(
+                "POST",
+                "/api/v1/groups",
+                &admin,
+                r#"{"name":"g1","policy":"min"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let created = json_body(created).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["policy"], "min");
+        assert!(created["members"].as_array().unwrap().is_empty());
+
+        let added = app
+            .clone()
+            .oneshot(authed(
+                "POST",
+                &format!("/api/v1/groups/{id}/members"),
+                &admin,
+                &format!(r#"{{"node_id":"{}","weight":3}}"#, node.id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::OK);
+
+        // The list route batches enrichment; its members must carry the display
+        // fields of the referenced node.
+        let listed = json_body(
+            app.clone()
+                .oneshot(authed("GET", "/api/v1/groups", &admin, ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let groups = listed["groups"].as_array().unwrap();
+        let group = groups
+            .iter()
+            .find(|group| group["id"] == id.as_str())
+            .expect("created group is listed");
+        let members = group["members"].as_array().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0]["name"], "n1");
+        assert_eq!(members[0]["tag"], "hk");
+        assert_eq!(members[0]["weight"], 3);
+
+        let removed = app
+            .oneshot(authed(
+                "DELETE",
+                &format!("/api/v1/groups/{id}/members/{}", node.id),
+                &admin,
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::OK);
+    }
 }

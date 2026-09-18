@@ -143,6 +143,8 @@ locales/              shared en + zh-CN catalogs
 | `CHAOS_JWT_SECRET` | auto `./data/jwt.secret` | Secret string **or path** to secret file |
 | `CHAOS_DAE_BIN` | `third_party/dae/current/dae` | dae binary |
 | `CHAOS_DAE_WORK_DIR` | `./data/dae` | config / pid / logs |
+| `CHAOS_DAE_LOG_LEVEL` | `info` | dae log level written to `config.dae` (`trace`…`fatal`; invalid falls back to `info`) |
+| `CHAOS_DAE_LOG_MAX_BYTES` | `33554432` (32 MiB) | `dae.log` rotation threshold; one previous generation is kept |
 | `CHAOS_WEB_DIR` | unset → no static UI | Packaged console directory |
 | `CHAOS_BACKUP_DIR` | `./data/backups` | Backups (`/var/lib/chaos/backups` in packages) |
 | `CHAOS_AUTOSTART_DAE` | — | `1` restores last config on boot |
@@ -152,7 +154,7 @@ locales/              shared en + zh-CN catalogs
 
 - Empty DB: only **`POST /api/v1/auth/setup`** creates the first user (**admin**)
 - Later users default to `user`
-- **Apply / stop / reload, publish, DNS/network writes, backup** require **admin** (`403 admin_required`)
+- **Apply / stop / reload, publish, node/group/subscription writes, DNS/network writes, backup** require **admin** (`403 admin_required`)
 
 ### Apply / privileges
 
@@ -160,6 +162,7 @@ locales/              shared en + zh-CN catalogs
 - Apply writes `config.dae` mode **0600** and starts/reloads dae
 - Transparent proxy usually needs **root or CAP_NET_ADMIN / CAP_BPF**
 - Interactive sudo is avoided by default; run as root or use passwordless `CHAOS_DAE_ALLOW_SUDO=1`
+- dae appends to `dae.log` and rotates it past `CHAOS_DAE_LOG_MAX_BYTES`, so the work directory holds at most two generations
 
 ### Local packages
 

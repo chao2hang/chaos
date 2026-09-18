@@ -967,12 +967,42 @@ pub(crate) async fn orchestration_references_any_source(
     kind: &str,
     ids: &HashSet<String>,
 ) -> Result<bool, ApiError> {
-    for id in ids {
-        if orchestration_references_source(state, kind, id).await? {
-            return Ok(true);
-        }
+    if ids.is_empty() {
+        return Ok(false);
     }
-    Ok(false)
+    // Read and parse each document once, then test every id against it. The
+    // previous shape re-read and re-parsed both documents once per id, so
+    // checking N nodes cost 2N reads and 2N parses.
+    let documents = load_orchestration_documents(
+        state,
+        &[
+            chaos_store::META_ORCHESTRATION_DRAFT,
+            chaos_store::META_ORCHESTRATION_FLOW,
+        ],
+    )
+    .await?;
+    Ok(documents.iter().any(|document| {
+        ids.iter()
+            .any(|id| document_references_source(document, kind, id))
+    }))
+}
+
+/// Load and parse the orchestration documents stored under `keys`, skipping any
+/// that are absent.
+async fn load_orchestration_documents(
+    state: &AppState,
+    keys: &[&str],
+) -> Result<Vec<OrchestrationDocument>, ApiError> {
+    let mut documents = Vec::with_capacity(keys.len());
+    for key in keys {
+        let Some(raw) = chaos_store::get_meta(&state.pool, key).await? else {
+            continue;
+        };
+        let document: OrchestrationDocument = serde_json::from_str(&raw)
+            .map_err(|error| ApiError::internal_logged(chaos_i18n::Locale::En, error))?;
+        documents.push(document);
+    }
+    Ok(documents)
 }
 
 async fn documents_reference_source(
@@ -981,17 +1011,10 @@ async fn documents_reference_source(
     kind: &str,
     id: &str,
 ) -> Result<bool, ApiError> {
-    for key in keys {
-        let Some(raw) = chaos_store::get_meta(&state.pool, key).await? else {
-            continue;
-        };
-        let document: OrchestrationDocument = serde_json::from_str(&raw)
-            .map_err(|error| ApiError::internal_logged(chaos_i18n::Locale::En, error))?;
-        if document_references_source(&document, kind, id) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(load_orchestration_documents(state, keys)
+        .await?
+        .iter()
+        .any(|document| document_references_source(document, kind, id)))
 }
 
 fn source_kind_label(source: &GroupSource) -> &'static str {

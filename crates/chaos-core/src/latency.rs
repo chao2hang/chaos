@@ -131,6 +131,27 @@ impl ProbeMethod {
     }
 }
 
+/// Upper bound on how long the parent waits for the prober, independent of how
+/// many links were requested.
+const PROBER_MAX_BUDGET: Duration = Duration::from_secs(600);
+
+/// Slack added to the per-connect budget for process start-up and I/O.
+const PROBER_STARTUP_SLACK: Duration = Duration::from_secs(10);
+
+/// How long to wait for `chaos-prober` before killing it.
+///
+/// The prober receives a per-connect timeout, but it probes in batches, so the
+/// wall-clock budget scales with the number of batches rather than with a single
+/// connect timeout. Bounding it here is what stops a wedged prober from holding
+/// a request open indefinitely.
+fn prober_budget(targets: usize, connect_timeout: Duration) -> Duration {
+    let batches = targets.div_ceil(DEFAULT_CONCURRENCY).max(1) as u32;
+    connect_timeout
+        .saturating_mul(batches)
+        .saturating_add(PROBER_STARTUP_SLACK)
+        .min(PROBER_MAX_BUDGET)
+}
+
 /// Probe nodes via chaos-prober subprocess for real proxy latency.
 ///
 /// `targets`: vec of `(node_id, link)`.
@@ -174,10 +195,26 @@ pub async fn probe_via_prober(
         drop(stdin); // Close stdin so prober sees EOF.
     }
 
-    let out = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("wait prober: {e}"))?;
+    let out = match timeout(
+        prober_budget(targets.len(), connect_timeout),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("wait prober: {e}")),
+        Err(_) => {
+            // `kill_on_drop` only fires when the future owning the child is
+            // dropped, which never happens while we simply await it — so a hung
+            // prober used to pin this task (and its child) forever. The timeout
+            // drops the `wait_with_output` future and with it the child, which
+            // SIGKILLs the process.
+            return Err(format!(
+                "prober did not finish within {}s",
+                prober_budget(targets.len(), connect_timeout).as_secs()
+            ));
+        }
+    };
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -260,6 +297,29 @@ pub async fn probe_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prober_budget_scales_with_batches_and_is_capped() {
+        let per_connect = Duration::from_secs(5);
+
+        // A single batch costs one connect timeout plus start-up slack.
+        assert_eq!(
+            prober_budget(1, per_connect),
+            Duration::from_secs(5) + PROBER_STARTUP_SLACK
+        );
+        // Concurrency is 20, so 21 links need two batches.
+        assert_eq!(
+            prober_budget(21, per_connect),
+            Duration::from_secs(10) + PROBER_STARTUP_SLACK
+        );
+        // No target at all still needs one batch's worth of budget.
+        assert_eq!(
+            prober_budget(0, per_connect),
+            Duration::from_secs(5) + PROBER_STARTUP_SLACK
+        );
+        // A huge node list must not produce an unbounded wait.
+        assert_eq!(prober_budget(100_000, per_connect), PROBER_MAX_BUDGET);
+    }
 
     #[tokio::test]
     async fn probe_tcp_localhost() {

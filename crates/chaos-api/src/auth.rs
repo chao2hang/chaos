@@ -37,9 +37,24 @@ const MIN_JWT_SECRET_BYTES: usize = 32;
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
 const LOCKOUT_DURATION_SECS: u64 = 900; // 15 minutes
 
+/// Cap on tracked keys. Both the peer address and the submitted username are
+/// attacker-influenced, so the map must not be allowed to grow without bound.
+const MAX_TRACKED_KEYS: usize = 10_000;
+
+struct Attempt {
+    count: u32,
+    last_attempt: Instant,
+}
+
 /// Simple in-memory rate limiter for login attempts.
+///
+/// Entries are keyed by [`rate_limit_key`] — the peer address when the server is
+/// run with connect info, otherwise the submitted username. Note that keying by
+/// address means callers sharing one address (a NAT, a VPN egress) share a
+/// budget; that is the intended trade for not letting one source spray attempts
+/// across unlimited usernames.
 struct LoginRateLimiter {
-    attempts: HashMap<String, (u32, Instant)>,
+    attempts: HashMap<String, Attempt>,
 }
 
 impl LoginRateLimiter {
@@ -49,36 +64,74 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Check if an IP is rate limited. Returns (is_limited, remaining_attempts).
+    /// Check whether `key` is currently locked out.
+    /// Returns (is_limited, remaining_attempts).
     fn check(&mut self, key: &str) -> (bool, u32) {
+        self.sweep();
         let now = Instant::now();
-        if let Some((count, last_attempt)) = self.attempts.get_mut(key) {
-            // Reset if lockout period has passed
-            if now.duration_since(*last_attempt).as_secs() > LOCKOUT_DURATION_SECS {
-                *count = 0;
-                *last_attempt = now;
-                return (false, MAX_LOGIN_ATTEMPTS);
-            }
-            if *count >= MAX_LOGIN_ATTEMPTS {
-                return (true, 0);
-            }
-            (false, MAX_LOGIN_ATTEMPTS - *count)
-        } else {
-            (false, MAX_LOGIN_ATTEMPTS)
+        let Some(attempt) = self.attempts.get_mut(key) else {
+            return (false, MAX_LOGIN_ATTEMPTS);
+        };
+        // Reset once the lockout window has passed.
+        if now.duration_since(attempt.last_attempt).as_secs() > LOCKOUT_DURATION_SECS {
+            attempt.count = 0;
+            attempt.last_attempt = now;
+            return (false, MAX_LOGIN_ATTEMPTS);
         }
+        if attempt.count >= MAX_LOGIN_ATTEMPTS {
+            return (true, 0);
+        }
+        (false, MAX_LOGIN_ATTEMPTS - attempt.count)
     }
 
     /// Record a failed login attempt.
     fn record_failure(&mut self, key: &str) {
         let now = Instant::now();
-        let entry = self.attempts.entry(key.to_string()).or_insert((0, now));
-        entry.0 += 1;
-        entry.1 = now;
+        let attempt = self.attempts.entry(key.to_string()).or_insert(Attempt {
+            count: 0,
+            last_attempt: now,
+        });
+        attempt.count += 1;
+        attempt.last_attempt = now;
     }
 
     /// Clear attempts on successful login.
     fn clear(&mut self, key: &str) {
         self.attempts.remove(key);
+    }
+
+    /// Expire stale entries, then keep the map under [`MAX_TRACKED_KEYS`].
+    ///
+    /// Expiry used to be evaluated only for a key that was looked up again, so
+    /// failures recorded for arbitrary usernames were never released.
+    fn sweep(&mut self) {
+        let now = Instant::now();
+        self.attempts.retain(|_, attempt| {
+            now.duration_since(attempt.last_attempt).as_secs() <= LOCKOUT_DURATION_SECS
+        });
+        if self.attempts.len() < MAX_TRACKED_KEYS {
+            return;
+        }
+        // Still at the cap after expiring, so something has to go. Evict the
+        // least recently active keys, but prefer unlocked ones: dropping a key
+        // that is currently locked out would hand that attacker a fresh budget
+        // on demand, since they only need to push `MAX_TRACKED_KEYS / 2` newer
+        // keys in to clear their own lockout.
+        let mut candidates: Vec<(String, Instant, bool)> = self
+            .attempts
+            .iter()
+            .map(|(key, attempt)| {
+                (
+                    key.clone(),
+                    attempt.last_attempt,
+                    attempt.count >= MAX_LOGIN_ATTEMPTS,
+                )
+            })
+            .collect();
+        candidates.sort_by_key(|(_, last_attempt, locked_out)| (*locked_out, *last_attempt));
+        for (key, _, _) in candidates.into_iter().take(MAX_TRACKED_KEYS / 2) {
+            self.attempts.remove(&key);
+        }
     }
 }
 
@@ -504,19 +557,57 @@ async fn setup(
     Ok(Json(TokenResponse { token }))
 }
 
+/// Peer address of the request, when the server was started with connect info.
+///
+/// Read out of the request extensions rather than through `ConnectInfo` so the
+/// handler keeps working where the extension is absent (unit tests, and any
+/// transport that does not supply it); login then falls back to a username key.
+struct ClientIp(Option<std::net::SocketAddr>);
+
+impl FromRequestParts<AppState> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|info| info.0),
+        ))
+    }
+}
+
+/// Identity a login attempt is rate limited under.
+///
+/// The peer address is preferred: keying on the username alone let an attacker
+/// try one password across unlimited usernames, each drawing a fresh budget.
+/// Only the IP is used, never the port — the source port changes with every new
+/// connection, so including it would hand each attempt its own budget.
+fn rate_limit_key(client_ip: Option<std::net::SocketAddr>, username: &str) -> String {
+    match client_ip {
+        Some(addr) => format!("ip:{}", addr.ip()),
+        None => format!("user:{username}"),
+    }
+}
+
 async fn login(
     State(state): State<AppState>,
+    ClientIp(client_ip): ClientIp,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<Credentials>,
 ) -> Result<Json<TokenResponse>, ApiError> {
     validate_credentials(&body, locale)?;
 
     let username = body.username.trim();
+    let rate_key = rate_limit_key(client_ip, username);
 
     // Check rate limiting
     {
         let mut limiter = RATE_LIMITER.lock().unwrap();
-        let (is_limited, _remaining) = limiter.check(username);
+        let (is_limited, _remaining) = limiter.check(&rate_key);
         if is_limited {
             return Err(ApiError::coded(
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -530,18 +621,18 @@ async fn login(
         .await?
         .ok_or_else(|| {
             // Record failed attempt
-            RATE_LIMITER.lock().unwrap().record_failure(username);
+            RATE_LIMITER.lock().unwrap().record_failure(&rate_key);
             ApiError::unauthorized("invalid_credentials", locale)
         })?;
 
     if !verify_password_locale(&body.password, &user.password_hash, locale)? {
         // Record failed attempt
-        RATE_LIMITER.lock().unwrap().record_failure(username);
+        RATE_LIMITER.lock().unwrap().record_failure(&rate_key);
         return Err(ApiError::unauthorized("invalid_credentials", locale));
     }
 
     // Clear rate limit on successful login
-    RATE_LIMITER.lock().unwrap().clear(username);
+    RATE_LIMITER.lock().unwrap().clear(&rate_key);
 
     let token = issue_token_with_role(
         &user.id,
@@ -672,6 +763,96 @@ mod tests {
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn rate_limit_key_prefers_peer_address_over_username() {
+        let addr: std::net::SocketAddr = "203.0.113.7:51234".parse().unwrap();
+        // Address-keyed: one source spraying many usernames shares a budget.
+        assert_eq!(
+            rate_limit_key(Some(addr), "alice"),
+            rate_limit_key(Some(addr), "bob")
+        );
+        assert_eq!(rate_limit_key(Some(addr), "alice"), "ip:203.0.113.7");
+        // The source port must not split the budget: a new connection from the
+        // same host has a different port but is still the same identity.
+        let other_port: std::net::SocketAddr = "203.0.113.7:4096".parse().unwrap();
+        assert_eq!(
+            rate_limit_key(Some(addr), "alice"),
+            rate_limit_key(Some(other_port), "alice")
+        );
+        // Without connect info we fall back to the submitted username.
+        assert_eq!(rate_limit_key(None, "alice"), "user:alice");
+        assert_ne!(rate_limit_key(None, "alice"), rate_limit_key(None, "bob"));
+    }
+
+    #[test]
+    fn rate_limiter_expires_stale_keys_and_bounds_growth() {
+        let mut limiter = LoginRateLimiter::new();
+        limiter.attempts.insert(
+            "user:stale".to_string(),
+            Attempt {
+                count: MAX_LOGIN_ATTEMPTS,
+                last_attempt: Instant::now()
+                    - std::time::Duration::from_secs(LOCKOUT_DURATION_SECS + 60),
+            },
+        );
+        // The sweep inside `check` must drop the expired entry even though the
+        // caller never asks about that key again.
+        assert!(!limiter.check("user:fresh").0);
+        assert!(!limiter.attempts.contains_key("user:stale"));
+
+        // A spray of distinct keys must not pin memory.
+        for i in 0..(MAX_TRACKED_KEYS + 250) {
+            limiter.record_failure(&format!("user:spray-{i}"));
+        }
+        assert!(limiter.attempts.len() > MAX_TRACKED_KEYS);
+        let _ = limiter.check("user:someone");
+        assert!(limiter.attempts.len() <= MAX_TRACKED_KEYS);
+    }
+
+    #[test]
+    fn eviction_keeps_locked_out_keys() {
+        let mut limiter = LoginRateLimiter::new();
+
+        // Lock out a key first, so its entry is the least recently active one —
+        // which used to make it the first eviction candidate.
+        let victim = "user:victim";
+        for _ in 0..MAX_LOGIN_ATTEMPTS {
+            limiter.record_failure(victim);
+        }
+
+        // Spray fresh keys well past the cap to force an eviction pass.
+        for i in 0..(MAX_TRACKED_KEYS * 2) {
+            limiter.record_failure(&format!("user:spray-{i}"));
+        }
+        assert!(limiter.attempts.len() > MAX_TRACKED_KEYS);
+
+        // The eviction runs inside `check`, which also answers for `victim`.
+        let before = limiter.attempts.len();
+        assert!(
+            limiter.check(victim).0,
+            "eviction dropped a locked-out key and reset its budget"
+        );
+        assert!(
+            limiter.attempts.len() < before,
+            "sweep did not shed any entries: {}",
+            limiter.attempts.len()
+        );
+    }
+
+    #[test]
+    fn rate_limiter_locks_out_one_identity_only() {
+        let mut limiter = LoginRateLimiter::new();
+        for _ in 0..MAX_LOGIN_ATTEMPTS {
+            assert!(!limiter.check("ip:198.51.100.4:1000").0);
+            limiter.record_failure("ip:198.51.100.4:1000");
+        }
+        assert!(limiter.check("ip:198.51.100.4:1000").0);
+        // A different identity keeps its own budget.
+        assert!(!limiter.check("ip:198.51.100.5:1000").0);
+        limiter.clear("ip:198.51.100.4:1000");
+        assert!(!limiter.check("ip:198.51.100.4:1000").0);
     }
 
     #[tokio::test]

@@ -203,8 +203,13 @@ export type UpdateStatus = {
 	finished_at: string | null;
 };
 
-export function checkUpdate() {
-	return api<{ version: VersionInfo; status: UpdateStatus }>('/api/v1/update/check');
+export function checkUpdate(force = false) {
+	// The server caches the last release check to stay inside GitHub's
+	// unauthenticated rate limit. An explicit "Check for updates" click must not
+	// be answered from that cache, so it asks for a forced check; the automatic
+	// call on page load leaves the flag off.
+	const path = force ? '/api/v1/update/check?force=1' : '/api/v1/update/check';
+	return api<{ version: VersionInfo; status: UpdateStatus }>(path);
 }
 
 export function getUpdateStatus() {

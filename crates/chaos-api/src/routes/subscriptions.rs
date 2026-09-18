@@ -18,7 +18,7 @@ use chaos_store::{
     replace_subscription_nodes, update_subscription_meta, NewSubscriptionNode, Node, Subscription,
 };
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
 use crate::locale::RequestLocale;
 use crate::routes::orchestration::{
@@ -30,6 +30,8 @@ use crate::state::AppState;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_BODY_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
+const MAX_REDIRECT_HOPS: usize = 5;
+const SUBSCRIPTION_USER_AGENT: &str = "chaos-api/0.1";
 
 #[derive(Debug, Serialize)]
 pub struct SubscriptionDto {
@@ -46,11 +48,24 @@ pub struct SubscriptionDto {
 }
 
 impl SubscriptionDto {
-    fn from_sub(s: Subscription, node_count: usize, needs_republish: bool) -> Self {
+    /// `redact_url` must be set for callers that are not administrators: a
+    /// subscription URL embeds its access token in the path, so a low-privileged
+    /// reader must not receive a usable credential.
+    fn from_sub(
+        s: Subscription,
+        node_count: usize,
+        needs_republish: bool,
+        redact_url: bool,
+    ) -> Self {
+        let url = if redact_url {
+            chaos_core::subscription::redact_subscription_url_for_log(&s.url)
+        } else {
+            s.url
+        };
         Self {
             id: s.id,
             tag: s.tag,
-            url: s.url,
+            url,
             updated_at: s.updated_at,
             status: s.status,
             node_count,
@@ -141,7 +156,7 @@ pub struct SetRefreshScheduleResponse {
 }
 
 async fn set_refresh_schedule(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -164,12 +179,12 @@ async fn set_refresh_schedule(
             == Some("true");
 
     Ok(Json(SetRefreshScheduleResponse {
-        subscription: SubscriptionDto::from_sub(sub, node_count, needs_republish),
+        subscription: SubscriptionDto::from_sub(sub, node_count, needs_republish, false),
     }))
 }
 
 async fn list_subscriptions_handler(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ListSubscriptionsResponse>, ApiError> {
     let subs = list_subscriptions(&state.pool).await?;
@@ -187,7 +202,7 @@ async fn list_subscriptions_handler(
                 .iter()
                 .filter(|n| n.subscription_id.as_deref() == Some(s.id.as_str()))
                 .count();
-            SubscriptionDto::from_sub(s, count, needs_republish)
+            SubscriptionDto::from_sub(s, count, needs_republish, !user.is_admin())
         })
         .collect();
 
@@ -195,7 +210,7 @@ async fn list_subscriptions_handler(
 }
 
 async fn import_subscription(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Json(body): Json<ImportSubscriptionRequest>,
@@ -222,6 +237,8 @@ async fn import_subscription(
                     .await?
                     .as_deref()
                     == Some("true"),
+                // Admin-only endpoint: the caller may see the real URL.
+                false,
             ),
             nodes: nodes.into_iter().map(NodeDto::from).collect(),
         })),
@@ -233,7 +250,7 @@ async fn import_subscription(
 }
 
 async fn refresh_subscription(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -252,6 +269,8 @@ async fn refresh_subscription(
                     .await?
                     .as_deref()
                     == Some("true"),
+                // Admin-only endpoint: the caller may see the real URL.
+                false,
             ),
             nodes: nodes.into_iter().map(NodeDto::from).collect(),
         })),
@@ -263,7 +282,7 @@ async fn refresh_subscription(
 }
 
 async fn delete_subscription_handler(
-    _user: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
     Path(id): Path<String>,
@@ -488,26 +507,32 @@ async fn read_body_capped(
 }
 
 async fn fetch_subscription_body(url: &str, locale: Locale) -> Result<Vec<u8>, ApiError> {
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("chaos-api/0.1")
-        .build()
-        .map_err(|e| {
-            tracing::error!(?e, "reqwest client build failed");
-            subscription_fetch_failed(locale)
-        })?;
-
     let mut current =
         reqwest::Url::parse(url).map_err(|_| ApiError::bad_request("invalid_url", locale))?;
-    for hop in 0..=5 {
-        validate_subscription_url_parsed(&current, locale).await?;
+    for hop in 0..=MAX_REDIRECT_HOPS {
+        let addresses = resolve_validated_addresses(&current, locale).await?;
+        let host = current.host_str().unwrap_or_default().to_string();
+        // Pin the connection to the addresses that were just validated. Handing
+        // the host name to the client would let a second DNS answer (a rebinding
+        // attacker's) send the request somewhere the validation never approved.
+        // TLS still verifies the certificate against the host name, so this
+        // narrows where we connect without weakening identity checks.
+        let client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(SUBSCRIPTION_USER_AGENT)
+            .resolve_to_addrs(&host, &addresses)
+            .build()
+            .map_err(|error| {
+                tracing::error!(%error, "subscription fetch client build failed");
+                subscription_fetch_failed(locale)
+            })?;
         let response = client.get(current.clone()).send().await.map_err(|e| {
             tracing::warn!(error = %e, "subscription fetch failed");
             subscription_fetch_failed(locale)
         })?;
         if response.status().is_redirection() {
-            if hop == 5 {
+            if hop == MAX_REDIRECT_HOPS {
                 return Err(subscription_fetch_failed(locale));
             }
             let location = response
@@ -531,13 +556,22 @@ async fn fetch_subscription_body(url: &str, locale: Locale) -> Result<Vec<u8>, A
 async fn validate_subscription_url(url: &str, locale: Locale) -> Result<(), ApiError> {
     let parsed =
         reqwest::Url::parse(url).map_err(|_| ApiError::bad_request("invalid_url", locale))?;
-    validate_subscription_url_parsed(&parsed, locale).await
+    resolve_validated_addresses(&parsed, locale)
+        .await
+        .map(|_| ())
 }
 
-async fn validate_subscription_url_parsed(
+/// Resolve `url`'s host and reject it unless every resolved address is a public
+/// internet address.
+///
+/// The addresses are returned so the caller can pin the connection to them:
+/// validating one DNS answer and then letting the HTTP client resolve again
+/// leaves a rebinding window in which the second answer can point at an
+/// internal host.
+async fn resolve_validated_addresses(
     url: &reqwest::Url,
     locale: Locale,
-) -> Result<(), ApiError> {
+) -> Result<Vec<std::net::SocketAddr>, ApiError> {
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -553,33 +587,33 @@ async fn validate_subscription_url_parsed(
         return Err(ApiError::bad_request("invalid_url", locale));
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    let addresses = tokio::net::lookup_host((host, port))
+    let mut addresses = Vec::new();
+    for address in tokio::net::lookup_host((host, port))
         .await
-        .map_err(|_| ApiError::bad_request("invalid_url", locale))?;
-    let mut found = false;
-    for address in addresses {
-        found = true;
+        .map_err(|_| ApiError::bad_request("invalid_url", locale))?
+    {
         if blocked_subscription_ip(address.ip()) {
             return Err(ApiError::bad_request("invalid_url", locale));
         }
+        addresses.push(address);
     }
-    if !found {
+    if addresses.is_empty() {
         return Err(ApiError::bad_request("invalid_url", locale));
     }
-    Ok(())
+    Ok(addresses)
 }
 
 fn blocked_subscription_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_broadcast()
-        }
+        IpAddr::V4(ip) => blocked_subscription_ipv4(ip),
         IpAddr::V6(ip) => {
+            // `::ffff:a.b.c.d` reaches the same host as `a.b.c.d`, but every
+            // `std` predicate below looks only at the IPv6 form — `is_loopback`
+            // is true for `::1` alone — so `::ffff:127.0.0.1` would otherwise
+            // sail past as a public address. Judge the mapped form as IPv4.
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return blocked_subscription_ipv4(mapped);
+            }
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
@@ -587,6 +621,27 @@ fn blocked_subscription_ip(ip: IpAddr) -> bool {
                 || ip.is_unicast_link_local()
         }
     }
+}
+
+/// Ranges that must never be reached by a fetched subscription URL.
+///
+/// Beyond the RFC 1918 / loopback / link-local set that `std` provides, this
+/// covers the blocks that are also unreachable as public addresses but sit next
+/// to internal services: carrier-grade NAT (`100.64.0.0/10`), benchmarking
+/// (`198.18.0.0/15`), "this network" (`0.0.0.0/8`) and IETF/reserved space.
+fn blocked_subscription_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [first, second, third, _] = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || first == 0
+        || (first == 100 && (64..128).contains(&second))
+        || (first == 198 && (18..20).contains(&second))
+        || (first == 192 && second == 0 && third == 0)
+        || first >= 240
 }
 
 #[cfg(test)]
@@ -598,22 +653,26 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::auth::{auth_router, issue_token};
+    use crate::auth::{auth_router, issue_token, issue_token_role};
 
     async fn test_app() -> (Router, AppState) {
         let pool = connect("sqlite::memory:").await.unwrap();
         migrate(&pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind("u1")
-        .bind("admin")
-        .bind("test-hash")
-        .bind("now")
-        .bind("admin")
-        .execute(&pool)
-        .await
-        .unwrap();
+        // `AdminUser` reads the role from the users table rather than the token,
+        // so the non-admin case needs a real row to exist.
+        for (id, username, role) in [("u1", "admin", "admin"), ("u2", "viewer", "user")] {
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind("test-hash")
+            .bind("now")
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
         let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
         let app = Router::new()
             .nest("/api/v1/auth", auth_router())
@@ -625,6 +684,44 @@ mod tests {
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn blocked_subscription_ips_cover_mapped_and_non_public_ranges() {
+        for blocked in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "0.0.0.0",
+            "0.1.2.3",
+            "192.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+            // IPv4-mapped forms reach the same host as the embedded IPv4
+            // address, so they must be judged as one.
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:100.64.0.1",
+        ] {
+            let ip: IpAddr = blocked.parse().unwrap();
+            assert!(blocked_subscription_ip(ip), "{blocked} should be blocked");
+        }
+
+        for allowed in ["1.1.1.1", "93.184.216.34", "2606:4700::1111"] {
+            let ip: IpAddr = allowed.parse().unwrap();
+            assert!(
+                !blocked_subscription_ip(ip),
+                "{allowed} should be allowed as a public address"
+            );
+        }
     }
 
     #[test]
@@ -650,6 +747,77 @@ mod tests {
         let err = append_body_chunk(&mut buf, &chunk, MAX_BODY_BYTES).unwrap_err();
         assert_eq!(err.code, "body_too_large");
         assert!(buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_write_subscriptions_and_sees_no_url_secret() {
+        let (app, state) = test_app().await;
+        let url = "https://subs.example.com/secret-access-token";
+        let sub = chaos_store::insert_subscription(&state.pool, Some("s1"), url, "ok")
+            .await
+            .unwrap();
+
+        let admin = issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let viewer = issue_token_role("u2", "viewer", "user", &state.jwt_secret).unwrap();
+
+        // A non-admin may list subscriptions, but the URL embeds the access
+        // token, so it must come back redacted.
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/subscriptions")
+                    .header("authorization", format!("Bearer {viewer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let listed = json_body(list).await["subscriptions"][0]["url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !listed.contains("secret-access-token"),
+            "non-admin response leaked the token: {listed}"
+        );
+        assert_eq!(listed, "https://subs.example.com/<redacted>");
+
+        // An admin still gets the real URL.
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/subscriptions")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            json_body(list).await["subscriptions"][0]["url"],
+            serde_json::json!(url)
+        );
+
+        // Writes are admin-only; the rejection happens during extraction, so
+        // the handler never runs.
+        let refresh = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/subscriptions/{}/refresh", sub.id))
+                    .header("authorization", format!("Bearer {viewer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refresh.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(refresh).await["error"]["code"], "admin_required");
     }
 
     #[tokio::test]

@@ -37,6 +37,9 @@
 		streaming = true;
 		void loadLogs();
 		pollTimer = setInterval(() => {
+			// A hidden tab has nobody reading the panel, so skip the tick rather
+			// than keep pulling log tails in the background.
+			if (document.hidden) return;
 			if (pollInFlight) return;
 			pollInFlight = true;
 			void loadLogs().finally(() => {

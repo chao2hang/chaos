@@ -87,6 +87,34 @@ pub fn parse_subscription_links(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Redact the secret-bearing part of a subscription URL for logging.
+///
+/// Subscription URLs carry their access token in the path (providers commonly
+/// use `https://host/<token>/<token>`), so the full URL must never reach the
+/// logs or an issue report. Keep scheme, host and port — enough to tell which
+/// provider failed — and replace authority userinfo and the rest of the URL.
+pub fn redact_subscription_url_for_log(url: &str) -> String {
+    const PLACEHOLDER: &str = "<redacted-url>";
+
+    let Some(scheme_end) = url.find("://") else {
+        return PLACEHOLDER.to_string();
+    };
+    let after_scheme = &url[scheme_end + 3..];
+
+    // The authority ends at the first path, query or fragment delimiter.
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    // Drop any `user:password@` userinfo.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+
+    if host.is_empty() {
+        return PLACEHOLDER.to_string();
+    }
+    format!("{}://{host}/<redacted>", &url[..scheme_end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +155,39 @@ ss://base64payload
     fn plain_utf8_without_links_still_returned() {
         let body = "hello world";
         assert_eq!(decode_subscription_body(body.as_bytes()), body);
+    }
+
+    #[test]
+    fn redacts_subscription_token_path() {
+        let url = "https://dy11.example.com/ckt3kzjcmfcbx300/dztkbmehjv2pw869/0bc4b2d92ccd6777";
+        let redacted = redact_subscription_url_for_log(url);
+        assert_eq!(redacted, "https://dy11.example.com/<redacted>");
+        assert!(!redacted.contains("ckt3kzjcmfcbx300"));
+        assert!(!redacted.contains("0bc4b2d92ccd6777"));
+    }
+
+    #[test]
+    fn redacts_query_and_userinfo_but_keeps_host_and_port() {
+        let redacted =
+            redact_subscription_url_for_log("https://user:pw@sub.example.com:8443/tok?token=abc");
+        assert_eq!(redacted, "https://sub.example.com:8443/<redacted>");
+        assert!(!redacted.contains("token=abc"));
+        assert!(!redacted.contains("pw"));
+    }
+
+    #[test]
+    fn redacts_bare_host_and_rejects_non_urls() {
+        assert_eq!(
+            redact_subscription_url_for_log("http://example.com"),
+            "http://example.com/<redacted>"
+        );
+        assert_eq!(
+            redact_subscription_url_for_log("not-a-url"),
+            "<redacted-url>"
+        );
+        assert_eq!(
+            redact_subscription_url_for_log("https://"),
+            "<redacted-url>"
+        );
     }
 }

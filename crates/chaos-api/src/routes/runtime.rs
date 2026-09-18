@@ -17,7 +17,7 @@ use chaos_dae::{dae_bin_ok, resolve_dae_bin, DaeManager, ReloadOutcome};
 use chaos_i18n::Locale;
 use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::ApiError;
@@ -50,6 +50,20 @@ const GEOIP_DATA_URL: &str = "https://github.com/v2fly/geoip/releases/latest/dow
 const GEOSITE_DATA_URL: &str =
     "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat";
 const MAX_GEO_DATA_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Geo datasets run to tens of megabytes, so the shared download client gets a
+/// generous timeout. The previous code used `reqwest::Client::new()`, which
+/// applies no timeout at all and could pin a request indefinitely. This is a
+/// whole-request deadline, so it does impose a floor of roughly
+/// `MAX_GEO_DATA_BYTES / GEO_DOWNLOAD_TIMEOUT_SECS` (~220 KB/s) on throughput.
+const GEO_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
+static GEO_DATA_CLIENT: std::sync::LazyLock<Option<reqwest::Client>> =
+    std::sync::LazyLock::new(|| {
+        crate::http::build_client(
+            std::time::Duration::from_secs(GEO_DOWNLOAD_TIMEOUT_SECS),
+            "chaos-api/0.1",
+        )
+    });
 
 /// Where the .deb / Docker image ships the GeoIP/GeoSite datasets that dae
 /// requires at startup. chaos copies them into the dae work dir when the
@@ -115,6 +129,17 @@ const HEALTH_PROBE_ATTEMPTS: u32 = 4;
 const HEALTH_PROBE_REQUIRED_OK: u32 = 2;
 const HEALTH_PROBE_SETTLE_MS: u64 = 1500;
 const HEALTH_PROBE_TIMEOUT_SECS: u64 = 6;
+
+/// Shared client for the data-plane health probes. Health is polled from the
+/// console, so rebuilding the client per probe repeatedly paid for a fresh
+/// connection pool and TLS setup.
+static HEALTH_PROBE_CLIENT: std::sync::LazyLock<Option<reqwest::Client>> =
+    std::sync::LazyLock::new(|| {
+        crate::http::build_client(
+            std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS),
+            "chaos-api/0.1",
+        )
+    });
 
 fn dae_work_dir() -> std::path::PathBuf {
     std::env::var("CHAOS_DAE_WORK_DIR")
@@ -246,7 +271,13 @@ async fn download_geo_dataset(
     too_large_code: &'static str,
     locale: Locale,
 ) -> Result<Vec<u8>, ApiError> {
-    let response = reqwest::Client::new()
+    let Some(client) = &*GEO_DATA_CLIENT else {
+        return Err(ApiError::internal_logged(
+            locale,
+            "geo data http client unavailable",
+        ));
+    };
+    let response = client
         .get(url)
         .send()
         .await
@@ -511,20 +542,14 @@ async fn probe_dataplane() -> HealthCheckReport {
     // Give the staged same-port handoff time to finish binding.
     tokio::time::sleep(std::time::Duration::from_millis(HEALTH_PROBE_SETTLE_MS)).await;
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return HealthCheckReport {
-                ok: false,
-                attempts: 0,
-                successes: 0,
-                results: vec![],
-                error: Some(format!("build probe client: {error}")),
-            }
-        }
+    let Some(client) = &*HEALTH_PROBE_CLIENT else {
+        return HealthCheckReport {
+            ok: false,
+            attempts: 0,
+            successes: 0,
+            results: vec![],
+            error: Some("probe http client unavailable".into()),
+        };
     };
 
     let mut results: Vec<HealthProbeResult> = Vec::new();
@@ -1138,12 +1163,9 @@ async fn get_logs(
         }));
     }
     let lines = params.lines.clamp(1, 5000);
-    let content = tokio::fs::read_to_string(&log_path)
+    let tail: Vec<String> = read_log_tail(&log_path, lines)
         .await
-        .unwrap_or_default();
-    let all_lines: Vec<&str> = content.lines().collect();
-    let start = all_lines.len().saturating_sub(lines);
-    let tail: Vec<String> = all_lines[start..]
+        .unwrap_or_default()
         .iter()
         .map(|l| redact_runtime_detail(l))
         .collect();
@@ -1154,30 +1176,136 @@ async fn get_logs(
     }))
 }
 
+/// Read at most the last `max_lines` lines of a log file.
+///
+/// Only a trailing byte window is read and decoded, so the cost of this call
+/// tracks the number of lines requested rather than the total size of the log
+/// (which grows by tens of megabytes a day on a busy data plane). The window
+/// is capped in [`chaos_core::logtail`].
+///
+/// Returns `None` when the file is missing or unreadable.
+async fn read_log_tail(path: &std::path::Path, max_lines: usize) -> Option<Vec<String>> {
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let len = file.metadata().await.ok()?.len();
+    let window = chaos_core::logtail::tail_window_bytes(max_lines);
+    let start = len.saturating_sub(window);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start)).await.ok()?;
+    }
+    let mut buf = Vec::with_capacity(window.min(len) as usize);
+    file.read_to_end(&mut buf).await.ok()?;
+    Some(chaos_core::logtail::tail_lines_from_bytes(
+        &buf,
+        max_lines,
+        start > 0,
+    ))
+}
+
+/// Identity of the log file, used to notice truncation or replacement.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileStamp {
+    len: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileStamp {
+    fn from_metadata(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                len: meta.len(),
+                dev: meta.dev(),
+                ino: meta.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self { len: meta.len() }
+        }
+    }
+
+    /// True when both stamps describe the same inode, i.e. the path still
+    /// refers to the file we already have open (as opposed to a replacement
+    /// written by a rotation or a fresh `File::create`).
+    fn same_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.dev == other.dev && self.ino == other.ino
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = other;
+            true
+        }
+    }
+}
+
+/// Open the log and stamp it. `from_end` seeks past existing content, which is
+/// what a live tail wants on first attach; a re-open after truncation instead
+/// reads the fresh content from byte zero.
+async fn open_log_reader(
+    path: &std::path::Path,
+    from_end: bool,
+) -> Option<(BufReader<tokio::fs::File>, FileStamp)> {
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let stamp = FileStamp::from_metadata(&file.metadata().await.ok()?);
+    let mut reader = BufReader::new(file);
+    if from_end {
+        let _ = reader.seek(SeekFrom::End(0)).await;
+    }
+    Some((reader, stamp))
+}
+
 /// SSE stream that tails dae.log in real time.
 async fn stream_logs(_user: AuthUser) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let work_dir = dae_work_dir();
     let log_path = work_dir.join("dae.log");
 
     let stream = async_stream::stream! {
-        // Open the file (or wait for it to appear).
-        let file = loop {
-            match tokio::fs::File::open(&log_path).await {
-                Ok(f) => break f,
-                Err(_) => {
+        // Open the file (or wait for it to appear), tailing from the end.
+        let (mut reader, mut stamp) = loop {
+            match open_log_reader(&log_path, true).await {
+                Some(pair) => break pair,
+                None => {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         };
-        let mut reader = BufReader::new(file);
-        // Seek to end so we only stream new lines.
-        let _ = reader.seek(SeekFrom::End(0)).await;
         let mut line_buf = String::new();
         loop {
             line_buf.clear();
             match reader.read_line(&mut line_buf).await {
                 Ok(0) => {
-                    // EOF — wait for new data.
+                    // EOF. The file can be replaced under us — chaos rotates
+                    // `dae.log` once it passes the rotation threshold, and an
+                    // operator may move it aside — which leaves this handle
+                    // positioned past the new end of file, so `read_line` would
+                    // then return 0 forever and the stream would silently stop
+                    // delivering lines right when a restart makes them
+                    // interesting. So detect truncation/replacement and
+                    // re-attach.
+                    let position = reader.stream_position().await.unwrap_or(0);
+                    let replaced = match tokio::fs::metadata(&log_path).await {
+                        Ok(meta) => {
+                            let current = FileStamp::from_metadata(&meta);
+                            !current.same_file(&stamp) || current.len < position
+                        }
+                        // Removed: keep polling until it comes back.
+                        Err(_) => false,
+                    };
+                    if replaced {
+                        if let Some((next_reader, next_stamp)) =
+                            open_log_reader(&log_path, false).await
+                        {
+                            reader = next_reader;
+                            stamp = next_stamp;
+                            continue;
+                        }
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 Ok(_) => {
@@ -1196,7 +1324,7 @@ async fn stream_logs(_user: AuthUser) -> Sse<impl Stream<Item = Result<Event, In
 // Diagnostics
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsResponse {
     pub kernel_version: String,
     pub kernel_ok: bool,
@@ -1218,13 +1346,13 @@ pub struct DiagnosticsResponse {
     pub host_command: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsCompat {
     pub tcp_relay_offload_disabled: bool,
     pub quic_go_gso_disabled: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InterfaceOffload {
     pub name: String,
     pub tx_checksum_ip_generic: Option<bool>,
@@ -1245,16 +1373,59 @@ pub struct OffloadFixResponse {
     pub host_command: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsPermissions {
     pub root: bool,
     pub cap_net_admin: bool,
     pub cap_bpf: bool,
 }
 
+/// Diagnostics fork `ethtool` once per interface plus `dae version`, and the
+/// console fetches them on page load, so a short TTL keeps a polling UI from
+/// re-running those probes on every request.
+const DIAGNOSTICS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
+static DIAGNOSTICS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<Option<(std::time::Instant, DiagnosticsResponse)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 /// Check system environment for dae requirements.
-async fn get_diagnostics(_user: AuthUser) -> Json<DiagnosticsResponse> {
-    Json(read_diagnostics())
+async fn get_diagnostics(
+    _user: AuthUser,
+    RequestLocale(locale): RequestLocale,
+) -> Result<Json<DiagnosticsResponse>, ApiError> {
+    Ok(Json(
+        read_diagnostics_within(DIAGNOSTICS_TTL, locale).await?,
+    ))
+}
+
+/// Run the diagnostics probes on a blocking thread, reusing a result younger
+/// than `max_age` when one is cached. A zero `max_age` forces a fresh probe.
+async fn read_diagnostics_within(
+    max_age: std::time::Duration,
+    locale: Locale,
+) -> Result<DiagnosticsResponse, ApiError> {
+    if !max_age.is_zero() {
+        let cached = DIAGNOSTICS_CACHE
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some((stamp, diagnostics)) = cached {
+            if stamp.elapsed() < max_age {
+                return Ok(diagnostics);
+            }
+        }
+    }
+
+    let fresh = tokio::task::spawn_blocking(read_diagnostics)
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("diagnostics task failed: {error}"))
+        })?;
+    if let Ok(mut guard) = DIAGNOSTICS_CACHE.lock() {
+        *guard = Some((std::time::Instant::now(), fresh.clone()));
+    }
+    Ok(fresh)
 }
 
 fn read_diagnostics() -> DiagnosticsResponse {
@@ -1305,6 +1476,30 @@ fn has_offload_warning(virtualization: Option<&str>, offloads: &[InterfaceOffloa
 /// the guest vNIC only; the returned host command is still needed when the
 /// warning persists because the physical NIC belongs to the host.
 async fn fix_offloads(_admin: AdminUser) -> Result<Json<OffloadFixResponse>, ApiError> {
+    // Both the probes and the `ethtool -K` calls fork processes, so run them
+    // off the async worker threads.
+    let (changed, failed) = tokio::task::spawn_blocking(disable_risky_offloads)
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(Locale::En, format!("offload fix task failed: {error}"))
+        })?;
+
+    // Force a fresh probe: a cached result would still describe the pre-fix NIC.
+    let diagnostics = read_diagnostics_within(std::time::Duration::ZERO, Locale::En).await?;
+    let host_command = diagnostics.host_command.clone();
+    let ok = !diagnostics.offload_warning;
+    Ok(Json(OffloadFixResponse {
+        ok,
+        changed,
+        failed,
+        diagnostics,
+        host_command,
+    }))
+}
+
+/// Disable the risky offloads on every physical NIC. Returns the interfaces
+/// that changed and the ones that failed.
+fn disable_risky_offloads() -> (Vec<String>, Vec<String>) {
     let before = read_diagnostics();
     let candidates: Vec<String> = before
         .offloads
@@ -1348,17 +1543,7 @@ async fn fix_offloads(_admin: AdminUser) -> Result<Json<OffloadFixResponse>, Api
             }
         }
     }
-
-    let diagnostics = read_diagnostics();
-    let host_command = diagnostics.host_command.clone();
-    let ok = !diagnostics.offload_warning;
-    Ok(Json(OffloadFixResponse {
-        ok,
-        changed,
-        failed,
-        diagnostics,
-        host_command,
-    }))
+    (changed, failed)
 }
 
 fn host_offload_command() -> String {
@@ -1573,15 +1758,19 @@ pub struct ConnectionsResponse {
 async fn get_connections(_user: AuthUser) -> Json<ConnectionsResponse> {
     let work_dir = dae_work_dir();
     let log_path = work_dir.join("dae.log");
-    let content = tokio::fs::read_to_string(&log_path)
-        .await
-        .unwrap_or_default();
+
+    // Only the newest lines are needed; read a bounded tail rather than the
+    // whole (unbounded, tens-of-megabytes) log.
+    let Some(lines) = read_log_tail(&log_path, 500).await else {
+        return Json(ConnectionsResponse {
+            connections: Vec::new(),
+        });
+    };
 
     // Parse recent log lines for connection events
     let mut connections: Vec<chaos_core::traffic::ActiveConnection> = Vec::new();
-    let lines: Vec<&str> = content.lines().rev().take(500).collect();
 
-    for line in lines.iter().rev() {
+    for line in lines.iter() {
         if let Some(entry) = chaos_core::traffic::parse_dae_log_line(line) {
             if let Some(conn) = entry.connection {
                 if conn.action == chaos_core::traffic::ConnectionAction::Open {
@@ -1601,8 +1790,13 @@ async fn get_connections(_user: AuthUser) -> Json<ConnectionsResponse> {
         }
     }
 
-    // Limit to most recent 100
-    connections.truncate(100);
+    // Keep the most recent 100. The lines arrive oldest-first, so trimming
+    // from the front is what actually discards the stale entries — truncating
+    // the tail kept the oldest connections and dropped the newest.
+    if connections.len() > 100 {
+        let excess = connections.len() - 100;
+        connections.drain(..excess);
+    }
     Json(ConnectionsResponse { connections })
 }
 

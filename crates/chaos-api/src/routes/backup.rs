@@ -2,12 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
+use axum::body::{Body, Bytes};
 use axum::extract::Path as AxumPath;
 use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 
 use crate::auth::AdminUser;
 use crate::error::ApiError;
@@ -117,6 +119,19 @@ async fn create_backup(
     _admin: AdminUser,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<CreateBackupResponse>, ApiError> {
+    // Copying the database and gzipping the archive are blocking calls that can
+    // take seconds on a large database, so keep them off the async worker
+    // threads.
+    tokio::task::spawn_blocking(move || create_backup_blocking(locale))
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("backup task failed: {error}"))
+        })?
+}
+
+fn create_backup_blocking(
+    locale: chaos_i18n::Locale,
+) -> Result<Json<CreateBackupResponse>, ApiError> {
     let dir = backup_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| ApiError::internal_logged(locale, format!("create backup dir: {e}")))?;
@@ -209,19 +224,36 @@ async fn download_backup(
     if !path.is_file() {
         return Err(ApiError::not_found("not_found", locale));
     }
-    let bytes = std::fs::read(&path)
-        .map_err(|e| ApiError::internal_logged(locale, format!("read backup: {e}")))?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/gzip"),
-            (
-                header::CONTENT_DISPOSITION,
-                &format!("attachment; filename=\"{name}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
+
+    // Stream the archive instead of reading it into memory: an archive can be
+    // tens of megabytes, and buffering it doubles peak memory for a transfer
+    // that is bound by the network anyway.
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::internal_logged(locale, format!("open backup: {e}")))?;
+    let body = Body::from_stream(async_stream::stream! {
+        let mut file = file;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match file.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(read) => yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buf[..read])),
+                Err(error) => {
+                    yield Err(error);
+                    break;
+                }
+            }
+        }
+    });
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/gzip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{name}\""),
+        )
+        .body(body)
+        .map_err(|e| ApiError::internal_logged(locale, format!("build download response: {e}")))
 }
 
 /// Restore DB and/or dae config from a backup archive.
@@ -231,10 +263,23 @@ async fn restore_backup(
     RequestLocale(locale): RequestLocale,
     Json(body): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, ApiError> {
-    if !is_safe_backup_name(&body.name) {
+    // `tar -xzf` and the file replacements below are blocking, so run them off
+    // the async worker threads.
+    tokio::task::spawn_blocking(move || restore_backup_blocking(body.name, locale))
+        .await
+        .map_err(|error| {
+            ApiError::internal_logged(locale, format!("restore task failed: {error}"))
+        })?
+}
+
+fn restore_backup_blocking(
+    name: String,
+    locale: chaos_i18n::Locale,
+) -> Result<Json<RestoreResponse>, ApiError> {
+    if !is_safe_backup_name(&name) {
         return Err(ApiError::bad_request("invalid_request", locale));
     }
-    let archive = backup_dir().join(&body.name);
+    let archive = backup_dir().join(&name);
     if !archive.is_file() {
         return Err(ApiError::not_found("not_found", locale));
     }
