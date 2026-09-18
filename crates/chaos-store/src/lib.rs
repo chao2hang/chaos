@@ -90,6 +90,8 @@ fn secure_database_paths(path: &Path) -> Result<()> {
             }
         }
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

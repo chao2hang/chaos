@@ -1,7 +1,6 @@
 //! Self-update: check GitHub releases, install packages, restart, and roll back on failure.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use axum::extract::{Query, State};
@@ -614,7 +613,12 @@ fn which(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
+/// Start the update script in its own session so it survives the API restart
+/// it is about to trigger.
+#[cfg(unix)]
 fn spawn_detached_update(script: &Path) -> Result<(), String> {
+    use std::process::Stdio;
+
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -638,6 +642,13 @@ fn spawn_detached_update(script: &Path) -> Result<(), String> {
     }
     cmd.spawn().map_err(|err| format!("spawn helper: {err}"))?;
     Ok(())
+}
+
+/// The update helper is a POSIX shell script driven by systemd; `apply_update`
+/// rejects non-Linux targets before reaching here, so this is unreachable.
+#[cfg(not(unix))]
+fn spawn_detached_update(_script: &Path) -> Result<(), String> {
+    Err("self-update is only supported on Linux".to_string())
 }
 
 fn make_update_script(deb_path: &Path, asset_name: &str, target: &str, started_at: &str) -> String {

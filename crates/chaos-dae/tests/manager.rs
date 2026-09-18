@@ -22,16 +22,17 @@ fn temp_work_dir() -> PathBuf {
     dir
 }
 
+/// The fixture is a POSIX shell script, so the tests that spawn a daemon are
+/// Unix-only; the portable ones below still run on Windows.
+#[cfg(unix)]
 fn chmod_755(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn write_config_and_reload_with_long_lived_fake() {
     let _guard = TEST_LOCK.lock().await;
@@ -53,7 +54,6 @@ async fn write_config_and_reload_with_long_lived_fake() {
         .await
         .expect("write_config");
     assert_eq!(config_path, work_dir.join("config.dae"));
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&config_path)
@@ -99,6 +99,7 @@ async fn write_config_and_reload_with_long_lived_fake() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn immediate_exit_fake_reports_error() {
     let _guard = TEST_LOCK.lock().await;

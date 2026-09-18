@@ -608,6 +608,7 @@ fn process_alive(pid: u32, expected_bin: Option<&Path>, expected_config: Option<
 /// The comm field is wrapped in parens and may itself contain spaces or parens
 /// (e.g. `(dae (worker))`), so we scan for the *last* `)` rather than splitting
 /// on whitespace. Returns `None` for malformed input.
+#[cfg(unix)]
 fn parse_proc_stat_state(stat: &str) -> Option<char> {
     let close = stat.rfind(')')?;
     stat.get(close + 1..)?.trim_start().chars().next()
@@ -773,6 +774,7 @@ fn read_log_excerpt(log_path: &Path, max_chars: usize) -> String {
     }
 }
 
+#[cfg(unix)]
 fn absolute_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| {
         if path.is_absolute() {
@@ -792,6 +794,8 @@ fn secure_work_dir(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("chmod work directory {}", path.display()))?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -948,6 +952,7 @@ mod tests {
         assert_eq!(status.kind, "linux-dae");
     }
 
+    #[cfg(unix)]
     #[test]
     fn proc_stat_state_parses_zombie_and_normal() {
         // Classic zombie line: `pid (comm) Z ...`

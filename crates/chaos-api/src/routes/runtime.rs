@@ -1718,7 +1718,7 @@ fn read_dae_version() -> Option<String> {
 }
 
 fn check_permissions() -> DiagnosticsPermissions {
-    let root = unsafe { libc::geteuid() == 0 };
+    let root = running_as_root();
     // Check capabilities by reading /proc/self/status
     let (cap_net_admin, cap_bpf) = read_capabilities();
     DiagnosticsPermissions {
@@ -1726,6 +1726,18 @@ fn check_permissions() -> DiagnosticsPermissions {
         cap_net_admin: root || cap_net_admin,
         cap_bpf: root || cap_bpf,
     }
+}
+
+/// Whether this process runs as uid 0.
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// Windows has no POSIX uid and the control plane never runs elevated there.
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
 }
 
 fn read_capabilities() -> (bool, bool) {
