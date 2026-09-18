@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 
 use axum::body::{Body, Bytes};
 use axum::extract::Path as AxumPath;
+use axum::extract::State;
 use axum::http::header;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tokio::io::AsyncReadExt;
 
 use crate::auth::AdminUser;
@@ -115,72 +117,95 @@ async fn list_backups(_admin: AdminUser) -> Result<Json<ListBackupsResponse>, Ap
 }
 
 /// Create a portable archive with relative members: `chaos.db` and optional `config.dae`.
+///
+/// The database member is produced with `VACUUM INTO` rather than `fs::copy`. A
+/// byte copy taken while the service keeps writing can catch a torn page mid
+/// checkpoint, and copying the main file alone silently drops every transaction
+/// still sitting in the write-ahead log.
 async fn create_backup(
     _admin: AdminUser,
+    State(state): State<AppState>,
     RequestLocale(locale): RequestLocale,
 ) -> Result<Json<CreateBackupResponse>, ApiError> {
-    // Copying the database and gzipping the archive are blocking calls that can
-    // take seconds on a large database, so keep them off the async worker
-    // threads.
-    tokio::task::spawn_blocking(move || create_backup_blocking(locale))
+    let dir = backup_dir();
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| ApiError::internal_logged(locale, format!("create backup dir: {e}")))?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let backup_name = format!("chaos_backup_{timestamp}.tar.gz");
+
+    let staging = tempfile_dir(&dir, locale)?;
+    if db_path().is_file() {
+        let snapshot = staging.join("chaos.db");
+        if let Err(error) = snapshot_database(&state.pool, &snapshot).await {
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            return Err(ApiError::internal_logged(locale, error));
+        }
+    }
+
+    let config_path = dae_work_dir().join("config.dae");
+    if config_path.is_file() {
+        if let Err(error) = tokio::fs::copy(&config_path, staging.join("config.dae")).await {
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            return Err(ApiError::internal_logged(
+                locale,
+                format!("copy config.dae for backup: {error}"),
+            ));
+        }
+    }
+
+    // Gzipping the archive is a blocking call that can take seconds on a large
+    // database, so keep it off the async worker threads.
+    tokio::task::spawn_blocking(move || archive_backup(&dir, &staging, backup_name, locale))
         .await
         .map_err(|error| {
             ApiError::internal_logged(locale, format!("backup task failed: {error}"))
         })?
 }
 
-fn create_backup_blocking(
+/// Write a consistent snapshot of the live database to `dest`.
+async fn snapshot_database(pool: &SqlitePool, dest: &Path) -> Result<(), String> {
+    // `VACUUM INTO` refuses to overwrite an existing file; the staging directory
+    // is freshly created, so `dest` never exists here.
+    let path = dest.to_string_lossy().to_string();
+    sqlx::query("VACUUM INTO ?")
+        .bind(path)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("snapshot database: {error}"))
+}
+
+fn archive_backup(
+    dir: &Path,
+    staging: &Path,
+    backup_name: String,
     locale: chaos_i18n::Locale,
 ) -> Result<Json<CreateBackupResponse>, ApiError> {
-    let dir = backup_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| ApiError::internal_logged(locale, format!("create backup dir: {e}")))?;
-
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let backup_name = format!("chaos_backup_{timestamp}.tar.gz");
-    let backup_path = dir.join(&backup_name);
-
-    let db = db_path();
-    let dae_dir = dae_work_dir();
-    let config_path = dae_dir.join("config.dae");
-
-    let staging = tempfile_dir(&dir, locale)?;
-    let staging_path = staging.clone();
-
-    if db.is_file() {
-        let dest = staging_path.join("chaos.db");
-        std::fs::copy(&db, &dest)
-            .map_err(|e| ApiError::internal_logged(locale, format!("copy db for backup: {e}")))?;
-    }
-    if config_path.is_file() {
-        let dest = staging_path.join("config.dae");
-        std::fs::copy(&config_path, &dest).map_err(|e| {
-            ApiError::internal_logged(locale, format!("copy config.dae for backup: {e}"))
-        })?;
-    }
-
     let mut members: Vec<String> = Vec::new();
-    if staging_path.join("chaos.db").is_file() {
+    if staging.join("chaos.db").is_file() {
         members.push("chaos.db".into());
     }
-    if staging_path.join("config.dae").is_file() {
+    if staging.join("config.dae").is_file() {
         members.push("config.dae".into());
     }
     if members.is_empty() {
-        let _ = std::fs::remove_dir_all(&staging_path);
+        let _ = std::fs::remove_dir_all(staging);
         return Err(ApiError::bad_request("nothing_to_backup", locale));
     }
 
+    let backup_path = dir.join(&backup_name);
     let status = std::process::Command::new("tar")
         .arg("-czf")
         .arg(&backup_path)
         .arg("-C")
-        .arg(&staging_path)
+        .arg(staging)
         .args(&members)
         .status()
         .map_err(|e| ApiError::internal_logged(locale, format!("run tar: {e}")))?;
 
-    let _ = std::fs::remove_dir_all(&staging_path);
+    let _ = std::fs::remove_dir_all(staging);
 
     if !status.success() {
         let _ = std::fs::remove_file(&backup_path);
@@ -350,4 +375,150 @@ pub fn backup_router() -> Router<AppState> {
         .route("/backups", get(list_backups).post(create_backup))
         .route("/backups/{name}/download", get(download_backup))
         .route("/backups/restore", post(restore_backup))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chaos_store::migrate;
+    use sqlx::sqlite::SqliteConnectOptions;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// Open a pool on a real file, bypassing `sqlite:` URL parsing so the test
+    /// works on Windows paths too.
+    async fn open_file(path: &Path) -> SqlitePool {
+        SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The archive must hold every committed transaction, including rows that a
+    /// byte copy of the main database file would miss while they sit in the
+    /// write-ahead log.
+    #[tokio::test]
+    async fn snapshot_database_captures_committed_rows() {
+        let dir =
+            std::env::temp_dir().join(format!("chaos-backup-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pool = open_file(&dir.join("live.db")).await;
+        migrate(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("u1")
+        .bind("admin")
+        .bind("test-hash")
+        .bind("now")
+        .bind("admin")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let snapshot = dir.join("snapshot.db");
+        snapshot_database(&pool, &snapshot).await.unwrap();
+
+        // The snapshot stands alone: it needs no `-wal` sidecar sitting next to it.
+        let copy = open_file(&snapshot).await;
+        let (users,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&copy)
+            .await
+            .unwrap();
+        assert_eq!(users, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end `POST /api/v1/backups`: the handler snapshots the live
+    /// database, archives it, and reports the result. The member names inside
+    /// the archive must stay relative, because that is what `restore_backup`
+    /// extracts.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_backup_archives_the_live_database() {
+        // The paths below come from process-global environment variables, so
+        // this test must not run next to another one that changes them. The lock
+        // is async-aware because the request under test is awaited while held.
+        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = ENV_LOCK.lock().await;
+
+        let dir = std::env::temp_dir().join(format!("chaos-backup-create-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        let db = dir.join("chaos.db");
+
+        let pool = open_file(&db).await;
+        migrate(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("u1")
+        .bind("admin")
+        .bind("test-hash")
+        .bind("now")
+        .bind("admin")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let state = AppState::new(pool, "test-secret-key-for-jwt-hs256".to_string());
+        let token = crate::auth::issue_token("u1", "admin", &state.jwt_secret).unwrap();
+        let app = backup_router().with_state(state);
+
+        std::env::set_var("CHAOS_BACKUP_DIR", &backups);
+        std::env::set_var("CHAOS_DATABASE_URL", format!("sqlite:{}", db.display()));
+        std::env::set_var("CHAOS_DAE_WORK_DIR", dir.join("dae"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/backups")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::env::remove_var("CHAOS_BACKUP_DIR");
+        std::env::remove_var("CHAOS_DATABASE_URL");
+        std::env::remove_var("CHAOS_DAE_WORK_DIR");
+
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+
+        let name = body["backup"]["name"].as_str().expect("backup name");
+        assert!(
+            body["backup"]["bytes"].as_u64().unwrap_or(0) > 0,
+            "archive is empty: {body}"
+        );
+        let archive = backups.join(name);
+        assert!(archive.is_file(), "archive missing: {}", archive.display());
+
+        let listing = std::process::Command::new("tar")
+            .arg("-tzf")
+            .arg(&archive)
+            .output()
+            .expect("run tar");
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        assert!(
+            listing.lines().any(|line| line == "chaos.db"),
+            "archive members: {listing}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
